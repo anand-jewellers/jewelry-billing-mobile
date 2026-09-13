@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "jewelry billing",
-    "slug": "jewelry billing",
+    "slug": "jewelry-billing-mobile",
     "scheme": "jewelrybilling",
     "version": "1.0.0",
     "orientation": "portrait",
