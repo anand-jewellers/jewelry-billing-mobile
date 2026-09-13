@@ -29,13 +29,21 @@ export async function getProductByCode(rawCode: string): Promise<Product | null>
   return data;
 }
 
+function sanitizeForOrFilter(s: string): string {
+  return s.replace(/[,()]/g, '');
+}
+
 export async function searchProducts(query: string): Promise<Product[]> {
   const q = query.trim();
   if (!q) return [];
+  // Escape PostgREST-reserved characters so user input can't break the filter syntax
+  const safe = q.replace(/[,()]/g, '');
+  if (!safe) return [];
+
   const { data, error } = await supabase
     .from('products')
     .select('*')
-    .or(`product_code.ilike.%${q}%,product_name.ilike.%${q}%,sku.ilike.%${q}%`)
+    .or(`product_code.ilike.%${safe}%,product_name.ilike.%${safe}%,sku.ilike.%${safe}%`)
     .eq('is_active', true)
     .is('deleted_at', null)
     .limit(10);

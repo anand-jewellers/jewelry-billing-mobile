@@ -94,7 +94,7 @@ export default function RootLayout() {
       <StaffProvider>
         <CompanySettingsProvider>
           <RouteGuard>
-            <StatusBar style="dark" />
+            <StatusBar style="dark" translucent backgroundColor="transparent" />
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="login" />

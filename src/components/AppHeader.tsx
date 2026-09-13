@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { View, Text, Image, Pressable, Modal, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, spacing, radius } from '../theme';
 import { useCompanySettings } from '../context/CompanySettingsContext';
 import { useStaff } from '../context/StaffContext';
@@ -8,6 +9,7 @@ export function AppHeader() {
   const { settings } = useCompanySettings();
   const { currentStaff, logoutStaff } = useStaff();
   const [menuOpen, setMenuOpen] = useState(false);
+  const insets = useSafeAreaInsets();
 
   const initial = currentStaff?.name?.trim()?.[0]?.toUpperCase() ?? '?';
 
@@ -17,7 +19,7 @@ export function AppHeader() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
       <View style={styles.left}>
         <View style={styles.logoBox}>
           {settings?.logo_url ? (
@@ -65,17 +67,17 @@ export function AppHeader() {
 const AVATAR_SIZE = 34;
 
 const styles = StyleSheet.create({
-  container: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingTop: 12,
-    paddingBottom: 12,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
+container: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  paddingHorizontal: spacing.lg,
+  // paddingTop removed — now set dynamically via insets.top
+  paddingBottom: 12,
+  backgroundColor: colors.surface,
+  borderBottomWidth: 1,
+  borderBottomColor: colors.border,
+},
   left: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexShrink: 1 },
   logoBox: {
     width: 42,

@@ -238,19 +238,14 @@ export default function NewInvoiceScreen() {
       Alert.alert('No items', 'Add at least one item before generating an estimate.');
       return;
     }
+
+    if (!customerName.trim() || !customerPhone.trim()) {
+      Alert.alert('Missing details', 'Customer name and phone number are mandatory.');
+      return;
+    }
+
     setStage('estimate');
 
-    // FIX: previously `amountPaid` state was left as '' and the grand total
-    // only appeared as a greyed-out TextInput `placeholder`. Placeholders are
-    // NOT form values — if the cashier never typed into the field,
-    // parseFloat('') -> NaN -> `totals.paid` fell back to 0, so the invoice
-    // was saved with paid_amount = 0 and the server correctly (but
-    // surprisingly) marked it "Unpaid" even though the bill looked settled
-    // on screen.
-    //
-    // Default the real state to the grand total so "didn't touch the field"
-    // means "paid in full" by default. The cashier can still edit it down
-    // for a partial payment.
     if (!amountPaidTouched) {
       setAmountPaid(String(totals.grandTotal));
     }
@@ -273,6 +268,11 @@ export default function NewInvoiceScreen() {
   const handleSaveInvoice = async () => {
     if (items.length === 0) {
       Alert.alert('No items', 'Add at least one item before saving.');
+      return;
+    }
+
+    if (!customerName.trim() || !customerPhone.trim()) {
+      Alert.alert('Missing details', 'Customer name and phone number are mandatory.');
       return;
     }
 
@@ -336,7 +336,7 @@ export default function NewInvoiceScreen() {
 
         <TextInput
           style={styles.input}
-          placeholder="Customer Name"
+          placeholder="Customer Name *"
           placeholderTextColor={colors.textMuted}
           value={customerName}
           onChangeText={setCustomerName}
@@ -344,7 +344,7 @@ export default function NewInvoiceScreen() {
 
         <TextInput
           style={styles.input}
-          placeholder="Phone Number"
+          placeholder="Phone Number *"
           placeholderTextColor={colors.textMuted}
           keyboardType="phone-pad"
           value={customerPhone}

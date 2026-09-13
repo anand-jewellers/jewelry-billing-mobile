@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "jewelry-billing-mobile",
-    "slug": "jewelry-billing-mobile",
+    "name": "jewelry billing",
+    "slug": "jewelry billing",
     "scheme": "jewelrybilling",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -44,7 +44,12 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "package": "com.venkat.sk.jewelrybillingmobile"
+      "package": "com.venkat.sk.jewelrybillingmobile",
+      "edgeToEdgeEnabled": true,
+      "statusBar": {
+        "translucent": true,
+        "backgroundColor": "transparent"
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
