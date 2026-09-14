@@ -3,7 +3,7 @@
     "name": "jewelry billing",
     "slug": "jewelry-billing-mobile",
     "scheme": "jewelrybilling",
-    "version": "1.0.0",
+    "version": "2.0.1",
     "orientation": "portrait",
     "plugins": [
       "expo-router",
