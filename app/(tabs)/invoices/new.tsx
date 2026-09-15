@@ -39,6 +39,8 @@ import { BarcodeScannerModal } from '../../../src/components/invoice/BarcodeScan
 import { InvoiceItemRow } from '../../../src/components/invoice/InvoiceItemRow';
 import { JewelryItemSheet } from '../../../src/components/invoice/JewelryItemSheet';
 
+import { useNotifications } from '../../../src/context/NotificationContext';
+
 import type { Metal, Purity, Category, TaxSetting, ValueAddedChargeType } from '../../../src/types/settings';
 import type { InvoiceItem, PaymentMode } from '../../../src/types/invoices';
 
@@ -59,6 +61,12 @@ type Stage = 'building' | 'estimate';
 
 
 export default function NewInvoiceScreen() {
+  // ---------------------------------------------------------
+  // Notifications
+  // ---------------------------------------------------------
+
+  const { notify } = useNotifications();
+
   // ---------------------------------------------------------
   // Master data
   // ---------------------------------------------------------
@@ -299,6 +307,19 @@ export default function NewInvoiceScreen() {
         vaChargesTotal: totals.vaTotal,
         paymentMode: paymentMode ?? 'cash',
       });
+
+      // Fire a notification for other staff logins. Failure here should never
+      // block navigation away from a successfully saved invoice, so it's
+      // isolated in its own try/catch rather than the outer one.
+      try {
+        await notify(
+          'invoice',
+          'New invoice billed',
+          `Invoice for ${customerName.trim()} — ₹${totals.grandTotal.toLocaleString('en-IN')}`
+        );
+      } catch (notifyError) {
+        console.warn('Failed to send invoice notification', notifyError);
+      }
 
       router.replace(`/invoices/${invoice.id}`);
     } catch (e: any) {

@@ -7,14 +7,11 @@ import {
   TextInput,
   StyleSheet,
   ActivityIndicator,
-  Platform,
 } from 'react-native';
 import { useFocusEffect, router } from 'expo-router';
 import { Search, Calendar, X } from 'lucide-react-native';
-import DateTimePicker, {
-  DateTimePickerEvent,
-} from '@react-native-community/datetimepicker';
 import { Card, Button } from '../../../src/components/ui';
+import { CalendarModal } from '../../../src/components/ui/DateFilter';
 import { colors, spacing, radius } from '../../../src/theme';
 import { listInvoices, type InvoiceListItem } from '../../../src/lib/api/invoices';
 
@@ -83,45 +80,27 @@ export default function InvoiceListScreen() {
     load(text, fromDate, toDate);
   };
 
-  // Native (iOS/Android) picker handler — new event-based API.
-  // `event.type` is 'set' | 'dismissed' on Android; iOS inline picker
-  // fires continuously while scrubbing, so we just trust `selected`.
-  const handleDatePicked = (event: DateTimePickerEvent, selected?: Date) => {
-    const target = pickerTarget;
-
-    if (Platform.OS === 'android') {
-      setPickerTarget(null);
-      if (event.type === 'dismissed' || !selected || !target) return;
-    } else {
-      // iOS inline picker stays open until the user taps away/closes it;
-      // only dismiss + commit here since this screen has no separate "Done" button.
-      if (!selected || !target) return;
+  // Tap-to-pick calendar grid — same component on iOS, Android, and web.
+  const handleCalendarDayPress = (day: Date) => {
+    if (pickerTarget === 'from') {
+      setFromDate(day);
+      load(searchText, day, toDate);
+    } else if (pickerTarget === 'to') {
+      setToDate(day);
+      load(searchText, fromDate, day);
     }
-
-    if (target === 'from') {
-      setFromDate(selected);
-      load(searchText, selected, toDate);
-    } else {
-      setToDate(selected);
-      load(searchText, fromDate, selected);
-    }
-
-    if (Platform.OS === 'ios') setPickerTarget(null);
+    setPickerTarget(null);
   };
 
-  // Web fallback: native <input type="date"> since the community
-  // datetimepicker package has no web renderer.
-  const handleWebDateChange = (target: 'from' | 'to', value: string) => {
-    setPickerTarget(null);
-    if (!value) return;
-    const selected = new Date(`${value}T00:00:00`);
-    if (target === 'from') {
-      setFromDate(selected);
-      load(searchText, selected, toDate);
-    } else {
-      setToDate(selected);
-      load(searchText, fromDate, selected);
+  const handleCalendarClear = () => {
+    if (pickerTarget === 'from') {
+      setFromDate(null);
+      load(searchText, null, toDate);
+    } else if (pickerTarget === 'to') {
+      setToDate(null);
+      load(searchText, fromDate, null);
     }
+    setPickerTarget(null);
   };
 
   const clearDateFilter = () => {
@@ -172,47 +151,18 @@ export default function InvoiceListScreen() {
         )}
       </View>
 
-      {/* Web: native HTML date input, rendered invisibly and clicked programmatically
-          isn't reliable cross-browser, so instead we render it directly under the
-          chip row only while a target is selected. */}
-      {Platform.OS === 'web' && pickerTarget && (
-        <View style={styles.webDateWrap}>
-          <Text style={styles.webDateLabel}>
-            {pickerTarget === 'from' ? 'From date' : 'To date'}
-          </Text>
-          {/* @ts-ignore - raw HTML input, web-only */}
-          <input
-            type="date"
-            autoFocus
-            defaultValue={
-              pickerTarget === 'from'
-                ? fromDate ? toISODate(fromDate) : ''
-                : toDate ? toISODate(toDate) : ''
-            }
-            max={toISODate(new Date())}
-            onChange={(e: any) => handleWebDateChange(pickerTarget, e.target.value)}
-            onBlur={() => setPickerTarget(null)}
-            style={{
-              fontSize: 14,
-              padding: 8,
-              borderRadius: 8,
-              border: `1px solid ${colors.border}`,
-              color: colors.textPrimary,
-              backgroundColor: colors.surface,
-            }}
-          />
-        </View>
-      )}
-
-      {Platform.OS !== 'web' && pickerTarget && (
-        <DateTimePicker
-          value={(pickerTarget === 'from' ? fromDate : toDate) ?? new Date()}
-          mode="date"
-          display={Platform.OS === 'ios' ? 'inline' : 'default'}
-          onChange={handleDatePicked}
-          maximumDate={new Date()}
-        />
-      )}
+      {/* Tap-to-pick calendar grid — no typing, works the same on every platform */}
+      <CalendarModal
+        visible={pickerTarget !== null}
+        onClose={() => setPickerTarget(null)}
+        mode="single"
+        title={pickerTarget === 'from' ? 'Select from date' : 'Select to date'}
+        selectedDate={(pickerTarget === 'from' ? fromDate : toDate) ?? undefined}
+        onDayPress={handleCalendarDayPress}
+        onApplyRange={() => {}}
+        onClear={handleCalendarClear}
+        maximumDate={new Date()}
+      />
 
       {error && <Text style={styles.error}>{error}</Text>}
 
@@ -297,12 +247,6 @@ const styles = StyleSheet.create({
   dateChipText: { fontSize: 13, color: colors.textPrimary },
   dateSeparator: { color: colors.textMuted },
   clearDateBtn: { marginLeft: 'auto' },
-
-  webDateWrap: {
-    marginHorizontal: spacing.lg,
-    marginTop: spacing.sm,
-  },
-  webDateLabel: { fontSize: 11, color: colors.textMuted, marginBottom: 4 },
 
   row: {
     flexDirection: 'row',

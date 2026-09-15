@@ -56,6 +56,7 @@ export interface ReportInvoiceRow {
   payment_mode: PaymentMode;
   status: string;
   customer_name: string;
+  product_codes: string[];
 }
 
 export interface PaymentBreakdownSlice {
@@ -89,7 +90,7 @@ export async function getSalesReport(range: ReportRange): Promise<ReportSummary>
   const { data, error } = await supabase
     .from('invoices')
     .select(
-      'id, invoice_number, invoice_date, grand_total, paid_amount, balance_amount, payment_status, payment_mode, status, customer:customers(name)'
+      'id, invoice_number, invoice_date, grand_total, paid_amount, balance_amount, payment_status, payment_mode, status, customer:customers(name), invoice_items(product_code)'
     )
     .gte('invoice_date', range.fromDate)
     .lte('invoice_date', range.toDate)
@@ -108,6 +109,9 @@ export async function getSalesReport(range: ReportRange): Promise<ReportSummary>
     payment_mode: (row.payment_mode ?? 'cash') as PaymentMode,
     status: row.status,
     customer_name: row.customer?.name ?? 'Walk-in Customer',
+    product_codes: (row.invoice_items ?? [])
+      .map((item: any) => item.product_code)
+      .filter(Boolean),
   }));
 
   // Sum *collected* amount (paid_amount) per payment method — this is what a

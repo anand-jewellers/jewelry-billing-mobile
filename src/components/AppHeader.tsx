@@ -1,14 +1,35 @@
 import { useState } from 'react';
-import { View, Text, Image, Pressable, Modal, StyleSheet } from 'react-native';
+import { View, Text, Image, Pressable, Modal, StyleSheet, FlatList } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius } from '../theme';
 import { useCompanySettings } from '../context/CompanySettingsContext';
 import { useStaff } from '../context/StaffContext';
+import { useNotifications, AppNotification } from '../context/NotificationContext';
+
+function timeAgo(iso: string) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+const TYPE_ICON: Record<AppNotification['type'], keyof typeof Ionicons.glyphMap> = {
+  product: 'cube-outline',
+  invoice: 'document-text-outline',
+  settings: 'settings-outline',
+};
 
 export function AppHeader() {
   const { settings } = useCompanySettings();
   const { currentStaff, logoutStaff } = useStaff();
+  const { notifications, unreadCount, clearOne, clearAll } = useNotifications();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
   const insets = useSafeAreaInsets();
 
   const initial = currentStaff?.name?.trim()?.[0]?.toUpperCase() ?? '?';
@@ -33,10 +54,22 @@ export function AppHeader() {
         </Text>
       </View>
 
-      <Pressable onPress={() => setMenuOpen(true)} style={styles.avatarButton} hitSlop={8}>
-        <Text style={styles.avatarInitial}>{initial}</Text>
-      </Pressable>
+      <View style={styles.right}>
+        <Pressable onPress={() => setNotifOpen(true)} style={styles.bellButton} hitSlop={8}>
+          <Ionicons name="notifications-outline" size={22} color={colors.textPrimary} />
+          {unreadCount > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
+            </View>
+          )}
+        </Pressable>
 
+        <Pressable onPress={() => setMenuOpen(true)} style={styles.avatarButton} hitSlop={8}>
+          <Text style={styles.avatarInitial}>{initial}</Text>
+        </Pressable>
+      </View>
+
+      {/* Profile menu */}
       <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setMenuOpen(false)}>
           <View style={styles.menu}>
@@ -60,6 +93,52 @@ export function AppHeader() {
           </View>
         </Pressable>
       </Modal>
+
+      {/* Notification panel */}
+      <Modal visible={notifOpen} transparent animationType="fade" onRequestClose={() => setNotifOpen(false)}>
+        <Pressable style={styles.backdrop} onPress={() => setNotifOpen(false)}>
+          <Pressable style={styles.notifPanel} onPress={() => {}}>
+            <View style={styles.notifHeader}>
+              <Text style={styles.notifTitle}>Notifications</Text>
+              {notifications.length > 0 && (
+                <Pressable onPress={clearAll} hitSlop={8}>
+                  <Text style={styles.clearAllText}>Clear all</Text>
+                </Pressable>
+              )}
+            </View>
+
+            <View style={styles.menuDivider} />
+
+            {notifications.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Ionicons name="notifications-off-outline" size={22} color={colors.textMuted} />
+                <Text style={styles.emptyText}>No notifications</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={notifications}
+                keyExtractor={(item) => item.id}
+                style={styles.notifList}
+                renderItem={({ item }) => (
+                  <View style={styles.notifItem}>
+                    <View style={styles.notifIconBox}>
+                      <Ionicons name={TYPE_ICON[item.type]} size={16} color={colors.primary} />
+                    </View>
+                    <View style={styles.notifItemText}>
+                      <Text style={styles.notifItemTitle} numberOfLines={1}>{item.title}</Text>
+                      <Text style={styles.notifItemMessage} numberOfLines={2}>{item.message}</Text>
+                      <Text style={styles.notifItemTime}>{timeAgo(item.created_at)}</Text>
+                    </View>
+                    <Pressable onPress={() => clearOne(item.id)} hitSlop={8} style={styles.notifClearButton}>
+                      <Ionicons name="close" size={16} color={colors.textMuted} />
+                    </Pressable>
+                  </View>
+                )}
+              />
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -67,18 +146,18 @@ export function AppHeader() {
 const AVATAR_SIZE = 34;
 
 const styles = StyleSheet.create({
-container: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  paddingHorizontal: spacing.lg,
-  // paddingTop removed — now set dynamically via insets.top
-  paddingBottom: 12,
-  backgroundColor: colors.surface,
-  borderBottomWidth: 1,
-  borderBottomColor: colors.border,
-},
+  container: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: 12,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
   left: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexShrink: 1 },
+  right: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   logoBox: {
     width: 42,
     height: 42,
@@ -93,6 +172,21 @@ container: {
   logo: { width: '100%', height: '100%' },
   logoPlaceholder: { fontSize: 14, fontWeight: '700', color: colors.textMuted },
   name: { fontSize: 18, fontWeight: '700', color: colors.textPrimary, flexShrink: 1 },
+
+  bellButton: { width: AVATAR_SIZE, height: AVATAR_SIZE, alignItems: 'center', justifyContent: 'center' },
+  badge: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: colors.error ?? '#D64545',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  badgeText: { fontSize: 9.5, fontWeight: '700', color: '#FFFFFF' },
 
   avatarButton: {
     width: AVATAR_SIZE,
@@ -144,4 +238,55 @@ container: {
   menuItem: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   menuItemPressed: { backgroundColor: colors.background },
   menuItemText: { fontSize: 13.5, fontWeight: '600', color: colors.error },
+
+  notifPanel: {
+    position: 'absolute',
+    top: 58,
+    right: spacing.lg,
+    width: 300,
+    maxHeight: 380,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: spacing.xs,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  notifHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  notifTitle: { fontSize: 14.5, fontWeight: '700', color: colors.textPrimary },
+  clearAllText: { fontSize: 12.5, fontWeight: '600', color: colors.primary },
+  notifList: { maxHeight: 320 },
+  notifItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  notifIconBox: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  notifItemText: { flex: 1 },
+  notifItemTitle: { fontSize: 13, fontWeight: '700', color: colors.textPrimary },
+  notifItemMessage: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
+  notifItemTime: { fontSize: 10.5, color: colors.textMuted, marginTop: 3 },
+  notifClearButton: { padding: 2 },
+  emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: spacing.lg, gap: 6 },
+  emptyText: { fontSize: 12.5, color: colors.textMuted },
 });

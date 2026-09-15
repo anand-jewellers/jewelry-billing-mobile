@@ -59,7 +59,7 @@ export default function CustomerDetailsScreen() {
       <View style={styles.summaryRow}>
         <SummaryCard label="Total Invoices" value={String(invoices.length)} />
         <SummaryCard label="Total Spent" value={`₹${totalSpent.toLocaleString('en-IN')}`} tone="primary" />
-        <SummaryCard label="Balance Due" value={`₹${totalDue.toLocaleString('en-IN')}`} tone="gold" />
+        {/* <SummaryCard label="Balance Due" value={`₹${totalDue.toLocaleString('en-IN')}`} tone="gold" /> */}
       </View>
 
       <Text style={styles.sectionTitle}>Invoice History</Text>

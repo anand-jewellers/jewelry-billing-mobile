@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import { View, Animated, StyleSheet, Easing, Dimensions } from "react-native";
-import Svg, { Path, Polygon, Circle, Defs, RadialGradient, Stop } from "react-native-svg";
+import Svg, { Path, Polygon, Circle, Defs, RadialGradient, Stop, G } from "react-native-svg";
 
 const { width, height } = Dimensions.get("window");
 
@@ -12,10 +12,19 @@ type Props = {
 
 const RAY_COUNT = 14;
 const PARTICLE_COUNT = 16;
+const BEAD_COUNT = 11;
+
+// A smooth, premium "ease-out" curve — decelerates gently with no snap at the end.
+const SMOOTH_OUT = Easing.bezier(0.22, 1, 0.36, 1);
+const SMOOTH_IN_OUT = Easing.bezier(0.45, 0, 0.15, 1);
 
 function seededRandom(seed: number) {
   const x = Math.sin(seed) * 10000;
   return x - Math.floor(x);
+}
+
+function quadraticBezier(t: number, p0: number, c: number, p2: number) {
+  return (1 - t) * (1 - t) * p0 + 2 * (1 - t) * t * c + t * t * p2;
 }
 
 export default function MoonToJewelSplash({
@@ -33,7 +42,7 @@ export default function MoonToJewelSplash({
   const starRotate = useRef(new Animated.Value(0)).current;
 
   const jewelOpacity = useRef(new Animated.Value(0)).current;
-  const jewelScale = useRef(new Animated.Value(0.4)).current;
+  const jewelScale = useRef(new Animated.Value(0.6)).current;
 
   const glowOpacity = useRef(new Animated.Value(0)).current;
   const glowScale = useRef(new Animated.Value(0.8)).current;
@@ -54,7 +63,6 @@ export default function MoonToJewelSplash({
     });
   }, []);
 
-  // Precompute unit vectors for rays and particles once
   const rays = useMemo(() => {
     return Array.from({ length: RAY_COUNT }, (_, i) => {
       const angle = (360 / RAY_COUNT) * i;
@@ -76,66 +84,87 @@ export default function MoonToJewelSplash({
     });
   }, []);
 
+  // Necklace bead positions — a quadratic-bezier drape from shoulder to shoulder,
+  // with a gentle taper (thin at the ends, fuller in the middle).
+  const beads = useMemo(() => {
+    const p0 = { x: 14, y: 20 };
+    const c = { x: 60, y: 66 };
+    const p2 = { x: 106, y: 20 };
+    return Array.from({ length: BEAD_COUNT }, (_, i) => {
+      const t = i / (BEAD_COUNT - 1);
+      const x = quadraticBezier(t, p0.x, c.x, p2.x);
+      const y = quadraticBezier(t, p0.y, c.y, p2.y);
+      const r = 1.6 + 1.1 * Math.sin(t * Math.PI);
+      return { x, y, r };
+    });
+  }, []);
+
+  const chainMidY = quadraticBezier(0.5, 20, 66, 20);
+
   useEffect(() => {
     Animated.sequence([
       Animated.parallel([
         Animated.timing(moonOpacity, {
           toValue: 1,
           duration: 550,
-          easing: Easing.out(Easing.quad),
+          easing: SMOOTH_OUT,
           useNativeDriver: true,
         }),
         Animated.spring(moonScale, {
           toValue: 1,
-          friction: 6,
+          friction: 8,
+          tension: 45,
           useNativeDriver: true,
         }),
       ]),
-      Animated.delay(150),
+      Animated.delay(120),
 
       Animated.parallel([
         Animated.timing(starOpacity, {
           toValue: 1,
-          duration: 350,
+          duration: 320,
+          easing: SMOOTH_OUT,
           useNativeDriver: true,
         }),
         Animated.spring(starScale, {
           toValue: 1,
-          friction: 5,
+          friction: 7,
+          tension: 50,
           useNativeDriver: true,
         }),
       ]),
-      Animated.delay(100),
+      Animated.delay(80),
 
       Animated.parallel([
         Animated.timing(starTranslateY, {
           toValue: -34,
-          duration: 700,
-          easing: Easing.out(Easing.cubic),
+          duration: 750,
+          easing: SMOOTH_IN_OUT,
           useNativeDriver: true,
         }),
         Animated.timing(starTranslateX, {
           toValue: 0,
-          duration: 700,
-          easing: Easing.out(Easing.cubic),
+          duration: 750,
+          easing: SMOOTH_IN_OUT,
           useNativeDriver: true,
         }),
         Animated.timing(starScale, {
           toValue: 1.5,
-          duration: 700,
-          easing: Easing.out(Easing.cubic),
+          duration: 750,
+          easing: SMOOTH_IN_OUT,
           useNativeDriver: true,
         }),
         Animated.timing(starRotate, {
           toValue: 1,
-          duration: 700,
-          easing: Easing.out(Easing.cubic),
+          duration: 750,
+          easing: SMOOTH_IN_OUT,
           useNativeDriver: true,
         }),
         Animated.timing(moonOpacity, {
           toValue: 0,
           duration: 500,
           delay: 150,
+          easing: SMOOTH_OUT,
           useNativeDriver: true,
         }),
       ]),
@@ -143,42 +172,46 @@ export default function MoonToJewelSplash({
       Animated.parallel([
         Animated.timing(starOpacity, {
           toValue: 0,
-          duration: 350,
+          duration: 450,
+          easing: SMOOTH_OUT,
           useNativeDriver: true,
         }),
         Animated.timing(jewelOpacity, {
           toValue: 1,
-          duration: 350,
+          duration: 450,
+          easing: SMOOTH_OUT,
           useNativeDriver: true,
         }),
         Animated.spring(jewelScale, {
           toValue: 1,
-          friction: 4,
-          tension: 60,
+          friction: 8,
+          tension: 45,
           useNativeDriver: true,
         }),
         Animated.sequence([
           Animated.timing(glowOpacity, {
             toValue: 0.9,
-            duration: 250,
+            duration: 280,
+            easing: SMOOTH_OUT,
             useNativeDriver: true,
           }),
           Animated.timing(glowOpacity, {
             toValue: 0,
-            duration: 500,
+            duration: 550,
+            easing: SMOOTH_OUT,
             useNativeDriver: true,
           }),
         ]),
         Animated.timing(glowScale, {
           toValue: 1.8,
-          duration: 750,
-          easing: Easing.out(Easing.quad),
+          duration: 800,
+          easing: SMOOTH_OUT,
           useNativeDriver: true,
         }),
         Animated.timing(burstProgress, {
           toValue: 1,
-          duration: 750,
-          easing: Easing.out(Easing.cubic),
+          duration: 800,
+          easing: SMOOTH_OUT,
           useNativeDriver: true,
         }),
       ]),
@@ -281,7 +314,7 @@ export default function MoonToJewelSplash({
         </Svg>
       </Animated.View>
 
-      {/* Radiating light rays — fixed-size streaks that translate outward + rotate to point along their angle, native-driver safe */}
+      {/* Radiating light rays */}
       <View style={styles.centered} pointerEvents="none">
         {rays.map((r, i) => {
           const maxDist = size * 0.7;
@@ -330,56 +363,86 @@ export default function MoonToJewelSplash({
         })}
       </View>
 
+      {/* ===== Necklace reveal (replaces the diamond) ===== */}
       <Animated.View
         style={[
           styles.centered,
           { opacity: jewelOpacity, transform: [{ scale: jewelScale }] },
         ]}
       >
-        <Svg width={size * 0.6} height={size * 0.6} viewBox="0 0 80 80">
+        <Svg width={size * 0.85} height={size * 0.85} viewBox="0 0 120 110">
           <Defs>
+            <RadialGradient id="beadFill" cx="35%" cy="30%" r="80%">
+              <Stop offset="0%" stopColor="#FFFEF8" stopOpacity={1} />
+              <Stop offset="100%" stopColor="#EDE3C4" stopOpacity={1} />
+            </RadialGradient>
             <RadialGradient id="tableFill" cx="40%" cy="30%" r="80%">
               <Stop offset="0%" stopColor="#FFFDF5" stopOpacity={1} />
               <Stop offset="100%" stopColor="#E8F4FF" stopOpacity={1} />
             </RadialGradient>
           </Defs>
 
-          {/* ===== Pavilion (bottom facets) — darkest, establishes depth ===== */}
-          <Polygon points="14,30 40,74 26,30" fill="#7FB8E8" stroke="#4A7FAE" strokeWidth={0.5} />
-          <Polygon points="26,30 40,74 40,30" fill="#9FCCF0" stroke="#4A7FAE" strokeWidth={0.5} />
-          <Polygon points="40,30 40,74 54,30" fill="#8CC0EA" stroke="#4A7FAE" strokeWidth={0.5} />
-          <Polygon points="54,30 40,74 66,30" fill="#6FAEDE" stroke="#4A7FAE" strokeWidth={0.5} />
-
-          {/* ===== Crown (upper facets, between girdle and table) ===== */}
-          <Polygon points="14,30 26,30 20,16" fill="#D9EDFF" stroke="#7FA8C9" strokeWidth={0.5} />
-          <Polygon points="26,30 40,30 32,12" fill="#F0F8FF" stroke="#7FA8C9" strokeWidth={0.5} />
-          <Polygon points="40,30 54,30 48,12" fill="#EAF5FF" stroke="#7FA8C9" strokeWidth={0.5} />
-          <Polygon points="54,30 66,30 60,16" fill="#C9E4FF" stroke="#7FA8C9" strokeWidth={0.5} />
-          <Polygon points="20,16 32,12 26,30" fill="#BEE0FF" stroke="#7FA8C9" strokeWidth={0.5} />
-          <Polygon points="32,12 48,12 40,30" fill="#F6FBFF" stroke="#7FA8C9" strokeWidth={0.5} />
-          <Polygon points="48,12 60,16 54,30" fill="#A9D4FF" stroke="#7FA8C9" strokeWidth={0.5} />
-
-          {/* ===== Table (flat top facet) ===== */}
-          <Polygon
-            points="20,16 32,12 48,12 60,16 54,30 26,30"
-            fill="url(#tableFill)"
-            stroke="#6B98C2"
-            strokeWidth={0.6}
-          />
-
-          {/* ===== Girdle outline ===== */}
-          <Polygon
-            points="14,30 26,30 40,30 54,30 66,30"
+          {/* Thin gold strand the beads sit on */}
+          <Path
+            d={`M14,20 Q60,66 106,20`}
             fill="none"
-            stroke="#4A7FAE"
-            strokeWidth={0.5}
+            stroke="#D4AF37"
+            strokeWidth={0.8}
+            opacity={0.85}
           />
 
-          {/* ===== Sparkle highlights — asymmetric, sharp, not centered ===== */}
-          <Path d="M30,18 L31.5,21 L34,21 L31.5,23 L32.5,26 L30,24 L27.5,26 L28.5,23 L26,21 L28.5,21 Z" fill="#FFFFFF" opacity={0.95} />
-          <Path d="M50,20 L50.8,21.8 L52.6,22 L51.2,23.2 L51.6,25 L50,24 L48.4,25 L48.8,23.2 L47.4,22 L49.2,21.8 Z" fill="#FFFFFF" opacity={0.8} />
-          <Circle cx={44} cy={40} r={0.8} fill="#FFFFFF" opacity={0.9} />
-          <Circle cx={35} cy={48} r={0.6} fill="#FFFFFF" opacity={0.7} />
+          {/* Pearl beads draped along the strand */}
+          {beads.map((b, i) => (
+            <Circle
+              key={i}
+              cx={b.x}
+              cy={b.y}
+              r={b.r}
+              fill="url(#beadFill)"
+              stroke="#C9B77E"
+              strokeWidth={0.4}
+            />
+          ))}
+
+          {/* Drop chain down to the pendant */}
+          <Path
+            d={`M60,${chainMidY + 2} L60,58`}
+            stroke="#D4AF37"
+            strokeWidth={0.8}
+            opacity={0.85}
+          />
+
+          {/* Pendant — small faceted drop, scaled down and centered under the chain */}
+          <G transform="translate(42,58) scale(0.42)">
+            <Polygon points="14,30 40,74 26,30" fill="#7FB8E8" stroke="#4A7FAE" strokeWidth={0.5} />
+            <Polygon points="26,30 40,74 40,30" fill="#9FCCF0" stroke="#4A7FAE" strokeWidth={0.5} />
+            <Polygon points="40,30 40,74 54,30" fill="#8CC0EA" stroke="#4A7FAE" strokeWidth={0.5} />
+            <Polygon points="54,30 40,74 66,30" fill="#6FAEDE" stroke="#4A7FAE" strokeWidth={0.5} />
+
+            <Polygon points="14,30 26,30 20,16" fill="#D9EDFF" stroke="#7FA8C9" strokeWidth={0.5} />
+            <Polygon points="26,30 40,30 32,12" fill="#F0F8FF" stroke="#7FA8C9" strokeWidth={0.5} />
+            <Polygon points="40,30 54,30 48,12" fill="#EAF5FF" stroke="#7FA8C9" strokeWidth={0.5} />
+            <Polygon points="54,30 66,30 60,16" fill="#C9E4FF" stroke="#7FA8C9" strokeWidth={0.5} />
+            <Polygon points="20,16 32,12 26,30" fill="#BEE0FF" stroke="#7FA8C9" strokeWidth={0.5} />
+            <Polygon points="32,12 48,12 40,30" fill="#F6FBFF" stroke="#7FA8C9" strokeWidth={0.5} />
+            <Polygon points="48,12 60,16 54,30" fill="#A9D4FF" stroke="#7FA8C9" strokeWidth={0.5} />
+
+            <Polygon
+              points="20,16 32,12 48,12 60,16 54,30 26,30"
+              fill="url(#tableFill)"
+              stroke="#6B98C2"
+              strokeWidth={0.6}
+            />
+            <Polygon
+              points="14,30 26,30 40,30 54,30 66,30"
+              fill="none"
+              stroke="#4A7FAE"
+              strokeWidth={0.5}
+            />
+
+            <Path d="M30,18 L31.5,21 L34,21 L31.5,23 L32.5,26 L30,24 L27.5,26 L28.5,23 L26,21 L28.5,21 Z" fill="#FFFFFF" opacity={0.95} />
+            <Circle cx={44} cy={40} r={0.8} fill="#FFFFFF" opacity={0.9} />
+          </G>
         </Svg>
       </Animated.View>
     </View>

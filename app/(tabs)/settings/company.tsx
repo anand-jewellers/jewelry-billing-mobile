@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react';
-import { ScrollView, Text, StyleSheet, ActivityIndicator, View, Image, Pressable } from 'react-native';
+import {
+  ScrollView,
+  Text,
+  StyleSheet,
+  ActivityIndicator,
+  View,
+  Image,
+  Pressable,
+  Platform,
+  KeyboardAvoidingView,
+} from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { File } from 'expo-file-system';
 import { Card, Input, Button } from '../../../src/components/ui';
@@ -8,6 +18,7 @@ import { supabase } from '../../../src/lib/supabaseClient';
 import { getCompanySettings, updateCompanySettings } from '../../../src/lib/api/settings';
 import { useCompanySettings } from '../../../src/context/CompanySettingsContext';
 import type { CompanySettings } from '../../../src/types/settings';
+import { useStaff } from '../../../src/context/StaffContext';
 
 const LOGO_BUCKET = 'company-assets';
 
@@ -58,8 +69,19 @@ async function pickAndUploadLogo(): Promise<string> {
   const fileName = `company-logo.${ext}`;
   const path = `logo/${fileName}`;
 
-  const file = new File(asset.uri);
-  const bytes = await file.bytes();
+  let bytes: Uint8Array;
+  if (Platform.OS === 'web') {
+    // expo-file-system's File/Directory API is native-only; on web,
+    // asset.uri is a blob: or data: URL that fetch() handles natively.
+    const res = await fetch(asset.uri);
+    const arrayBuffer = await res.arrayBuffer();
+    bytes = new Uint8Array(arrayBuffer);
+  } else {
+    // Native (Android/iOS): fetch() against content:// / file:// URIs can
+    // silently truncate on Android, so use expo-file-system's File API instead.
+    const file = new File(asset.uri);
+    bytes = await file.bytes();
+  }
   console.log('Logo upload: read local file, bytes =', bytes.byteLength);
 
   if (bytes.byteLength < 1024) {
@@ -114,6 +136,7 @@ const emptyForm: Omit<CompanySettings, 'id'> = {
 
 export default function CompanySettingsScreen() {
   const { setSettings: setGlobalSettings } = useCompanySettings();
+  const { hasAccess } = useStaff();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +145,8 @@ export default function CompanySettingsScreen() {
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [logoSaved, setLogoSaved] = useState(false);
   const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+
+  const canChangeLogo = hasAccess('settings.company_logo');
 
   useEffect(() => {
     getCompanySettings()
@@ -151,6 +176,11 @@ export default function CompanySettingsScreen() {
   };
 
   const handleChangeLogo = async () => {
+    if (!canChangeLogo) return;
+
+    const { data: { session } } = await supabase.auth.getSession();
+    console.log('Current user id:', session?.user?.id, 'session exists:', !!session);
+
     setError(null);
     setSaved(false);
     setLogoLoadFailed(false);
@@ -163,7 +193,6 @@ export default function CompanySettingsScreen() {
       setGlobalSettings({ ...(form as CompanySettings), logo_url: url });
     } catch (err) {
       if (err instanceof Error && err.message === 'CANCELED') return;
-      // Log the real error to the Metro terminal so we can see exactly what failed.
       console.error('Logo upload failed:', err);
       const detail = err instanceof Error ? err.message : String(err);
       setError(`Could not upload the logo: ${detail}`);
@@ -181,59 +210,75 @@ export default function CompanySettingsScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={{ padding: spacing.lg }}>
-      <Card>
-        {error && <Text style={styles.error}>{error}</Text>}
-        {saved && <Text style={styles.success}>Saved.</Text>}
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
+    >
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={{
+          padding: spacing.lg,
+          paddingBottom: spacing.lg + 120,
+        }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
+        <Card>
+          {error && <Text style={styles.error}>{error}</Text>}
+          {saved && <Text style={styles.success}>Saved.</Text>}
 
-        <Text style={styles.label}>Company Logo</Text>
-        <View style={styles.logoRow}>
-          <View style={styles.logoPreview}>
-            {form.logo_url && !logoLoadFailed ? (
-              <Image
-                source={{ uri: form.logo_url }}
-                style={styles.logoImage}
-                resizeMode="contain"
-                onError={(e) => {
-                  console.error('Logo preview failed to load:', e.nativeEvent.error);
-                  setLogoLoadFailed(true);
-                }}
-              />
-            ) : (
-              <Text style={styles.logoPlaceholder}>
-                {logoLoadFailed ? 'Failed to load' : 'No logo'}
-              </Text>
+          <Text style={styles.label}>Company Logo</Text>
+          <View style={styles.logoRow}>
+            <View style={styles.logoPreview}>
+              {form.logo_url && !logoLoadFailed ? (
+                <Image
+                  source={{ uri: form.logo_url }}
+                  style={styles.logoImage}
+                  resizeMode="contain"
+                  onError={(e) => {
+                    console.error('Logo preview failed to load:', e.nativeEvent.error);
+                    setLogoLoadFailed(true);
+                  }}
+                />
+              ) : (
+                <Text style={styles.logoPlaceholder}>
+                  {logoLoadFailed ? 'Failed to load' : 'No logo'}
+                </Text>
+              )}
+            </View>
+            {canChangeLogo && (
+              <Pressable onPress={handleChangeLogo} disabled={uploadingLogo} style={styles.logoButton}>
+                {uploadingLogo ? (
+                  <ActivityIndicator color={colors.primary} size="small" />
+                ) : (
+                  <Text style={styles.logoButtonText}>{form.logo_url ? 'Change Logo' : 'Upload Logo'}</Text>
+                )}
+              </Pressable>
             )}
           </View>
-          <Pressable onPress={handleChangeLogo} disabled={uploadingLogo} style={styles.logoButton}>
-            {uploadingLogo ? (
-              <ActivityIndicator color={colors.primary} size="small" />
-            ) : (
-              <Text style={styles.logoButtonText}>{form.logo_url ? 'Change Logo' : 'Upload Logo'}</Text>
-            )}
-          </Pressable>
-        </View>
-        {logoSaved && !uploadingLogo && !logoLoadFailed && (
-          <Text style={styles.logoSaved}>Logo saved ✓</Text>
-        )}
-        <Text style={styles.logoHint}>
-          Used on the login screen, the app header, and printed invoices. Square images work best.
-        </Text>
+          {logoSaved && !uploadingLogo && !logoLoadFailed && (
+            <Text style={styles.logoSaved}>Logo saved ✓</Text>
+          )}
+          <Text style={styles.logoHint}>
+            Used on the login screen, the app header, and printed invoices. Square images work best.
+          </Text>
 
-        <Input label="Company Name" value={form.company_name} onChangeText={set('company_name')} placeholder="Your shop's name" />
-        <Input label="Address" value={form.address ?? ''} onChangeText={set('address')} placeholder="Street address" />
-        <Input label="City" value={form.city ?? ''} onChangeText={set('city')} />
-        <Input label="State" value={form.state ?? ''} onChangeText={set('state')} />
-        <Input label="Pincode" value={form.pincode ?? ''} onChangeText={set('pincode')} keyboardType="number-pad" />
-        <Input label="Phone" value={form.phone ?? ''} onChangeText={set('phone')} keyboardType="phone-pad" />
-        <Input label="Email" value={form.email ?? ''} onChangeText={set('email')} keyboardType="email-address" autoCapitalize="none" />
-        <Input label="GSTIN" value={form.gstin ?? ''} onChangeText={set('gstin')} autoCapitalize="characters" />
-        <Input label="PAN" value={form.pan ?? ''} onChangeText={set('pan')} autoCapitalize="characters" />
-        <Input label="Website" value={form.website ?? ''} onChangeText={set('website')} autoCapitalize="none" keyboardType="url" />
+          <Input label="Company Name" value={form.company_name} onChangeText={set('company_name')} placeholder="Your shop's name" />
+          <Input label="Address" value={form.address ?? ''} onChangeText={set('address')} placeholder="Street address" />
+          <Input label="City" value={form.city ?? ''} onChangeText={set('city')} />
+          <Input label="State" value={form.state ?? ''} onChangeText={set('state')} />
+          <Input label="Pincode" value={form.pincode ?? ''} onChangeText={set('pincode')} keyboardType="number-pad" />
+          <Input label="Phone" value={form.phone ?? ''} onChangeText={set('phone')} keyboardType="phone-pad" />
+          <Input label="Email" value={form.email ?? ''} onChangeText={set('email')} keyboardType="email-address" autoCapitalize="none" />
+          <Input label="GSTIN" value={form.gstin ?? ''} onChangeText={set('gstin')} autoCapitalize="characters" />
+          <Input label="PAN" value={form.pan ?? ''} onChangeText={set('pan')} autoCapitalize="characters" />
+          <Input label="Website" value={form.website ?? ''} onChangeText={set('website')} autoCapitalize="none" keyboardType="url" />
 
-        <Button label={saving ? 'Saving…' : 'Save Changes'} onPress={handleSave} loading={saving} />
-      </Card>
-    </ScrollView>
+          <Button label={saving ? 'Saving…' : 'Save Changes'} onPress={handleSave} loading={saving} />
+        </Card>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -267,4 +312,4 @@ const styles = StyleSheet.create({
   logoButtonText: { fontSize: 13, color: colors.primary, fontWeight: '600' },
   logoSaved: { fontSize: 12, color: colors.success, fontWeight: '600', marginBottom: spacing.xs },
   logoHint: { fontSize: 11.5, color: colors.textMuted, marginBottom: spacing.lg },
-});  
+});

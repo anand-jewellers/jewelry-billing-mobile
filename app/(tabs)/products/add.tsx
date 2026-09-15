@@ -10,9 +10,11 @@ import {
 } from '../../../src/lib/products';
 import { uploadProductImageBase64 } from '../../../src/lib/storage';
 import { useStaff } from '../../../src/context/StaffContext';
+import { useNotifications } from '../../../src/context/NotificationContext';
 
 export default function AddProductScreen() {
   const { currentStaff } = useStaff();
+  const { notify } = useNotifications();
   const [loadingMeta, setLoadingMeta] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedProduct, setSavedProduct] = useState<any>(null);
@@ -109,6 +111,19 @@ export default function AddProductScreen() {
         await insertProductImages(uploaded.map((u, idx) => ({
           product_id: product.id, storage_path: u.storagePath, is_primary: images[idx].isPrimary, sort_order: idx,
         })), currentStaff.id);
+      }
+
+      // Fire a notification for other staff logins. Isolated in its own
+      // try/catch so a notification failure never blocks the success screen
+      // for a product that already saved correctly.
+      try {
+        await notify(
+          'product',
+          'New product added',
+          `${product.product_name} (${product.product_code}) was added to inventory`
+        );
+      } catch (notifyError) {
+        console.warn('Failed to send product notification', notifyError);
       }
 
       setSavedProduct(product);

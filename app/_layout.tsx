@@ -2,6 +2,7 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { View, ActivityIndicator } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import {
   useFonts as useInterFonts,
@@ -16,12 +17,10 @@ import {
 import { AuthProvider } from '../src/context/AuthContext';
 import { StaffProvider, useStaff } from '../src/context/StaffContext';
 import { CompanySettingsProvider } from '../src/context/CompanySettingsContext';
+import { NotificationProvider } from '../src/context/NotificationContext';
 import { colors } from '../src/theme';
 import MoonToJewelSplash from '../src/components/MoonToJewelSplash';
 
-// Keep the native splash visible until we explicitly hide it below,
-// so the OS never gets a chance to flash the default icon+name screen
-// before our JS has mounted.
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const PUBLIC_ROUTES = ['login', 'forgot-password', 'reset-password'];
@@ -61,49 +60,50 @@ export default function RootLayout() {
 
   const fontsReady = interLoaded && playfairLoaded;
 
-  // As soon as this component renders, our own animated view is on screen,
-  // so it's safe to hide the native splash right away — the transition
-  // from native splash to MoonToJewelSplash will be seamless because both
-  // use the same background color.
   useEffect(() => {
     SplashScreen.hideAsync().catch(() => {});
   }, []);
 
-  // Play the intro once at cold start. It doesn't depend on custom fonts
-  // (it's pure SVG), so it can run immediately while fonts load in the background.
   if (!introDone) {
     return (
-      <MoonToJewelSplash
-        backgroundColor="#0B3D91"
-        onFinish={() => setIntroDone(true)}
-      />
+      <SafeAreaProvider>
+        <MoonToJewelSplash
+          backgroundColor="#0B3D91"
+          onFinish={() => setIntroDone(true)}
+        />
+      </SafeAreaProvider>
     );
   }
 
-  // If fonts are still loading once the intro finishes, bridge with the spinner.
   if (!fontsReady) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
+      <SafeAreaProvider>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+          <ActivityIndicator color={colors.primary} />
+        </View>
+      </SafeAreaProvider>
     );
   }
 
   return (
-    <AuthProvider>
-      <StaffProvider>
-        <CompanySettingsProvider>
-          <RouteGuard>
-            <StatusBar style="dark" translucent backgroundColor="transparent" />
-            <Stack screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="login" />
-              <Stack.Screen name="forgot-password" />
-              <Stack.Screen name="reset-password" />
-            </Stack>
-          </RouteGuard>
-        </CompanySettingsProvider>
-      </StaffProvider>
-    </AuthProvider>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <StaffProvider>
+          <CompanySettingsProvider>
+            <NotificationProvider>
+              <RouteGuard>
+                <StatusBar style="dark" translucent backgroundColor="transparent" />
+                <Stack screenOptions={{ headerShown: false }}>
+                  <Stack.Screen name="(tabs)" />
+                  <Stack.Screen name="login" />
+                  <Stack.Screen name="forgot-password" />
+                  <Stack.Screen name="reset-password" />
+                </Stack>
+              </RouteGuard>
+            </NotificationProvider>
+          </CompanySettingsProvider>
+        </StaffProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }

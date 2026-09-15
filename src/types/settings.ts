@@ -127,6 +127,7 @@ export const PAGE_REGISTRY = [
   { key: 'customers', label: 'Customers', group: 'Main' },
   { key: 'settings', label: 'Settings (menu)', group: 'Main' },
   { key: 'settings.company', label: 'Company', group: 'Settings' },
+  { key: 'settings.company_logo', label: 'Company Logo', group: 'Settings' }, // NEW
   { key: 'settings.metals', label: 'Metals', group: 'Settings' },
   { key: 'settings.purity', label: 'Purity', group: 'Settings' },
   { key: 'settings.categories', label: 'Categories', group: 'Settings' },

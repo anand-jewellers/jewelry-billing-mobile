@@ -8,7 +8,8 @@ import { colors, spacing } from '../../theme';
  * -----------
  * Self-contained date filter for the dashboard. No external date-picker
  * dependency — the calendar grid is built from plain JS Dates so it drops
- * straight into the existing RN/Expo project.
+ * straight into the existing RN/Expo project, and renders identically on
+ * iOS, Android, and web.
  *
  * Lives at: src/components/ui/DateFilter.tsx
  * (imports above are relative to that location — update them if you move the file)
@@ -38,6 +39,7 @@ const MODE_OPTIONS: { key: DateFilterMode; label: string }[] = [
 ];
 
 const WEEKDAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const YEARS_PER_PAGE = 12;
 
 function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -71,6 +73,15 @@ function buildMonthMatrix(year: number, month: number): (Date | null)[][] {
   const weeks: (Date | null)[][] = [];
   for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
   return weeks;
+}
+
+/** Start year of the decade-ish page (rounded to a multiple of YEARS_PER_PAGE) that contains `year`. */
+function pageStartForYear(year: number): number {
+  return Math.floor(year / YEARS_PER_PAGE) * YEARS_PER_PAGE;
+}
+
+function buildYearGrid(pageStart: number): number[] {
+  return Array.from({ length: YEARS_PER_PAGE }, (_, i) => pageStart + i);
 }
 
 /** Summary line shown under the mode chips describing the active selection. */
@@ -186,7 +197,7 @@ export function DateFilter({ value, onChange }: DateFilterProps) {
   );
 }
 
-interface CalendarModalProps {
+export interface CalendarModalProps {
   visible: boolean;
   onClose: () => void;
   mode: 'single' | 'range';
@@ -195,9 +206,19 @@ interface CalendarModalProps {
   rangeEnd?: Date;
   onDayPress: (day: Date) => void;
   onApplyRange: () => void;
+  /** optional: disable days after this date (e.g. today) */
+  maximumDate?: Date;
+  /** optional: disable days before this date */
+  minimumDate?: Date;
+  /** single mode only: shows a "Clear" footer button that calls this */
+  onClear?: () => void;
+  /** shown as the modal's header title, e.g. "Select date" */
+  title?: string;
 }
 
-function CalendarModal({
+type CalendarView = 'days' | 'years';
+
+export function CalendarModal({
   visible,
   onClose,
   mode,
@@ -206,16 +227,38 @@ function CalendarModal({
   rangeEnd,
   onDayPress,
   onApplyRange,
+  maximumDate,
+  minimumDate,
+  onClear,
+  title,
 }: CalendarModalProps) {
   const today = useMemo(() => startOfDay(new Date()), []);
   const [viewYear, setViewYear] = useState(() => (selectedDate ?? rangeStart ?? today).getFullYear());
   const [viewMonth, setViewMonth] = useState(() => (selectedDate ?? rangeStart ?? today).getMonth());
+  const [calView, setCalView] = useState<CalendarView>('days');
+  const [yearPageStart, setYearPageStart] = useState(() => pageStartForYear(viewYear));
+
+  // Keep the visible month in sync whenever the modal is (re)opened for a
+  // different date, so it doesn't stay stuck on whatever month was last viewed.
+  const [lastOpenKey, setLastOpenKey] = useState<string>('');
+  const openKey = `${visible}-${(selectedDate ?? rangeStart)?.getTime() ?? ''}`;
+  if (visible && openKey !== lastOpenKey) {
+    const anchor = selectedDate ?? rangeStart ?? today;
+    if (anchor.getFullYear() !== viewYear || anchor.getMonth() !== viewMonth) {
+      setViewYear(anchor.getFullYear());
+      setViewMonth(anchor.getMonth());
+    }
+    setCalView('days');
+    setLastOpenKey(openKey);
+  }
 
   const weeks = useMemo(() => buildMonthMatrix(viewYear, viewMonth), [viewYear, viewMonth]);
   const monthLabel = new Date(viewYear, viewMonth, 1).toLocaleDateString('en-IN', {
     month: 'long',
     year: 'numeric',
   });
+
+  const yearGrid = useMemo(() => buildYearGrid(yearPageStart), [yearPageStart]);
 
   function goMonth(delta: number) {
     let m = viewMonth + delta;
@@ -231,72 +274,188 @@ function CalendarModal({
     setViewYear(y);
   }
 
+  function goToday() {
+    setViewYear(today.getFullYear());
+    setViewMonth(today.getMonth());
+    setCalView('days');
+  }
+
+  function openYearPicker() {
+    setYearPageStart(pageStartForYear(viewYear));
+    setCalView('years');
+  }
+
+  function goYearPage(delta: number) {
+    setYearPageStart((p) => p + delta * YEARS_PER_PAGE);
+  }
+
+  function pickYear(year: number) {
+    setViewYear(year);
+    setCalView('days');
+  }
+
+  function isDisabled(day: Date): boolean {
+    const t = startOfDay(day).getTime();
+    if (maximumDate && t > startOfDay(maximumDate).getTime()) return true;
+    if (minimumDate && t < startOfDay(minimumDate).getTime()) return true;
+    return false;
+  }
+
+  function isYearDisabled(year: number): boolean {
+    if (maximumDate && year > maximumDate.getFullYear()) return true;
+    if (minimumDate && year < minimumDate.getFullYear()) return true;
+    return false;
+  }
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={styles.modalCard} onPress={() => { }}>
-          <View style={styles.monthNav}>
-            <TouchableOpacity onPress={() => goMonth(-1)} style={styles.navBtn}>
-              <Text style={styles.navBtnText}>‹</Text>
-            </TouchableOpacity>
-            <Text style={styles.monthLabel}>{monthLabel}</Text>
-            <TouchableOpacity onPress={() => goMonth(1)} style={styles.navBtn}>
-              <Text style={styles.navBtnText}>›</Text>
-            </TouchableOpacity>
-          </View>
+          {title && <Text style={styles.modalTitle}>{title}</Text>}
 
-          <View style={styles.weekRow}>
-            {WEEKDAY_LABELS.map((w, i) => (
-              <Text key={`${w}-${i}`} style={styles.weekdayLabel}>
-                {w}
-              </Text>
-            ))}
-          </View>
+          {calView === 'days' ? (
+            <>
+              <View style={styles.monthNav}>
+                <TouchableOpacity onPress={() => goMonth(-1)} style={styles.navBtn} hitSlop={8}>
+                  <Text style={styles.navBtnText}>‹</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={openYearPicker} hitSlop={4}>
+                  <Text style={styles.monthLabel}>{monthLabel}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => goMonth(1)} style={styles.navBtn} hitSlop={8}>
+                  <Text style={styles.navBtnText}>›</Text>
+                </TouchableOpacity>
+              </View>
 
-          {weeks.map((week, wi) => (
-            <View key={wi} style={styles.weekRow}>
-              {week.map((day, di) => {
-                if (!day) return <View key={di} style={styles.dayCell} />;
+              <View style={styles.weekRow}>
+                {WEEKDAY_LABELS.map((w, i) => (
+                  <Text key={`${w}-${i}`} style={styles.weekdayLabel}>
+                    {w}
+                  </Text>
+                ))}
+              </View>
 
-                const isToday = isSameDay(day, today);
-                const isSelected =
-                  mode === 'single' ? isSameDay(day, selectedDate) : isSameDay(day, rangeStart) || isSameDay(day, rangeEnd);
-                const isInRange = mode === 'range' && isBetween(day, rangeStart, rangeEnd);
+              {weeks.map((week, wi) => (
+                <View key={wi} style={styles.weekRow}>
+                  {week.map((day, di) => {
+                    if (!day) return <View key={di} style={styles.dayCell} />;
 
-                return (
-                  <TouchableOpacity
-                    key={di}
-                    style={[styles.dayCell, isInRange && styles.dayCellInRange, isSelected && styles.dayCellSelected]}
-                    onPress={() => onDayPress(day)}
-                  >
-                    <Text
-                      style={[
-                        styles.dayText,
-                        isToday && styles.dayTextToday,
-                        isSelected && styles.dayTextSelected,
-                      ]}
-                    >
-                      {day.getDate()}
-                    </Text>
+                    const disabled = isDisabled(day);
+                    const isToday = isSameDay(day, today);
+                    const isSelected =
+                      mode === 'single'
+                        ? isSameDay(day, selectedDate)
+                        : isSameDay(day, rangeStart) || isSameDay(day, rangeEnd);
+                    const isInRange = mode === 'range' && isBetween(day, rangeStart, rangeEnd);
+
+                    return (
+                      <TouchableOpacity
+                        key={di}
+                        disabled={disabled}
+                        style={[styles.dayCell, isInRange && styles.dayCellInRange, isSelected && styles.dayCellSelected]}
+                        onPress={() => onDayPress(day)}
+                      >
+                        <Text
+                          style={[
+                            styles.dayText,
+                            disabled && styles.dayTextDisabled,
+                            isToday && !isSelected && styles.dayTextToday,
+                            isSelected && styles.dayTextSelected,
+                          ]}
+                        >
+                          {day.getDate()}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ))}
+
+              {mode === 'range' && (
+                <View style={styles.modalActions}>
+                  <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
+                    <Text style={styles.cancelBtnText}>Cancel</Text>
                   </TouchableOpacity>
-                );
-              })}
-            </View>
-          ))}
+                  <TouchableOpacity
+                    style={[styles.applyBtn, !rangeStart && styles.applyBtnDisabled]}
+                    onPress={onApplyRange}
+                    disabled={!rangeStart}
+                  >
+                    <Text style={styles.applyBtnText}>Apply</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
 
-          {mode === 'range' && (
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.applyBtn, !rangeStart && styles.applyBtnDisabled]}
-                onPress={onApplyRange}
-                disabled={!rangeStart}
-              >
-                <Text style={styles.applyBtnText}>Apply</Text>
-              </TouchableOpacity>
-            </View>
+              {mode === 'single' && (
+                <View style={styles.modalActions}>
+                  {onClear ? (
+                    <TouchableOpacity style={styles.cancelBtn} onPress={onClear}>
+                      <Text style={styles.cancelBtnText}>Clear</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <View />
+                  )}
+                  <TouchableOpacity
+                    style={styles.applyBtn}
+                    onPress={() => onDayPress(today)}
+                    disabled={isDisabled(today)}
+                  >
+                    <Text style={styles.applyBtnText}>Today</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </>
+          ) : (
+            <>
+              {/* Year picker view */}
+              <View style={styles.monthNav}>
+                <TouchableOpacity onPress={() => goYearPage(-1)} style={styles.navBtn} hitSlop={8}>
+                  <Text style={styles.navBtnText}>‹</Text>
+                </TouchableOpacity>
+                <Text style={styles.monthLabel}>
+                  {yearPageStart} – {yearPageStart + YEARS_PER_PAGE - 1}
+                </Text>
+                <TouchableOpacity onPress={() => goYearPage(1)} style={styles.navBtn} hitSlop={8}>
+                  <Text style={styles.navBtnText}>›</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.yearGrid}>
+                {yearGrid.map((year) => {
+                  const disabled = isYearDisabled(year);
+                  const isCurrentViewYear = year === viewYear;
+                  const isThisYear = year === today.getFullYear();
+                  return (
+                    <TouchableOpacity
+                      key={year}
+                      disabled={disabled}
+                      style={[styles.yearCell, isCurrentViewYear && styles.yearCellSelected]}
+                      onPress={() => pickYear(year)}
+                    >
+                      <Text
+                        style={[
+                          styles.yearText,
+                          disabled && styles.dayTextDisabled,
+                          isThisYear && !isCurrentViewYear && styles.dayTextToday,
+                          isCurrentViewYear && styles.dayTextSelected,
+                        ]}
+                      >
+                        {year}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity style={styles.cancelBtn} onPress={() => setCalView('days')}>
+                  <Text style={styles.cancelBtnText}>Back</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.applyBtn} onPress={goToday}>
+                  <Text style={styles.applyBtnText}>Today</Text>
+                </TouchableOpacity>
+              </View>
+            </>
           )}
         </Pressable>
       </Pressable>
@@ -331,10 +490,12 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' },
   modalCard: {
     width: '88%',
+    maxWidth: 340,
     backgroundColor: colors.background,
     borderRadius: 16,
     padding: spacing.lg,
   },
+  modalTitle: { fontSize: 13, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.sm },
   monthNav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md },
   navBtn: { paddingHorizontal: spacing.md, paddingVertical: spacing.xs },
   navBtnText: { fontSize: 20, color: colors.textPrimary, fontWeight: '700' },
@@ -347,10 +508,27 @@ const styles = StyleSheet.create({
   dayCellInRange: { backgroundColor: colors.gold + '33', borderRadius: 0 },
   dayCellSelected: { backgroundColor: colors.gold },
   dayText: { fontSize: 13, color: colors.textPrimary },
+  dayTextDisabled: { color: colors.textMuted, opacity: 0.4 },
   dayTextToday: { fontWeight: '700', color: colors.gold },
   dayTextSelected: { color: '#FFFFFF', fontWeight: '700' },
 
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm, marginTop: spacing.md },
+  yearGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: spacing.sm,
+  },
+  yearCell: {
+    width: '31%',
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+  },
+  yearCellSelected: { backgroundColor: colors.gold },
+  yearText: { fontSize: 14, color: colors.textPrimary, fontWeight: '600' },
+
+  modalActions: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm, marginTop: spacing.md },
   cancelBtn: { paddingVertical: spacing.sm, paddingHorizontal: spacing.md },
   cancelBtnText: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
   applyBtn: { paddingVertical: spacing.sm, paddingHorizontal: spacing.lg, borderRadius: 8, backgroundColor: colors.gold },

@@ -63,8 +63,7 @@ export function PaymentBreakdownChart({ data, size = 160, strokeWidth = 22 }: Pr
                 fill="none"
                 // SVG circles start at 3 o'clock and go clockwise by default;
                 // rotating -90° makes the first slice start at 12 o'clock.
-                rotation={-90}
-                origin={`${center}, ${center}`}
+                transform={`rotate(-90 ${center} ${center})`}
               />
             );
           })}
