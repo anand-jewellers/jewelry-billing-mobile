@@ -5,3 +5,5 @@ export * from './Badge';
 export * from './SummaryCard';
 export * from './ScreenHeader';
 export * from './ComingSoon';
+export * from './ShakeErrorCard';
+export * from './ErrorModal';

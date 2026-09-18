@@ -8,28 +8,44 @@ export interface CustomerListItem extends Customer {
   latest_invoice_date?: string | null;
 }
 
-export async function listCustomers(query?: string): Promise<CustomerListItem[]> {
+export interface ListCustomersParams {
+  search?: string;
+  /** ISO (YYYY-MM-DD) — only customers with an invoice on/after this date */
+  fromDate?: string;
+  /** ISO (YYYY-MM-DD) — only customers with an invoice on/before this date */
+  toDate?: string;
+}
+
+export async function listCustomers(params?: ListCustomersParams): Promise<CustomerListItem[]> {
+  const { search, fromDate, toDate } = params ?? {};
+
   let q = supabase
     .from('customers')
     .select('id, name, phone:mobile, email, address, gstin')
     .order('name');
 
-  if (query?.trim()) {
-    q = q.or(`name.ilike.%${query}%,mobile.ilike.%${query}%`);
+  if (search?.trim()) {
+    q = q.or(`name.ilike.%${search}%,mobile.ilike.%${search}%`);
   }
 
   const { data: customers, error } = await q;
   if (error) throw error;
   if (!customers?.length) return [];
 
-  // Fetch every invoice for the visible customers in one shot, newest first,
-  // then keep only the first (latest) one we see per customer.
+  // Fetch invoices for the visible customers in one shot, newest first,
+  // then keep only the first (latest) one we see per customer. When a date
+  // range is given, it's applied here so "latest" means latest within range.
   const ids = customers.map((c) => c.id);
-  const { data: invoices, error: invErr } = await supabase
+  let invQuery = supabase
     .from('invoices')
     .select('customer_id, invoice_number, invoice_date')
     .in('customer_id', ids)
     .order('invoice_date', { ascending: false });
+
+  if (fromDate) invQuery = invQuery.gte('invoice_date', fromDate);
+  if (toDate) invQuery = invQuery.lte('invoice_date', toDate);
+
+  const { data: invoices, error: invErr } = await invQuery;
   if (invErr) throw invErr;
 
   const latestByCustomer = new Map<string, { invoice_number: string; invoice_date: string }>();
@@ -42,11 +58,18 @@ export async function listCustomers(query?: string): Promise<CustomerListItem[]>
     }
   }
 
-  return customers.map((c) => ({
-    ...c,
-    latest_invoice_number: latestByCustomer.get(c.id)?.invoice_number ?? null,
-    latest_invoice_date: latestByCustomer.get(c.id)?.invoice_date ?? null,
-  })) as CustomerListItem[];
+  // With a date range active, only keep customers who actually have an
+  // invoice in that range — otherwise every customer would still show up
+  // with a blank "latest invoice" and the range filter would do nothing.
+  const hasDateFilter = Boolean(fromDate || toDate);
+
+  return customers
+    .filter((c) => !hasDateFilter || latestByCustomer.has(c.id))
+    .map((c) => ({
+      ...c,
+      latest_invoice_number: latestByCustomer.get(c.id)?.invoice_number ?? null,
+      latest_invoice_date: latestByCustomer.get(c.id)?.invoice_date ?? null,
+    })) as CustomerListItem[];
 }
 
 export async function getCustomerById(id: string): Promise<CustomerListItem> {

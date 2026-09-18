@@ -36,9 +36,8 @@ function toISODate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function formatDisplay(d: Date | null): string {
-  if (!d) return '';
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+function shortDate(d: Date): string {
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
 }
 
 export default function InvoiceListScreen() {
@@ -49,18 +48,21 @@ export default function InvoiceListScreen() {
   // Search
   const [searchText, setSearchText] = useState('');
 
-  // Date range filter
-  const [fromDate, setFromDate] = useState<Date | null>(null);
-  const [toDate, setToDate] = useState<Date | null>(null);
-  const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
+  // Custom date range only — no filter applied means the full record list.
+  const [rangeStart, setRangeStart] = useState<Date | null>(null);
+  const [rangeEnd, setRangeEnd] = useState<Date | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Working selection while the calendar is open, committed on "Apply".
+  const [tempStart, setTempStart] = useState<Date | undefined>(undefined);
+  const [tempEnd, setTempEnd] = useState<Date | undefined>(undefined);
 
-  const load = useCallback((search: string, from: Date | null, to: Date | null) => {
+  const load = useCallback((search: string, start: Date | null, end: Date | null) => {
     setLoading(true);
     setError(null);
     listInvoices({
       search: search.trim() || undefined,
-      fromDate: from ? toISODate(from) : undefined,
-      toDate: to ? toISODate(to) : undefined,
+      fromDate: start ? toISODate(start) : undefined,
+      toDate: end ? toISODate(end) : undefined,
     })
       .then(setInvoices)
       .catch(() => setError('Could not load invoices.'))
@@ -70,97 +72,102 @@ export default function InvoiceListScreen() {
   // Reload whenever the screen refocuses, using the current filters
   useFocusEffect(
     useCallback(() => {
-      load(searchText, fromDate, toDate);
+      load(searchText, rangeStart, rangeEnd);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [load])
   );
 
   const handleSearchChange = (text: string) => {
     setSearchText(text);
-    load(text, fromDate, toDate);
+    load(text, rangeStart, rangeEnd);
   };
 
-  // Tap-to-pick calendar grid — same component on iOS, Android, and web.
-  const handleCalendarDayPress = (day: Date) => {
-    if (pickerTarget === 'from') {
-      setFromDate(day);
-      load(searchText, day, toDate);
-    } else if (pickerTarget === 'to') {
-      setToDate(day);
-      load(searchText, fromDate, day);
+  const openPicker = () => {
+    setTempStart(rangeStart ?? undefined);
+    setTempEnd(rangeEnd ?? undefined);
+    setPickerOpen(true);
+  };
+
+  // Tap once for start, tap again for end — same behaviour as the dashboard's
+  // custom-range picker.
+  const handleDayPress = (day: Date) => {
+    if (!tempStart || (tempStart && tempEnd)) {
+      setTempStart(day);
+      setTempEnd(undefined);
+      return;
     }
-    setPickerTarget(null);
-  };
-
-  const handleCalendarClear = () => {
-    if (pickerTarget === 'from') {
-      setFromDate(null);
-      load(searchText, null, toDate);
-    } else if (pickerTarget === 'to') {
-      setToDate(null);
-      load(searchText, fromDate, null);
+    if (day.getTime() < tempStart.getTime()) {
+      setTempStart(day);
+      setTempEnd(undefined);
+      return;
     }
-    setPickerTarget(null);
+    setTempEnd(day);
   };
 
-  const clearDateFilter = () => {
-    setFromDate(null);
-    setToDate(null);
+  const applyRange = () => {
+    const start = tempStart ?? null;
+    const end = tempEnd ?? tempStart ?? null;
+    setRangeStart(start);
+    setRangeEnd(end);
+    setPickerOpen(false);
+    load(searchText, start, end);
+  };
+
+  const clearRange = () => {
+    setRangeStart(null);
+    setRangeEnd(null);
+    setPickerOpen(false);
     load(searchText, null, null);
   };
 
-  const hasFilters = searchText.trim() !== '' || fromDate !== null || toDate !== null;
+  const hasRange = rangeStart !== null && rangeEnd !== null;
+  const hasFilters = searchText.trim() !== '' || hasRange;
 
   return (
     <View style={styles.screen}>
-      {/* Search */}
-      <View style={styles.searchBar}>
-        <Search size={16} color={colors.textMuted} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search invoice no. or customer"
-          placeholderTextColor={colors.textMuted}
-          value={searchText}
-          onChangeText={handleSearchChange}
-        />
-        {searchText.length > 0 && (
-          <Pressable onPress={() => handleSearchChange('')} hitSlop={8}>
-            <X size={16} color={colors.textMuted} />
-          </Pressable>
-        )}
+      {/* Search and date range filter share one row */}
+      <View style={styles.topRow}>
+        <View style={styles.searchBar}>
+          <Search size={16} color={colors.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search invoice no. or customer"
+            placeholderTextColor={colors.textMuted}
+            value={searchText}
+            onChangeText={handleSearchChange}
+          />
+          {searchText.length > 0 && (
+            <Pressable onPress={() => handleSearchChange('')} hitSlop={8}>
+              <X size={16} color={colors.textMuted} />
+            </Pressable>
+          )}
+        </View>
+
+        <Pressable style={styles.dateChip} onPress={openPicker}>
+          <Calendar size={16} color={colors.primary} />
+          {hasRange && (
+            <Text style={styles.dateChipText}>
+              {shortDate(rangeStart as Date)} - {shortDate(rangeEnd as Date)}
+            </Text>
+          )}
+          {hasRange && (
+            <Pressable onPress={clearRange} hitSlop={8}>
+              <X size={14} color={colors.textMuted} />
+            </Pressable>
+          )}
+        </Pressable>
       </View>
 
-      {/* Date range filter */}
-      <View style={styles.dateRow}>
-        <Pressable style={styles.dateChip} onPress={() => setPickerTarget('from')}>
-          <Calendar size={14} color={colors.primary} />
-          <Text style={styles.dateChipText}>{fromDate ? formatDisplay(fromDate) : 'From date'}</Text>
-        </Pressable>
-
-        <Text style={styles.dateSeparator}>–</Text>
-
-        <Pressable style={styles.dateChip} onPress={() => setPickerTarget('to')}>
-          <Calendar size={14} color={colors.primary} />
-          <Text style={styles.dateChipText}>{toDate ? formatDisplay(toDate) : 'To date'}</Text>
-        </Pressable>
-
-        {(fromDate || toDate) && (
-          <Pressable onPress={clearDateFilter} hitSlop={8} style={styles.clearDateBtn}>
-            <X size={16} color={colors.textMuted} />
-          </Pressable>
-        )}
-      </View>
-
-      {/* Tap-to-pick calendar grid — no typing, works the same on every platform */}
+      {/* Custom range picker — no today/week/month presets, just start + end */}
       <CalendarModal
-        visible={pickerTarget !== null}
-        onClose={() => setPickerTarget(null)}
-        mode="single"
-        title={pickerTarget === 'from' ? 'Select from date' : 'Select to date'}
-        selectedDate={(pickerTarget === 'from' ? fromDate : toDate) ?? undefined}
-        onDayPress={handleCalendarDayPress}
-        onApplyRange={() => {}}
-        onClear={handleCalendarClear}
+        visible={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        mode="range"
+        rangeStart={tempStart}
+        rangeEnd={tempEnd}
+        onDayPress={handleDayPress}
+        onApplyRange={applyRange}
+        title="Select date range"
         maximumDate={new Date()}
       />
 
@@ -211,12 +218,19 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', padding: spacing.lg },
   addButton: { padding: spacing.lg },
 
-  searchBar: {
+  topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     marginHorizontal: spacing.lg,
     marginTop: spacing.lg,
+  },
+
+  searchBar: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
     borderWidth: 1,
@@ -226,27 +240,18 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, fontSize: 14, color: colors.textPrimary, padding: 0 },
 
-  dateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginHorizontal: spacing.lg,
-    marginTop: spacing.sm,
-  },
   dateChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 8,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 11,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius?.md ?? 10,
     backgroundColor: colors.surface,
   },
-  dateChipText: { fontSize: 13, color: colors.textPrimary },
-  dateSeparator: { color: colors.textMuted },
-  clearDateBtn: { marginLeft: 'auto' },
+  dateChipText: { fontSize: 13, color: colors.textPrimary, fontWeight: '600' },
 
   row: {
     flexDirection: 'row',

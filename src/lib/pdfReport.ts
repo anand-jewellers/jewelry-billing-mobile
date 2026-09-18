@@ -35,6 +35,9 @@ function buildReportHtml(report: ReportSummary, shop: ShopDetails): string {
   const regLine = [shop.gstin ? `GSTIN: ${shop.gstin}` : '', shop.pan ? `PAN: ${shop.pan}` : '']
     .filter(Boolean)
     .join(' &nbsp;·&nbsp; ');
+  // Check if the label is already showing the date range
+  const formattedRange = `${report.range.fromDate} to ${report.range.toDate}`;
+  const showDateRange = report.range.label !== formattedRange;
 
   return `
   <html>
@@ -118,10 +121,9 @@ function buildReportHtml(report: ReportSummary, shop: ShopDetails): string {
           </div>
         </div>
         <div class="reportMeta">
-          <div class="title">Sales Report</div>
-          <div>${report.range.label}</div>
-          <div>${report.range.fromDate} to ${report.range.toDate}</div>
-        </div>
+  <div class="title">Sales Report</div>
+  <div>${report.range.label}</div>${showDateRange ? `<div>${formattedRange}</div>` : ''}
+</div>
       </div>
 
       <div class="summaryGrid">

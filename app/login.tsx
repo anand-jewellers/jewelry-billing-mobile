@@ -136,9 +136,9 @@ export default function LoginScreen() {
                 <Button label={submitting ? 'Signing in…' : 'Sign in'} onPress={handleSubmit} loading={submitting} variant="primary" />
               </View>
 
-              <Link href="/forgot-password" style={styles.link}>
+              {/* <Link href="/forgot-password" style={styles.link}>
                 Forgot your password?
-              </Link>
+              </Link> */}
             </View>
 
             <Text style={styles.poweredBy}>Powered by Bizfonal Infotech</Text>

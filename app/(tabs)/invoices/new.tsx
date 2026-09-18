@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { useFocusEffect, router } from 'expo-router';
 import { Plus, Barcode } from 'lucide-react-native';
-import { Button, Card } from '../../../src/components/ui';
+import { Button, Card, ErrorModal } from '../../../src/components/ui';
 import { SelectField } from '../../../src/components/master';
 import { colors, spacing, radius } from '../../../src/theme';
 
@@ -129,6 +129,14 @@ export default function NewInvoiceScreen() {
 
   const [saving, setSaving] = useState(false);
 
+  // ---------------------------------------------------------
+  // Inline validation error (shown via the centered ErrorModal,
+  // same pattern as the staff password-reset screen).
+  // ---------------------------------------------------------
+
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorTitle, setErrorTitle] = useState<string>('Missing details');
+
 
   // =========================================================
   // Load master data
@@ -243,12 +251,14 @@ export default function NewInvoiceScreen() {
 
   const handleGenerateEstimate = () => {
     if (items.length === 0) {
-      Alert.alert('No items', 'Add at least one item before generating an estimate.');
+      setErrorTitle('No items');
+      setErrorMessage('Add at least one item before generating an estimate.');
       return;
     }
 
     if (!customerName.trim() || !customerPhone.trim()) {
-      Alert.alert('Missing details', 'Customer name and phone number are mandatory.');
+      setErrorTitle('Missing details');
+      setErrorMessage('Customer name and phone number are mandatory.');
       return;
     }
 
@@ -275,12 +285,14 @@ export default function NewInvoiceScreen() {
 
   const handleSaveInvoice = async () => {
     if (items.length === 0) {
-      Alert.alert('No items', 'Add at least one item before saving.');
+      setErrorTitle('No items');
+      setErrorMessage('Add at least one item before saving.');
       return;
     }
 
     if (!customerName.trim() || !customerPhone.trim()) {
-      Alert.alert('Missing details', 'Customer name and phone number are mandatory.');
+      setErrorTitle('Missing details');
+      setErrorMessage('Customer name and phone number are mandatory.');
       return;
     }
 
@@ -323,7 +335,8 @@ export default function NewInvoiceScreen() {
 
       router.replace(`/invoices/${invoice.id}`);
     } catch (e: any) {
-      Alert.alert('Could not save invoice', e?.message ?? 'Unknown error');
+      setErrorTitle('Could not save invoice');
+      setErrorMessage(e?.message ?? 'Unknown error');
     } finally {
       setSaving(false);
     }
@@ -493,10 +506,9 @@ export default function NewInvoiceScreen() {
           <View style={styles.dividerThin} />
 
           <Row label="Taxable Amount" value={totals.taxableTotal} />
-          {totals.cgstTotal > 0 && <Row label="CGST" value={totals.cgstTotal} />}
-          {totals.sgstTotal > 0 && <Row label="SGST" value={totals.sgstTotal} />}
-          {totals.igstTotal > 0 && <Row label="IGST" value={totals.igstTotal} />}
-          {totals.taxTotal > 0 && <Row label="Total Tax" value={totals.taxTotal} />}
+          {totals.cgstTotal > 0 && <Row label="CGST" value={totals.cgstTotal} rate={totals.cgstRate} />}
+          {totals.sgstTotal > 0 && <Row label="SGST" value={totals.sgstTotal} rate={totals.sgstRate} />}
+          {totals.igstTotal > 0 && <Row label="GST" value={totals.igstTotal} rate={totals.igstRate} />}
 
           {stage === 'estimate' && <Row label="Discount" value={-totals.discount} />}
 
@@ -587,6 +599,18 @@ export default function NewInvoiceScreen() {
         }}
         onSave={handleItemSave}
       />
+
+
+      {/* ===================================================
+          Validation error (customer details, no items, save failures)
+      =================================================== */}
+
+      <ErrorModal
+        visible={!!errorMessage}
+        title={errorTitle}
+        message={errorMessage}
+        onClose={() => setErrorMessage(null)}
+      />
     </View>
   );
 }
@@ -596,11 +620,22 @@ export default function NewInvoiceScreen() {
 // Reusable Row Component
 // ===========================================================
 
-function Row({ label, value, bold }: { label: string; value: number; bold?: boolean }) {
+function Row({
+  label,
+  value,
+  bold,
+  rate,
+}: {
+  label: string;
+  value: number;
+  bold?: boolean;
+  rate?: number | null;
+}) {
   const sign = value < 0 ? '-' : '';
+  const rateSuffix = rate != null && rate > 0 ? ` (${rate % 1 === 0 ? rate.toFixed(0) : rate.toFixed(1)}%)` : '';
   return (
     <View style={styles.row}>
-      <Text style={[styles.rowLabel, bold && styles.rowBold]}>{label}</Text>
+      <Text style={[styles.rowLabel, bold && styles.rowBold]}>{label}{rateSuffix}</Text>
       <Text style={[styles.rowValue, bold && styles.rowBold]}>
         {sign}₹{Math.abs(value).toLocaleString('en-IN')}
       </Text>

@@ -159,8 +159,21 @@ export function invoiceTotals(items: InvoiceItem[], invoiceDiscount: number, pai
   const paid = round2(paidAmount);
   const balanceDue = round2(Math.max(grandTotal - paid, 0));
 
+  // Uniform tax rate across all items -> show a single "%"; mixed rates -> omit the "%"
+  // rather than showing a misleading blended figure.
+  const uniformRate = <K extends 'cgst_percentage' | 'sgst_percentage' | 'igst_percentage'>(key: K) => {
+    if (items.length === 0) return 0;
+    const first = items[0][key];
+    return items.every((i) => i[key] === first) ? first : null;
+  };
+
+  const cgstRate = uniformRate('cgst_percentage');
+  const sgstRate = uniformRate('sgst_percentage');
+  const igstRate = uniformRate('igst_percentage');
+
   return {
     metalTotal, makingTotal, vaTotal, cgstTotal, sgstTotal, igstTotal, taxTotal, taxableTotal,
+    cgstRate, sgstRate, igstRate,
     discount: round2(invoiceDiscount), roundOff, grandTotal, paid, balanceDue,
   };
 }

@@ -11,6 +11,14 @@ function moneyCompact(n: number): string {
   return Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Appends "(x%)" to a tax label, derived from amount / base. Returns ''
+// when there's nothing meaningful to show (zero base or zero amount).
+function formatRate(amount: number, base: number): string {
+  if (!base || amount <= 0) return '';
+  const rate = (amount / base) * 100;
+  return ` (${rate % 1 === 0 ? rate.toFixed(0) : rate.toFixed(1)}%)`;
+}
+
 // ===========================================================
 // Shop details — derived from CompanySettings, used by both templates
 // ===========================================================
@@ -54,9 +62,6 @@ function shopAddressLine(shop: ShopDetails): string {
   return [shop.address, shop.city, shop.state, shop.pincode].filter(Boolean).join(', ');
 }
 
-// Sensible defaults for the display toggles / footer so screens that
-// haven't loaded invoice_settings yet (or a row that's missing some
-// columns) don't crash — everything just shows by default.
 // Sensible defaults for the display toggles / footer so screens that
 // haven't loaded invoice_settings yet (or a row that's missing some
 // columns) don't crash — everything just shows by default.
@@ -134,6 +139,18 @@ export function buildInvoiceHtml(
     ? cfg.invoice_footer || `Thank you for your business — ${shop.name}`
     : cfg.invoice_footer;
 
+  // GST breakdown for the totals block — CGST/SGST (intra-state) or
+  // GST/IGST (inter-state) only render when their amount is > 0.
+  const cgstRow = invoice.cgst_total > 0
+    ? `<div class="totalsRow"><span>CGST${formatRate(invoice.cgst_total, invoice.subtotal)}</span><span>${money(invoice.cgst_total)}</span></div>`
+    : '';
+  const sgstRow = invoice.sgst_total > 0
+    ? `<div class="totalsRow"><span>SGST${formatRate(invoice.sgst_total, invoice.subtotal)}</span><span>${money(invoice.sgst_total)}</span></div>`
+    : '';
+  const igstRow = invoice.igst_total > 0
+    ? `<div class="totalsRow"><span>GST${formatRate(invoice.igst_total, invoice.subtotal)}</span><span>${money(invoice.igst_total)}</span></div>`
+    : '';
+
   return `
   <html>
   <head>
@@ -204,7 +221,9 @@ export function buildInvoiceHtml(
       <div class="totalsRow"><span>Subtotal</span><span>${money(invoice.subtotal)}</span></div>
       ${chargeRows}
       <div class="totalsRow"><span>Discount</span><span>-${money(invoice.invoice_discount)}</span></div>
-      <div class="totalsRow"><span>Tax</span><span>${money(invoice.tax_amount)}</span></div>
+      ${cgstRow}
+      ${sgstRow}
+      ${igstRow}
       <div class="totalsRow grand"><span>Grand Total</span><span>${money(invoice.grand_total)}</span></div>
       <div class="totalsRow"><span>Amount Paid</span><span>${money(invoice.paid_amount)}</span></div>
       ${invoice.balance_amount > 0 ? `<div class="totalsRow balance"><span>Balance Due</span><span>${money(invoice.balance_amount)}</span></div>` : ''}
@@ -261,6 +280,17 @@ export function buildThermalReceiptHtml(
   const addressLine = shopAddressLine(shop);
   const footerText = cfg.invoice_footer || 'Thank you, visit again!';
 
+  // GST breakdown — same logic as the A4 template, compact formatting.
+  const cgstRow = invoice.cgst_total > 0
+    ? `<div class="totalsRow"><span>CGST${formatRate(invoice.cgst_total, invoice.subtotal)}</span><span>${moneyCompact(invoice.cgst_total)}</span></div>`
+    : '';
+  const sgstRow = invoice.sgst_total > 0
+    ? `<div class="totalsRow"><span>SGST${formatRate(invoice.sgst_total, invoice.subtotal)}</span><span>${moneyCompact(invoice.sgst_total)}</span></div>`
+    : '';
+  const igstRow = invoice.igst_total > 0
+    ? `<div class="totalsRow"><span>GST${formatRate(invoice.igst_total, invoice.subtotal)}</span><span>${moneyCompact(invoice.igst_total)}</span></div>`
+    : '';
+
   return `
   <html>
   <head>
@@ -293,7 +323,7 @@ export function buildThermalReceiptHtml(
   </head>
   <body>
     <div class="center">
-      ${cfg.show_logo && shop.logoUrl ? `<img class="shopLogo" src="${shop.logoUrl}" />` : ''}
+     
       <div class="shopName">${shop.name}</div>
       ${addressLine ? `<div class="shopMeta">${addressLine}</div>` : ''}
       ${shop.phone ? `<div class="shopMeta">Ph: ${shop.phone}</div>` : ''}
@@ -313,7 +343,9 @@ export function buildThermalReceiptHtml(
     <div class="totalsRow"><span>Subtotal</span><span>${moneyCompact(invoice.subtotal)}</span></div>
     ${chargeRows}
     ${invoice.invoice_discount > 0 ? `<div class="totalsRow"><span>Discount</span><span>-${moneyCompact(invoice.invoice_discount)}</span></div>` : ''}
-    ${invoice.tax_amount > 0 ? `<div class="totalsRow"><span>Tax</span><span>${moneyCompact(invoice.tax_amount)}</span></div>` : ''}
+    ${cgstRow}
+    ${sgstRow}
+    ${igstRow}
     <div class="totalsRow grand"><span>TOTAL</span><span>${moneyCompact(invoice.grand_total)}</span></div>
     <div class="totalsRow"><span>Paid</span><span>${moneyCompact(invoice.paid_amount)}</span></div>
     ${invoice.balance_amount > 0 ? `<div class="totalsRow balance"><span>Balance</span><span>${moneyCompact(invoice.balance_amount)}</span></div>` : ''}

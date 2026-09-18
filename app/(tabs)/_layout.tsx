@@ -47,7 +47,7 @@ export default function TabsLayout() {
         options={{
           title: 'Dashboard',
           tabBarIcon: ({ focused }) => (
-            <TabIcon name={focused ? 'home' : 'home-outline'} focused={focused} />
+            <TabIcon name={focused ? 'grid' : 'grid-outline'} focused={focused} />
           ),
         }}
       />

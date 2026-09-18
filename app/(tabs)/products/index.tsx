@@ -464,10 +464,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: '#25D366', borderRadius: 12, paddingVertical: 14,
   },
-  shareSelectedBtnDisabled: { opacity: 0.5 },
+  // shareSelectedBtnDisabled: { opacity: 0.5 },
   shareSelectedBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  rowSold: { opacity: 0.6 },
-  thumbSold: { opacity: 0.6 },
+  // rowSold: { opacity: 0.6 },
+  // thumbSold: { opacity: 0.6 },
   soldTag: {
     position: 'absolute',
     bottom: -2,

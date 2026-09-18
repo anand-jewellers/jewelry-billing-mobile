@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Card, SummaryCard, Button } from '../../src/components/ui';
@@ -7,6 +7,7 @@ import { colors, spacing } from '../../src/theme';
 import { listMetals, listPurities, listCurrentRates } from '../../src/lib/api/settings';
 import { getDashboardSummary } from '../../src/lib/api/invoices';
 import { resolveRange, getSalesReport, ReportSummary } from '../../src/lib/api/reports';
+import { getTodayPanchangam, PanchangamDay } from '../../src/lib/api/panchangam';
 import { downloadSalesReportPdf } from '../../src/lib/pdfReport';
 import type { Metal, Purity, CurrentMetalRate } from '../../src/types/settings';
 import { PaymentBreakdownChart } from '../../src/components/ui/PaymentBreakdownChart';
@@ -18,8 +19,39 @@ const RATE_ROWS: { label: string; metalMatch: string; purityMatch: string }[] = 
   { label: 'Silver', metalMatch: 'silver', purityMatch: '999' },
 ];
 
+function getIndianDateTimeLabel(): { date: string; time: string } {
+  const now = new Date();
+  
+  const day = now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit' });
+  const month = now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', month: 'short' });
+  const year = now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric' });
+  const date = `${day}-${month}-${year}`;
+
+  const time = now
+    .toLocaleTimeString('en-US', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    })
+    .toLowerCase();
+
+  return { date, time };
+}
+
 export default function DashboardScreen() {
   const router = useRouter();
+
+  // ---- Real-time IST Clock ----
+  const [istDateTime, setIstDateTime] = useState(getIndianDateTimeLabel());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setIstDateTime(getIndianDateTimeLabel());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // ---- Gold rate strip ----
   const [metals, setMetals] = useState<Metal[]>([]);
@@ -31,6 +63,11 @@ export default function DashboardScreen() {
   // ---- Static counts, not date-dependent ----
   const [totalCustomers, setTotalCustomers] = useState(0);
   const [totalProducts, setTotalProducts] = useState(0);
+
+  // ---- Panchangam — always "today", never affected by the filter below ----
+  const [panchangam, setPanchangam] = useState<PanchangamDay | null>(null);
+  const [panchangamLoading, setPanchangamLoading] = useState(true);
+  const [panchangamError, setPanchangamError] = useState<string | null>(null);
 
   // ---- Date filter drives everything below ----
   const [filter, setFilter] = useState<DateFilterValue>({ mode: 'today' });
@@ -63,6 +100,17 @@ export default function DashboardScreen() {
       });
   }, []);
 
+  const loadPanchangam = useCallback(() => {
+    setPanchangamLoading(true);
+    getTodayPanchangam()
+      .then((p) => {
+        setPanchangam(p);
+        setPanchangamError(null);
+      })
+      .catch(() => setPanchangamError('Could not load panchangam.'))
+      .finally(() => setPanchangamLoading(false));
+  }, []);
+
   const loadReport = useCallback((value: DateFilterValue) => {
     setReportLoading(true);
     const range = resolveRange(value);
@@ -79,9 +127,10 @@ export default function DashboardScreen() {
     useCallback(() => {
       loadRates();
       loadCounts();
+      loadPanchangam();
       loadReport(filter);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [loadRates, loadCounts, loadReport])
+    }, [loadRates, loadCounts, loadPanchangam, loadReport])
   );
 
   function handleFilterChange(value: DateFilterValue) {
@@ -122,21 +171,29 @@ export default function DashboardScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={{ paddingTop: spacing.lg, paddingBottom: spacing.xxl }}>
-      {/* Filter sits at the top and drives every card below it */}
+      {/* Filter sits at the top and drives every card below it (except Panchangam) */}
       <DateFilter value={filter} onChange={handleFilterChange} />
 
       {reportError && <Text style={styles.errorText}>{reportError}</Text>}
 
       <View style={styles.grid}>
-        <SummaryCard label="Sales" value={reportLoading ? '…' : inr(report?.totalSales ?? 0)} tone="primary" />
-        <SummaryCard label="Invoices" value={reportLoading ? '…' : String(report?.totalInvoices ?? 0)} />
-        <SummaryCard label="Customers" value={String(totalCustomers)} />
-        <SummaryCard label="Products" value={String(totalProducts)} />
-        <SummaryCard label="Pending Payments" value={reportLoading ? '…' : inr(report?.totalPending ?? 0)} tone="gold" />
-        <SummaryCard label="Collection" value={reportLoading ? '…' : inr(report?.totalCollected ?? 0)} tone="primary" />
+        <SummaryCard icon="cash-outline" label="Sales" value={reportLoading ? '…' : inr(report?.totalSales ?? 0)} tone="primary" />
+        <SummaryCard icon="receipt-outline" label="Invoices" value={reportLoading ? '…' : String(report?.totalInvoices ?? 0)} tone="primary" />
+        <SummaryCard icon="people-outline" label="Customers" value={String(totalCustomers)} tone="primary" />
+        <SummaryCard icon="diamond-outline" label="Products" value={String(totalProducts)} tone="primary" />
+        <SummaryCard icon="time-outline" label="Pending Payments" value={reportLoading ? '…' : inr(report?.totalPending ?? 0)} tone="primary" />
+        <SummaryCard icon="checkmark-circle-outline" label="Collection" value={reportLoading ? '…' : inr(report?.totalCollected ?? 0)} tone="primary" />
       </View>
 
-      <Text style={styles.sectionTitle}>Jewel Rate</Text>
+      {/* Jewel Rate Header with Live Indicator */}
+      <View style={styles.ratesHeader}>
+        <Text style={styles.sectionTitle}>Jewel Rate</Text>
+        <View style={styles.liveIndicator}>
+          <View style={styles.liveDot} />
+          <Text style={styles.liveText}>Live</Text>
+        </View>
+      </View>
+
       <Card style={styles.ratesCard}>
         {ratesLoading ? (
           <Text style={styles.emptyText}>Loading rates…</Text>
@@ -152,7 +209,57 @@ export default function DashboardScreen() {
         )}
       </Card>
 
-      <Text style={styles.sectionTitle}>Payment Breakdown</Text>
+      {/* Panchangam — date and real-time IST placed directly next to each other */}
+      <View style={styles.panchangamHeader}>
+        <Text style={styles.sectionTitle}>
+          Panchangam · {istDateTime.date} - {istDateTime.time}
+        </Text>
+      </View>
+
+      <Card style={styles.ratesCard}>
+        {panchangamLoading ? (
+          <Text style={styles.emptyText}>Loading…</Text>
+        ) : panchangamError ? (
+          <Text style={styles.errorText}>{panchangamError}</Text>
+        ) : !panchangam ? (
+          <Text style={styles.emptyText}>No panchangam entry for today.</Text>
+        ) : (
+          <>
+            {(panchangam.tithi || panchangam.nakshatra) && (
+              <View style={styles.rateRow}>
+                <Text style={styles.rateLabel}>
+                  {panchangam.tithi ?? '—'}
+                  {panchangam.nakshatra ? ` · ${panchangam.nakshatra}` : ''}
+                </Text>
+              </View>
+            )}
+            {panchangam.goodTimes.map((period, i) => (
+              <View key={`good-${i}`} style={styles.rateRow}>
+                <Text style={[styles.rateLabel, styles.goodLabel]}>{period.label}</Text>
+                <Text style={styles.rateValue}>
+                  {period.start} – {period.end}
+                </Text>
+              </View>
+            ))}
+            {panchangam.badTimes.map((period, i) => (
+              <View key={`bad-${i}`} style={styles.rateRow}>
+                <Text style={[styles.rateLabel, styles.badLabel]}>{period.label}</Text>
+                <Text style={styles.rateValue}>
+                  {period.start} – {period.end}
+                </Text>
+              </View>
+            ))}
+            {panchangam.goodTimes.length === 0 && panchangam.badTimes.length === 0 && (
+              <Text style={styles.emptyText}>No timing details added for today.</Text>
+            )}
+          </>
+        )}
+      </Card>
+
+      <View style={styles.panchangamHeader}>
+        <Text style={styles.sectionTitle}>Payment Breakdown</Text>
+      </View>
+
       <Card style={styles.ratesCard}>
         {reportLoading ? (
           <Text style={styles.emptyText}>Loading…</Text>
@@ -160,42 +267,6 @@ export default function DashboardScreen() {
           <PaymentBreakdownChart data={report?.paymentBreakdown ?? []} />
         )}
       </Card>
-
-      {/* <Text style={styles.sectionTitle}>Quick Actions</Text>
-      <View style={styles.actionsRow}>
-        <View style={styles.actionButton}>
-          <Button label="New Invoice" variant="primary" onPress={() => router.push('/invoices/new')} />
-        </View>
-        <View style={styles.actionButton}>
-          <Button label="Add Product" variant="outline" onPress={() => router.push('/products/add')} />
-        </View>
-      </View>
-      <View style={styles.actionsRow}>
-        <View style={styles.actionButton}>
-          <Button label="View Invoices" variant="outline" onPress={() => router.push('/invoices')} />
-        </View>
-      </View>
-
-      <Text style={styles.sectionTitle}>
-        {report ? `Invoices — ${report.range.label}` : 'Recent Invoices'}
-      </Text>
-      <Card style={styles.ratesCard}>
-        {reportLoading ? (
-          <Text style={styles.emptyText}>Loading…</Text>
-        ) : report && report.invoices.length > 0 ? (
-          report.invoices.slice(0, 5).map((inv) => (
-            <View key={inv.id} style={styles.rateRow}>
-              <View>
-                <Text style={styles.rateLabel}>{inv.invoice_number}</Text>
-                <Text style={styles.emptyText}>{inv.customer_name}</Text>
-              </View>
-              <Text style={styles.rateValue}>{inr(inv.grand_total)}</Text>
-            </View>
-          ))
-        ) : (
-          <Text style={styles.emptyText}>No invoices in this period.</Text>
-        )}
-      </Card> */}
 
       {/* Download sits at the very bottom, acting on whatever range is selected above */}
       <View style={styles.downloadWrap}>
@@ -212,14 +283,64 @@ export default function DashboardScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, paddingHorizontal: spacing.lg, marginTop: spacing.lg },
-  sectionTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginTop: spacing.xl, marginBottom: spacing.sm, paddingHorizontal: spacing.lg },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    marginTop: spacing.lg,
+  },
+  ratesHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+    marginTop: spacing.xl,
+    marginBottom: spacing.sm,
+  },
+  panchangamHeader: {
+    paddingHorizontal: spacing.lg,
+    marginTop: spacing.xl,
+    marginBottom: spacing.sm,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  liveIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#E6F4EA',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#1E8E3E',
+  },
+  liveText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E8E3E',
+  },
   ratesCard: { marginHorizontal: spacing.lg },
-  rateRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
+  rateRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
   rateLabel: { fontSize: 13, color: colors.textSecondary },
-  rateValue: { fontSize: 14, fontWeight: '700', color: colors.gold },
-  actionsRow: { flexDirection: 'row', gap: spacing.md, paddingHorizontal: spacing.lg, marginBottom: spacing.md },
-  actionButton: { flex: 1 },
+  rateValue: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
+  goodLabel: { color: '#1E8E3E', fontWeight: '600' },
+  badLabel: { color: '#B00020', fontWeight: '600' },
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing.md },
   errorText: { fontSize: 13, color: colors.error, textAlign: 'center', paddingVertical: spacing.md },
   downloadWrap: { paddingHorizontal: spacing.lg, marginTop: spacing.xl },

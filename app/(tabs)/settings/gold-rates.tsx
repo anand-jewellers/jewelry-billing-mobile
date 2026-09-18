@@ -129,7 +129,7 @@ export default function GoldRatesScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.background },
+  screen: { flex: 1, backgroundColor: colors.background,paddingTop: spacing.lg, },
   note: {
     fontSize: 12,
     color: colors.textSecondary,

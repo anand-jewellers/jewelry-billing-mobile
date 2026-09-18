@@ -1,6 +1,6 @@
 // app/(tabs)/products/[id].tsx
 import { useCallback, useState } from 'react';
-import { View, Text, Image, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, Image, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity, Alert, Modal, Pressable } from 'react-native';
 import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius } from '../../../src/theme';
@@ -18,6 +18,7 @@ export default function ProductDetailsScreen() {
   const [loading, setLoading] = useState(true);
   const [sharing, setSharing] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -90,11 +91,16 @@ export default function ProductDetailsScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <View>
+      <TouchableOpacity
+        activeOpacity={imageUrl ? 0.85 : 1}
+        onPress={() => {
+          if (imageUrl) setPreviewOpen(true);
+        }}
+      >
         {imageUrl ? (
-          <Image source={{ uri: imageUrl }} style={[styles.image, isSold && styles.imageSold]} />
+          <Image source={{ uri: imageUrl }} style={styles.image} />
         ) : (
-          <View style={[styles.image, styles.imagePlaceholder, isSold && styles.imageSold]}>
+          <View style={[styles.image, styles.imagePlaceholder]}>
             <Ionicons name="image-outline" size={32} color={colors.textMuted} />
           </View>
         )}
@@ -103,7 +109,7 @@ export default function ProductDetailsScreen() {
             <Text style={styles.soldRibbonText}>SOLD OUT</Text>
           </View>
         )}
-      </View>
+      </TouchableOpacity>
 
       <View style={styles.titleRow}>
         <View style={{ flex: 1 }}>
@@ -177,6 +183,30 @@ export default function ProductDetailsScreen() {
           staffId={currentStaff.id}
         />
       )}
+
+      {/* ===================================================
+          Full-screen image preview
+      =================================================== */}
+
+      <Modal
+        visible={previewOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewOpen(false)}
+      >
+        <View style={styles.previewBackdrop}>
+          {/* Tapping anywhere outside the image also closes it */}
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setPreviewOpen(false)} />
+
+          <TouchableOpacity style={styles.previewCloseBtn} onPress={() => setPreviewOpen(false)} hitSlop={12}>
+            <Ionicons name="close" size={26} color="#fff" />
+          </TouchableOpacity>
+
+          {imageUrl && (
+            <Image source={{ uri: imageUrl }} style={styles.previewImage} resizeMode="contain" />
+          )}
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -196,7 +226,7 @@ const styles = StyleSheet.create({
   notFound: { color: colors.textMuted, fontSize: 14 },
   content: { padding: spacing.lg, paddingBottom: spacing.xl * 2 },
   image: { width: '100%', height: 220, borderRadius: radius.lg, backgroundColor: colors.border },
-  imageSold: { opacity: 0.5 },
+  // imageSold: { opacity: 0.5 },
   imagePlaceholder: { alignItems: 'center', justifyContent: 'center' },
   soldRibbon: {
     position: 'absolute',
@@ -244,4 +274,26 @@ const styles = StyleSheet.create({
   rowValue: { fontSize: 13, color: colors.textPrimary },
   rowBold: { fontWeight: '700', fontSize: 14, color: colors.textPrimary },
   divider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.xs },
+  previewBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewCloseBtn: {
+    position: 'absolute',
+    top: spacing.xl,
+    right: spacing.lg,
+    zIndex: 1,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewImage: {
+    width: '100%',
+    height: '80%',
+  },
 });

@@ -15,11 +15,17 @@ function money(n: number): string {
   return `₹${Number(n || 0).toLocaleString('en-IN')}`;
 }
 
-// Charge names that are already broken out into their own dedicated Row
-// below (Making Charges, Value Added Charges) — filtered out of the
-// generic invoice.charges loop so they don't render twice. Tax lines
-// (CGST/SGST/IGST etc.) and anything else still come through the loop.
-const DEDICATED_CHARGE_NAMES = new Set(['Making Charges', 'Value Added Charges']);
+// Appends "(x%)" to a tax label, derived from amount / base. Returns ''
+// when there's nothing meaningful to show (zero base or zero amount).
+function formatRate(amount: number, base: number): string {
+  if (!base || amount <= 0) return '';
+  const rate = (amount / base) * 100;
+  return ` (${rate % 1 === 0 ? rate.toFixed(0) : rate.toFixed(1)}%)`;
+}
+
+// Charge names that should show a "(x%)" rate suffix, derived from that
+// line's own amount ÷ subtotal — these are the GST-style charges.
+const RATE_LABELED_CHARGE_NAMES = new Set(['CGST', 'SGST', 'IGST', 'GST']);
 
 export default function InvoiceDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -192,11 +198,13 @@ export default function InvoiceDetailScreen() {
 
         <View style={styles.totalsCard}>
           <Row label="Subtotal" value={invoice.subtotal} />
-          {invoice.charges.map((c) => (
-            <Row key={c.id} label={c.charge_name} value={c.amount} />
-          ))}
+          {invoice.charges.map((c) => {
+            const label = RATE_LABELED_CHARGE_NAMES.has(c.charge_name)
+              ? `${c.charge_name}${formatRate(c.amount, invoice.subtotal)}`
+              : c.charge_name;
+            return <Row key={c.id} label={label} value={c.amount} />;
+          })}
           <Row label="Discount" value={-invoice.invoice_discount} />
-          <Row label="Tax" value={invoice.tax_amount} />
           <View style={styles.dividerThin} />
           <Row label="Grand Total" value={invoice.grand_total} bold />
           <Row label="Amount Paid" value={invoice.paid_amount} />

@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import { View, Text, FlatList, Pressable, TextInput, StyleSheet, ActivityIndicator } from 'react-native';
 import { useFocusEffect, router } from 'expo-router';
-import { Search, X } from 'lucide-react-native';
+import { Search, Calendar, X } from 'lucide-react-native';
 import { Card } from '../../../src/components/ui';
+import { CalendarModal } from '../../../src/components/ui/DateFilter';
 import { colors, spacing, radius } from '../../../src/theme';
 import { listCustomers, CustomerListItem } from '../../../src/lib/api/customers';
 
@@ -35,16 +36,36 @@ function compareByInvoiceNumber(a: CustomerListItem, b: CustomerListItem): numbe
   return bValue - aValue;
 }
 
+function toISODate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function shortDate(d: Date): string {
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+}
+
 export default function CustomerListScreen() {
   const [customers, setCustomers] = useState<CustomerListItem[]>([]);
   const [searchText, setSearchText] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback((q?: string) => {
+  // Custom date range only — no filter applied means the full customer list.
+  const [rangeStart, setRangeStart] = useState<Date | null>(null);
+  const [rangeEnd, setRangeEnd] = useState<Date | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Working selection while the calendar is open, committed on "Apply".
+  const [tempStart, setTempStart] = useState<Date | undefined>(undefined);
+  const [tempEnd, setTempEnd] = useState<Date | undefined>(undefined);
+
+  const load = useCallback((q: string, start: Date | null, end: Date | null) => {
     setLoading(true);
     setError(null);
-    listCustomers(q)
+    listCustomers({
+      search: q,
+      fromDate: start ? toISODate(start) : undefined,
+      toDate: end ? toISODate(end) : undefined,
+    })
       .then(setCustomers)
       .catch(() => setError('Could not load customers.'))
       .finally(() => setLoading(false));
@@ -52,15 +73,56 @@ export default function CustomerListScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      load(searchText);
+      load(searchText, rangeStart, rangeEnd);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [load])
   );
 
   const handleSearchChange = (text: string) => {
     setSearchText(text);
-    load(text);
+    load(text, rangeStart, rangeEnd);
   };
+
+  const openPicker = () => {
+    setTempStart(rangeStart ?? undefined);
+    setTempEnd(rangeEnd ?? undefined);
+    setPickerOpen(true);
+  };
+
+  // Tap once for start, tap again for end — same behaviour as the invoice
+  // list's custom-range picker.
+  const handleDayPress = (day: Date) => {
+    if (!tempStart || (tempStart && tempEnd)) {
+      setTempStart(day);
+      setTempEnd(undefined);
+      return;
+    }
+    if (day.getTime() < tempStart.getTime()) {
+      setTempStart(day);
+      setTempEnd(undefined);
+      return;
+    }
+    setTempEnd(day);
+  };
+
+  const applyRange = () => {
+    const start = tempStart ?? null;
+    const end = tempEnd ?? tempStart ?? null;
+    setRangeStart(start);
+    setRangeEnd(end);
+    setPickerOpen(false);
+    load(searchText, start, end);
+  };
+
+  const clearRange = () => {
+    setRangeStart(null);
+    setRangeEnd(null);
+    setPickerOpen(false);
+    load(searchText, null, null);
+  };
+
+  const hasRange = rangeStart !== null && rangeEnd !== null;
+  const hasFilters = searchText.trim() !== '' || hasRange;
 
   const sortedCustomers = useMemo(
     () => [...customers].sort(compareByInvoiceNumber),
@@ -69,22 +131,51 @@ export default function CustomerListScreen() {
 
   return (
     <View style={styles.screen}>
-      {/* Search — matches the invoice list screen's search bar exactly */}
-      <View style={styles.searchBar}>
-        <Search size={16} color={colors.textMuted} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by name or phone"
-          placeholderTextColor={colors.textMuted}
-          value={searchText}
-          onChangeText={handleSearchChange}
-        />
-        {searchText.length > 0 && (
-          <Pressable onPress={() => handleSearchChange('')} hitSlop={8}>
-            <X size={16} color={colors.textMuted} />
-          </Pressable>
-        )}
+      {/* Search and date range filter share one row — matches the invoice list screen */}
+      <View style={styles.topRow}>
+        <View style={styles.searchBar}>
+          <Search size={16} color={colors.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search by name or phone"
+            placeholderTextColor={colors.textMuted}
+            value={searchText}
+            onChangeText={handleSearchChange}
+          />
+          {searchText.length > 0 && (
+            <Pressable onPress={() => handleSearchChange('')} hitSlop={8}>
+              <X size={16} color={colors.textMuted} />
+            </Pressable>
+          )}
+        </View>
+
+        <Pressable style={styles.dateChip} onPress={openPicker}>
+          <Calendar size={16} color={colors.primary} />
+          {hasRange && (
+            <Text style={styles.dateChipText}>
+              {shortDate(rangeStart as Date)} - {shortDate(rangeEnd as Date)}
+            </Text>
+          )}
+          {hasRange && (
+            <Pressable onPress={clearRange} hitSlop={8}>
+              <X size={14} color={colors.textMuted} />
+            </Pressable>
+          )}
+        </Pressable>
       </View>
+
+      {/* Custom range picker — filters customers by their (latest) invoice date */}
+      <CalendarModal
+        visible={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        mode="range"
+        rangeStart={tempStart}
+        rangeEnd={tempEnd}
+        onDayPress={handleDayPress}
+        onApplyRange={applyRange}
+        title="Select date range"
+        maximumDate={new Date()}
+      />
 
       {error && <Text style={styles.error}>{error}</Text>}
 
@@ -116,8 +207,8 @@ export default function CustomerListScreen() {
             ItemSeparatorComponent={() => <View style={styles.separator} />}
             ListEmptyComponent={
               <Text style={styles.emptyText}>
-                {searchText.trim()
-                  ? 'No customers match your search.'
+                {hasFilters
+                  ? 'No customers match your filters.'
                   : 'No customers yet. Customers are created automatically when you save an invoice.'}
               </Text>
             }
@@ -132,13 +223,20 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   error: { fontSize: 13, color: colors.error, textAlign: 'center', marginTop: spacing.md },
 
-  // Search bar — identical to the invoice list screen's searchBar/searchInput
-  searchBar: {
+  topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     marginHorizontal: spacing.lg,
     marginTop: spacing.lg,
+  },
+
+  // Search bar — identical to the invoice list screen's searchBar/searchInput
+  searchBar: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
     borderWidth: 1,
@@ -147,6 +245,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   searchInput: { flex: 1, fontSize: 14, color: colors.textPrimary, padding: 0 },
+
+  dateChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius?.md ?? 10,
+    backgroundColor: colors.surface,
+  },
+  dateChipText: { fontSize: 13, color: colors.textPrimary, fontWeight: '600' },
 
   row: {
     flexDirection: 'row',
