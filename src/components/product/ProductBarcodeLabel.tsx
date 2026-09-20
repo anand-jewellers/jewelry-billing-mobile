@@ -37,7 +37,7 @@ export function ProductBarcodeLabel({
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [savedUrl, setSavedUrl] = useState<string | null>(null);
-  const [copies, setCopies] = useState('4');
+  const [copies, setCopies] = useState('1');
 
   async function captureBase64() {
     if (!shotRef.current?.capture) throw new Error('Barcode not ready');
@@ -114,9 +114,9 @@ export function ProductBarcodeLabel({
       </View>
 
       <View style={styles.actions}>
-        <TouchableOpacity style={styles.btn} onPress={handleSaveToStorage} disabled={saving}>
+        {/* <TouchableOpacity style={styles.btn} onPress={handleSaveToStorage} disabled={saving}>
           <Text style={styles.btnText}>{saving ? 'Saving...' : savedUrl ? 'Saved ✓' : 'Save Barcode'}</Text>
-        </TouchableOpacity>
+        </TouchableOpacity> */}
         <TouchableOpacity style={[styles.btn, styles.btnOutline]} onPress={handlePrint} disabled={printing}>
           <Text style={[styles.btnText, styles.btnOutlineText]}>{printing ? 'Preparing...' : 'Print Labels'}</Text>
         </TouchableOpacity>

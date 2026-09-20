@@ -1,5 +1,5 @@
 import { useCallback, useState, useEffect } from 'react';
-import { View, Text, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, useWindowDimensions } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Card, SummaryCard, Button } from '../../src/components/ui';
 import { DateFilter, DateFilterValue } from '../../src/components/ui/DateFilter';
@@ -7,7 +7,6 @@ import { colors, spacing } from '../../src/theme';
 import { listMetals, listPurities, listCurrentRates } from '../../src/lib/api/settings';
 import { getDashboardSummary } from '../../src/lib/api/invoices';
 import { resolveRange, getSalesReport, ReportSummary } from '../../src/lib/api/reports';
-import { getTodayPanchangam, PanchangamDay } from '../../src/lib/api/panchangam';
 import { downloadSalesReportPdf } from '../../src/lib/pdfReport';
 import type { Metal, Purity, CurrentMetalRate } from '../../src/types/settings';
 import { PaymentBreakdownChart } from '../../src/components/ui/PaymentBreakdownChart';
@@ -16,7 +15,7 @@ const RATE_ROWS: { label: string; metalMatch: string; purityMatch: string }[] = 
   { label: '24K Gold', metalMatch: 'gold', purityMatch: '24k' },
   { label: '22K Gold', metalMatch: 'gold', purityMatch: '22k' },
   { label: '18K Gold', metalMatch: 'gold', purityMatch: '18k' },
-  { label: 'Silver', metalMatch: 'silver', purityMatch: '999' },
+  { label: '925 Silver', metalMatch: 'silver', purityMatch: '925' },
 ];
 
 function getIndianDateTimeLabel(): { date: string; time: string } {
@@ -42,6 +41,8 @@ function getIndianDateTimeLabel(): { date: string; time: string } {
 
 export default function DashboardScreen() {
   const router = useRouter();
+  const { width } = useWindowDimensions();
+  const isSideBySide = width >= 768;
 
   // ---- Real-time IST Clock ----
   const [istDateTime, setIstDateTime] = useState(getIndianDateTimeLabel());
@@ -63,11 +64,6 @@ export default function DashboardScreen() {
   // ---- Static counts, not date-dependent ----
   const [totalCustomers, setTotalCustomers] = useState(0);
   const [totalProducts, setTotalProducts] = useState(0);
-
-  // ---- Panchangam — always "today", never affected by the filter below ----
-  const [panchangam, setPanchangam] = useState<PanchangamDay | null>(null);
-  const [panchangamLoading, setPanchangamLoading] = useState(true);
-  const [panchangamError, setPanchangamError] = useState<string | null>(null);
 
   // ---- Date filter drives everything below ----
   const [filter, setFilter] = useState<DateFilterValue>({ mode: 'today' });
@@ -100,17 +96,6 @@ export default function DashboardScreen() {
       });
   }, []);
 
-  const loadPanchangam = useCallback(() => {
-    setPanchangamLoading(true);
-    getTodayPanchangam()
-      .then((p) => {
-        setPanchangam(p);
-        setPanchangamError(null);
-      })
-      .catch(() => setPanchangamError('Could not load panchangam.'))
-      .finally(() => setPanchangamLoading(false));
-  }, []);
-
   const loadReport = useCallback((value: DateFilterValue) => {
     setReportLoading(true);
     const range = resolveRange(value);
@@ -127,10 +112,8 @@ export default function DashboardScreen() {
     useCallback(() => {
       loadRates();
       loadCounts();
-      loadPanchangam();
       loadReport(filter);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [loadRates, loadCounts, loadPanchangam, loadReport])
+    }, [loadRates, loadCounts, loadReport, filter])
   );
 
   function handleFilterChange(value: DateFilterValue) {
@@ -171,7 +154,7 @@ export default function DashboardScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={{ paddingTop: spacing.lg, paddingBottom: spacing.xxl }}>
-      {/* Filter sits at the top and drives every card below it (except Panchangam) */}
+      {/* Filter sits at the top */}
       <DateFilter value={filter} onChange={handleFilterChange} />
 
       {reportError && <Text style={styles.errorText}>{reportError}</Text>}
@@ -185,90 +168,56 @@ export default function DashboardScreen() {
         <SummaryCard icon="checkmark-circle-outline" label="Collection" value={reportLoading ? '…' : inr(report?.totalCollected ?? 0)} tone="primary" />
       </View>
 
-      {/* Jewel Rate Header with Live Indicator */}
-      <View style={styles.ratesHeader}>
-        <Text style={styles.sectionTitle}>Jewel Rate</Text>
-        <View style={styles.liveIndicator}>
-          <View style={styles.liveDot} />
-          <Text style={styles.liveText}>Live</Text>
+      {/* Side-by-side Row: Jewel Rate & Payment Breakdown */}
+      <View style={[styles.sideBySideContainer, isSideBySide && styles.sideBySideRow]}>
+        {/* Left Column: Jewel Rate */}
+        <View style={[styles.columnWrapper, isSideBySide && styles.columnFlex]}>
+          <View style={styles.ratesHeader}>
+            <View>
+              <Text style={styles.sectionTitle}>Jewel Rate</Text>
+              <Text style={styles.sectionSubtitle}>
+                {istDateTime.date} · {istDateTime.time}
+              </Text>
+            </View>
+            <View style={styles.liveIndicator}>
+              <View style={styles.liveDot} />
+              <Text style={styles.liveText}>Live</Text>
+            </View>
+          </View>
+
+          <Card style={[styles.ratesCard, styles.matchedCard]}>
+            {ratesLoading ? (
+              <Text style={styles.emptyText}>Loading rates…</Text>
+            ) : ratesError ? (
+              <Text style={styles.errorText}>{ratesError}</Text>
+            ) : (
+              goldRates.map((rate) => (
+                <View key={rate.label} style={styles.rateRow}>
+                  <Text style={styles.rateLabel}>{rate.label}</Text>
+                  <Text style={styles.rateValue}>{rate.value}</Text>
+                </View>
+              ))
+            )}
+          </Card>
+        </View>
+
+        {/* Right Column: Payment Breakdown */}
+        <View style={[styles.columnWrapper, isSideBySide && styles.columnFlex]}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Payment Breakdown</Text>
+          </View>
+
+          <Card style={[styles.ratesCard, styles.matchedCard, styles.chartCardAlign]}>
+            {reportLoading ? (
+              <Text style={styles.emptyText}>Loading…</Text>
+            ) : (
+              <PaymentBreakdownChart data={report?.paymentBreakdown ?? []} />
+            )}
+          </Card>
         </View>
       </View>
 
-      <Card style={styles.ratesCard}>
-        {ratesLoading ? (
-          <Text style={styles.emptyText}>Loading rates…</Text>
-        ) : ratesError ? (
-          <Text style={styles.errorText}>{ratesError}</Text>
-        ) : (
-          goldRates.map((rate) => (
-            <View key={rate.label} style={styles.rateRow}>
-              <Text style={styles.rateLabel}>{rate.label}</Text>
-              <Text style={styles.rateValue}>{rate.value}</Text>
-            </View>
-          ))
-        )}
-      </Card>
-
-      {/* Panchangam — date and real-time IST placed directly next to each other */}
-      <View style={styles.panchangamHeader}>
-        <Text style={styles.sectionTitle}>
-          Panchangam · {istDateTime.date} - {istDateTime.time}
-        </Text>
-      </View>
-
-      <Card style={styles.ratesCard}>
-        {panchangamLoading ? (
-          <Text style={styles.emptyText}>Loading…</Text>
-        ) : panchangamError ? (
-          <Text style={styles.errorText}>{panchangamError}</Text>
-        ) : !panchangam ? (
-          <Text style={styles.emptyText}>No panchangam entry for today.</Text>
-        ) : (
-          <>
-            {(panchangam.tithi || panchangam.nakshatra) && (
-              <View style={styles.rateRow}>
-                <Text style={styles.rateLabel}>
-                  {panchangam.tithi ?? '—'}
-                  {panchangam.nakshatra ? ` · ${panchangam.nakshatra}` : ''}
-                </Text>
-              </View>
-            )}
-            {panchangam.goodTimes.map((period, i) => (
-              <View key={`good-${i}`} style={styles.rateRow}>
-                <Text style={[styles.rateLabel, styles.goodLabel]}>{period.label}</Text>
-                <Text style={styles.rateValue}>
-                  {period.start} – {period.end}
-                </Text>
-              </View>
-            ))}
-            {panchangam.badTimes.map((period, i) => (
-              <View key={`bad-${i}`} style={styles.rateRow}>
-                <Text style={[styles.rateLabel, styles.badLabel]}>{period.label}</Text>
-                <Text style={styles.rateValue}>
-                  {period.start} – {period.end}
-                </Text>
-              </View>
-            ))}
-            {panchangam.goodTimes.length === 0 && panchangam.badTimes.length === 0 && (
-              <Text style={styles.emptyText}>No timing details added for today.</Text>
-            )}
-          </>
-        )}
-      </Card>
-
-      <View style={styles.panchangamHeader}>
-        <Text style={styles.sectionTitle}>Payment Breakdown</Text>
-      </View>
-
-      <Card style={styles.ratesCard}>
-        {reportLoading ? (
-          <Text style={styles.emptyText}>Loading…</Text>
-        ) : (
-          <PaymentBreakdownChart data={report?.paymentBreakdown ?? []} />
-        )}
-      </Card>
-
-      {/* Download sits at the very bottom, acting on whatever range is selected above */}
+      {/* Download PDF */}
       <View style={styles.downloadWrap}>
         <Button
           label={downloading ? 'Generating PDF…' : `Download PDF (${report?.range.label ?? ''})`}
@@ -290,23 +239,43 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     marginTop: spacing.lg,
   },
+  sideBySideContainer: {
+    marginTop: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    flexDirection: 'column',
+    gap: spacing.lg,
+  },
+  sideBySideRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  columnWrapper: {
+    width: '100%',
+  },
+  columnFlex: {
+    flex: 1,
+  },
   ratesHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    marginTop: spacing.xl,
     marginBottom: spacing.sm,
+    minHeight: 38,
   },
-  panchangamHeader: {
-    paddingHorizontal: spacing.lg,
-    marginTop: spacing.xl,
+  sectionHeader: {
+    justifyContent: 'center',
     marginBottom: spacing.sm,
+    minHeight: 38,
   },
   sectionTitle: {
     fontSize: 15,
     fontWeight: '700',
     color: colors.textPrimary,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
   },
   liveIndicator: {
     flexDirection: 'row',
@@ -328,7 +297,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1E8E3E',
   },
-  ratesCard: { marginHorizontal: spacing.lg },
+  ratesCard: { 
+    marginHorizontal: 0,
+  },
+  matchedCard: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  chartCardAlign: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   rateRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -339,8 +318,6 @@ const styles = StyleSheet.create({
   },
   rateLabel: { fontSize: 13, color: colors.textSecondary },
   rateValue: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
-  goodLabel: { color: '#1E8E3E', fontWeight: '600' },
-  badLabel: { color: '#B00020', fontWeight: '600' },
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing.md },
   errorText: { fontSize: 13, color: colors.error, textAlign: 'center', paddingVertical: spacing.md },
   downloadWrap: { paddingHorizontal: spacing.lg, marginTop: spacing.xl },

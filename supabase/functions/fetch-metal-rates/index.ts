@@ -1,54 +1,91 @@
 // supabase/functions/fetch-metal-rates/index.ts
 //
 // Deploy:   supabase functions deploy fetch-metal-rates
-// Schedule: Supabase Dashboard -> Edge Functions -> fetch-metal-rates -> Cron Trigger
-//           e.g. "0 4 * * *" (04:00 UTC = 09:30 IST) so today's rate is ready before opening.
-// Secrets:  supabase secrets set METAL_API_KEY=xxxx
+// Schedule: pg_cron -> invoke-fetch-metal-rates -> 0 4 * * * (04:00 UTC / 9:30 IST)
+// Secrets:  supabase secrets set METAL_API_KEY=xxxx   <- no longer required by this
+//           version, kept only if you fall back to goldapi.io later.
 //
-// This example calls goldapi.io (https://www.goldapi.io) — swap fetchSpotPricePerGram24k()
-// for whichever provider you have a key for (metals-api.com, metalpriceapi.com, etc.)
-// all follow a similar "spot price per troy ounce/gram" response shape.
+// Source: ibjarates.com — India Bullion and Jewellers Association.
+// This is the actual benchmark Indian jewellers price against (RBI-recognized,
+// used for gold-loan valuation and sovereign gold bond pricing). Rates already
+// include import duty/customs, but EXCLUDE 3% GST and making charges — apply
+// those separately at invoice time, same as your existing schema does.
+//
+// Gold purities (999/995/916/750/585) are shown per 1 GRAM on the page.
+// Silver (999 only) is shown per 1 KG in the historical table — divide by 1000.
+// On weekends/govt holidays IBJA doesn't publish new rates; the page just
+// carries over the last published figure, which is fine for our purposes.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const METAL_API_KEY = Deno.env.get('METAL_API_KEY')!;
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-// Purity name (must match `purities.name` exactly) -> fraction of pure metal.
-// Add a row here whenever a new purity is added to the `purities` table, or it
-// will be skipped (see the `factor === null` check below) rather than silently
-// mispriced.
-const GOLD_PURITY_FACTORS: Record<string, number> = {
-  '24K': 1,
-  '22K': 22 / 24,
-  '20K': 20 / 24,
-  '18K': 18 / 24,
-  '14K': 14 / 24,
+// IBJA purity code -> your purities.name. Only include codes you actually stock.
+const GOLD_PURITY_MAP: Record<string, string> = {
+  '999': '24K',
+  '916': '22K',
+  '750': '18K',
+  '585': '14K',
 };
 
+// You don't have a direct IBJA silver-916/925/946 line, only 999 (fine silver).
+// Derive other silver purities as a fraction of the 999 rate, same approach as
+// before — adjust this map to match whatever silver purities you actually stock.
 const SILVER_PURITY_FACTORS: Record<string, number> = {
   '999': 1,
   '946': 0.946,
   '925': 0.925,
 };
 
-async function fetchSpotPricePerGram24k(metalSymbol: 'XAU' | 'XAG'): Promise<number> {
-  const res = await fetch(`https://www.goldapi.io/api/${metalSymbol}/INR`, {
-    headers: { 'x-access-token': METAL_API_KEY, 'Content-Type': 'application/json' },
+interface IbjaRates {
+  gold: Record<string, number>; // purity code -> rate per gram
+  silverPerGram: number | null;
+}
+
+async function fetchIbjaRates(): Promise<IbjaRates> {
+  const res = await fetch('https://ibjarates.com/', {
+    headers: {
+      // Some sites block requests with no browser-like UA — harmless to send.
+      'User-Agent': 'Mozilla/5.0 (compatible; jewelry-billing-bot/1.0)',
+    },
   });
-  if (!res.ok) throw new Error(`Rate API error: ${res.status} ${await res.text()}`);
-  const json = await res.json();
-  // goldapi.io returns price_gram_24k directly for gold; for silver use price_gram_24k too
-  // (their /XAG endpoint gives pure silver per gram already).
-  return json.price_gram_24k as number;
+  if (!res.ok) throw new Error(`IBJA fetch failed: ${res.status}`);
+  const html = await res.text();
+
+  const gold: Record<string, number> = {};
+  for (const code of Object.keys(GOLD_PURITY_MAP)) {
+    const match = html.match(
+      new RegExp(`id="GoldRatesCompare${code}">\\s*([\\d.]+)\\s*<`)
+    );
+    if (match) {
+      const value = parseFloat(match[1]);
+      if (!isNaN(value) && value > 0) gold[code] = value;
+    }
+  }
+
+  // Silver: pull the first (most recent) row of the AM historical table,
+  // "Silver 999" column, which is per KG.
+  let silverPerGram: number | null = null;
+  const silverMatch = html.match(
+    /data-label="Silver 999">\s*([\d.]+)\s*</
+  );
+  if (silverMatch) {
+    const perKg = parseFloat(silverMatch[1]);
+    if (!isNaN(perKg) && perKg > 0) silverPerGram = perKg / 1000;
+  }
+
+  return { gold, silverPerGram };
 }
 
 Deno.serve(async () => {
   try {
-    const { data: metals, error: metalsErr } = await supabase.from('metals').select('id, name').eq('is_active', true);
+    const { data: metals, error: metalsErr } = await supabase
+      .from('metals')
+      .select('id, name')
+      .eq('is_active', true);
     if (metalsErr) throw metalsErr;
 
     const { data: purities, error: puritiesErr } = await supabase
@@ -57,34 +94,40 @@ Deno.serve(async () => {
       .eq('is_active', true);
     if (puritiesErr) throw puritiesErr;
 
+    const ibja = await fetchIbjaRates();
+
     const rows: any[] = [];
     const skipped: string[] = [];
 
     for (const metal of metals ?? []) {
       const isGold = /gold/i.test(metal.name);
       const isSilver = /silver/i.test(metal.name);
-      if (!isGold && !isSilver) continue; // skip metals you don't have a feed for
-
-      const pricePerGramPure = await fetchSpotPricePerGram24k(isGold ? 'XAU' : 'XAG');
+      if (!isGold && !isSilver) continue;
 
       for (const purity of (purities ?? []).filter((p) => p.metal_id === metal.id)) {
-        const factor = isGold
-          ? (GOLD_PURITY_FACTORS[purity.name] ?? null)
-          : (SILVER_PURITY_FACTORS[purity.name] ?? null);
+        let ratePerGram: number | null = null;
 
-        if (factor === null) {
-          // Unmapped purity name — skip rather than silently insert a wrong
-          // (pure-metal) rate. Check the warning in the function logs and
-          // either fix the purity name in the DB or add it to the map above.
+        if (isGold) {
+          // Reverse-lookup: find the IBJA code whose mapped name matches this purity
+          const code = Object.keys(GOLD_PURITY_MAP).find(
+            (c) => GOLD_PURITY_MAP[c] === purity.name
+          );
+          ratePerGram = code ? (ibja.gold[code] ?? null) : null;
+        } else if (isSilver && ibja.silverPerGram !== null) {
+          const factor = SILVER_PURITY_FACTORS[purity.name] ?? null;
+          ratePerGram = factor !== null ? ibja.silverPerGram * factor : null;
+        }
+
+        if (ratePerGram === null) {
           skipped.push(`${metal.name} ${purity.name}`);
-          console.warn(`No purity factor for ${metal.name} ${purity.name}, skipping`);
+          console.warn(`No IBJA rate available for ${metal.name} ${purity.name}, skipping`);
           continue;
         }
 
         rows.push({
           metal_id: metal.id,
           purity_id: purity.id,
-          rate_per_gram: Math.round(pricePerGramPure * factor * 100) / 100,
+          rate_per_gram: Math.round(ratePerGram * 100) / 100,
           source: 'auto',
         });
       }
@@ -95,9 +138,10 @@ Deno.serve(async () => {
       if (insertErr) throw insertErr;
     }
 
-    return new Response(JSON.stringify({ ok: true, inserted: rows.length, skipped }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({ ok: true, inserted: rows.length, skipped, ibja }),
+      { headers: { 'Content-Type': 'application/json' } }
+    );
   } catch (e) {
     console.error(e);
     return new Response(JSON.stringify({ ok: false, error: String(e) }), {

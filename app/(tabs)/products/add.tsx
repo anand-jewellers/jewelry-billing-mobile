@@ -189,9 +189,9 @@ export default function AddProductScreen() {
       <TextInput style={styles.input} placeholder="HUID" placeholderTextColor={colors.textMuted} value={huid} onChangeText={setHuid} />
       <TextInput style={styles.input} placeholder="Design number" placeholderTextColor={colors.textMuted} value={designNumber} onChangeText={setDesignNumber} />
 
-      <Text style={styles.helperNote}>
+      {/* <Text style={styles.helperNote}>
         No pricing is entered here. Metal rate, making charge, and GST are all applied automatically at billing time using that day's rate.
-      </Text>
+      </Text> */}
 
       <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={saving}>
         {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>Save Product</Text>}

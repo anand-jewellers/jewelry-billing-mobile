@@ -8,20 +8,24 @@ import {
   Platform,
   ScrollView,
   Pressable,
+  TextInput,
+  ActivityIndicator,
 } from 'react-native';
-import { Link } from 'expo-router';
-import Svg, { Circle, Path, Text as SvgText } from 'react-native-svg';
-import { Eye, EyeOff } from 'lucide-react-native';
+import Svg, { Path } from 'react-native-svg';
+import {
+  Mail,
+  Lock,
+  Eye,
+  EyeOff,
+  ArrowRight,
+  ShieldCheck,
+  Diamond,
+  Flower2,
+  Settings,
+} from 'lucide-react-native';
 import { useStaff } from '../src/context/StaffContext';
-import { Button, Input } from '../src/components/ui';
 import { useCompanySettings } from '../src/context/CompanySettingsContext';
 import { colors, spacing } from '../src/theme';
-
-// Height (in px) of the dome curve. Bigger = more pronounced arch.
-const CURVE_HEIGHT = 56;
-// Height used inside the SVG's own coordinate space (0-100 wide) — controls
-// how "tall"/round the arch looks relative to its width. Bigger = rounder.
-const CURVE_VIEWBOX_HEIGHT = 42;
 
 export default function LoginScreen() {
   const { settings } = useCompanySettings();
@@ -34,7 +38,7 @@ export default function LoginScreen() {
 
   const handleSubmit = async () => {
     if (!email.trim() || !password) {
-      setError('Enter both email and password.');
+      setError('Please enter both email and password.');
       return;
     }
     setError(null);
@@ -44,101 +48,197 @@ export default function LoginScreen() {
     if (!res.ok) {
       setError(res.error ?? 'Could not sign in. Check your email and password and try again.');
     }
-    // On success, currentStaff updates in StaffContext and the root
-    // RouteGuard redirects to "/" automatically.
   };
 
   return (
-    <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       <ScrollView
         style={styles.screen}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
         bounces={false}
       >
+        {/* Top Royal Navy Hero Header */}
         <View style={styles.hero}>
-          <View style={styles.logoRing}>
-            <View style={styles.logoBox}>
+          {/* Top Right Quick Settings Icon */}
+          <View style={styles.topRightIcon}>
+            <View style={styles.settingsCircle}>
+              <Settings size={18} color="#CBD5E1" />
+            </View>
+          </View>
+
+          {/* Logo Badge Container */}
+          <View style={styles.logoOuterBorder}>
+            <View style={styles.logoCard}>
               {settings?.logo_url ? (
-                <Image source={{ uri: settings.logo_url }} style={styles.logoImage} resizeMode="contain" />
+                <Image
+                  source={{ uri: settings.logo_url }}
+                  style={styles.logoImage}
+                  resizeMode="contain"
+                />
               ) : (
-                <Svg width={56} height={56} viewBox="0 0 34 34">
-                  <Circle cx={17} cy={17} r={16} stroke={colors.gold} strokeWidth={1.4} fill={colors.primary} />
-                  <Path d="M17 8.5 L23 14 L20.5 24.5 H13.5 L11 14 Z" stroke={colors.gold} strokeWidth={1.2} fill="none" />
-                  <SvgText x={17} y={19.5} fontSize={7} fill={colors.gold} textAnchor="middle">
-                    22K
-                  </SvgText>
-                </Svg>
+                <View style={styles.fallbackLogo}>
+                  <Text style={styles.fallbackLogoText}>AJ</Text>
+                  <Text style={styles.fallbackLogoSub}>Jewellers</Text>
+                </View>
               )}
             </View>
           </View>
 
-          <Text style={styles.companyName} numberOfLines={2}>
-            {settings?.company_name || 'Bizjewel Billing'}
+          {/* Store Name & Tagline */}
+          <Text style={styles.companyName}>
+            {settings?.company_name || 'Anand Jewellers'}
           </Text>
-          <Text style={styles.heroSubtitle}>Sign in to manage your billing</Text>
+          <View style={styles.taglineWrap}>
+            <View style={styles.taglineLine} />
+            <Text style={styles.taglineText}>Trust in Every Ornament</Text>
+            <View style={styles.taglineLine} />
+          </View>
+
+          {/* Value Pillars: Quality, Purity, Trust */}
+          <View style={styles.pillarsRow}>
+            <View style={styles.pillarItem}>
+              <Diamond size={20} color="#FDE047" strokeWidth={1.8} />
+              <Text style={styles.pillarLabel}>Quality</Text>
+            </View>
+            <View style={styles.pillarItem}>
+              <ShieldCheck size={20} color="#FDE047" strokeWidth={1.8} />
+              <Text style={styles.pillarLabel}>Purity</Text>
+            </View>
+            <View style={styles.pillarItem}>
+              <Flower2 size={20} color="#FDE047" strokeWidth={1.8} />
+              <Text style={styles.pillarLabel}>Trust</Text>
+            </View>
+          </View>
         </View>
 
-        <View style={styles.sheetWrap}>
+        {/* Curved Golden Wave Transition */}
+        <View style={styles.curveContainer}>
           <Svg
             width="100%"
-            height={CURVE_HEIGHT}
-            viewBox={`0 0 100 ${CURVE_VIEWBOX_HEIGHT}`}
+            height={60}
+            viewBox="0 0 400 60"
             preserveAspectRatio="none"
-            style={styles.sheetCurve}
+            style={styles.svgCurve}
           >
+            {/* Golden Ribbon Accent */}
             <Path
-              d={`M0,${CURVE_VIEWBOX_HEIGHT} A50,${CURVE_VIEWBOX_HEIGHT} 0 0 1 100,${CURVE_VIEWBOX_HEIGHT} Z`}
-              fill={colors.background}
+              d="M0,28 C140,65 260,10 400,48 L400,60 L0,60 Z"
+              fill="#D97706"
+              opacity={0.35}
+            />
+            <Path
+              d="M0,32 C130,68 270,12 400,52 L400,60 L0,60 Z"
+              fill="#FDE68A"
+            />
+            <Path
+              d="M0,36 C120,70 280,16 400,56 L400,60 L0,60 Z"
+              fill="#FDFBF7"
             />
           </Svg>
+        </View>
 
-          <View style={styles.sheet}>
-            <View>
-              {error && (
-                <View style={styles.errorBox}>
-                  <Text style={styles.errorText}>{error}</Text>
-                </View>
-              )}
+        {/* Floating White Login Card */}
+        <View style={styles.bodyWrapper}>
+          <View style={styles.loginCard}>
+            <Text style={styles.cardHeading}>Welcome Back</Text>
+            <Text style={styles.cardSubheading}>
+              Sign in to continue to your billing system
+            </Text>
 
-              <Input
-                label="Email"
-                value={email}
-                onChangeText={setEmail}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="email-address"
-                placeholder="you@yourshop.com"
-              />
+            {error && (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            )}
 
-              <View style={styles.passwordWrap}>
-                <Input
-                  label="Password"
+            {/* Email Field */}
+            <View style={styles.inputFieldBox}>
+              <Mail size={18} color="#64748B" style={styles.inputIcon} />
+              <View style={styles.inputContent}>
+                <Text style={styles.inputLabel}>Email</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={email}
+                  onChangeText={setEmail}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  placeholder="you@yourshop.com"
+                  placeholderTextColor="#94A3B8"
+                />
+              </View>
+            </View>
+
+            {/* Password Field */}
+            <View style={[styles.inputFieldBox, { marginTop: 14 }]}>
+              <Lock size={18} color="#64748B" style={styles.inputIcon} />
+              <View style={styles.inputContent}>
+                <Text style={styles.inputLabel}>Password</Text>
+                <TextInput
+                  style={styles.textInput}
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPassword}
                   placeholder="••••••••"
+                  placeholderTextColor="#94A3B8"
                 />
-                <Pressable
-                  onPress={() => setShowPassword((prev) => !prev)}
-                  style={styles.eyeButton}
-                  hitSlop={10}
-                >
-                  {showPassword ? (
-                    <EyeOff size={18} color={colors.textSecondary} />
-                  ) : (
-                    <Eye size={18} color={colors.textSecondary} />
-                  )}
-                </Pressable>
               </View>
+              <Pressable
+                onPress={() => setShowPassword((prev) => !prev)}
+                style={styles.eyeBtn}
+                hitSlop={10}
+              >
+                {showPassword ? (
+                  <EyeOff size={18} color="#64748B" />
+                ) : (
+                  <Eye size={18} color="#64748B" />
+                )}
+              </Pressable>
+            </View>
 
-              <View style={{ marginTop: spacing.md }}>
-                <Button label={submitting ? 'Signing in…' : 'Sign in'} onPress={handleSubmit} loading={submitting} variant="primary" />
+            {/* Sign In Button */}
+            <Pressable
+              style={styles.signInBtn}
+              onPress={handleSubmit}
+              disabled={submitting}
+            >
+              {submitting ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <View style={styles.btnRow}>
+                  <Text style={styles.signInBtnText}>Sign In</Text>
+                  <ArrowRight size={18} color="#FFFFFF" strokeWidth={2.4} />
+                </View>
+              )}
+            </Pressable>
+
+            {/* Secure Access Ribbon */}
+            <View style={styles.secureBadgeRow}>
+              <View style={styles.secureLine} />
+              <View style={styles.secureContent}>
+                <ShieldCheck size={14} color="#D97706" />
+                <Text style={styles.secureText}>Secure Access</Text>
               </View>
+              <View style={styles.secureLine} />
+            </View>
+          </View>
 
-              {/* <Link href="/forgot-password" style={styles.link}>
-                Forgot your password?
-              </Link> */}
+          {/* Bottom Brand Quote & Decorative Lotus */}
+          <View style={styles.bottomBrandSection}>
+            <View style={styles.watermarkLotus}>
+              <Flower2 size={44} color="#FDE68A" opacity={0.6} />
+            </View>
+
+            <Text style={styles.quoteLine1}>More Than Jewellery</Text>
+            <Text style={styles.quoteLine2}>A Part of Your Story</Text>
+
+            <View style={styles.goldSeparator}>
+              <View style={styles.quoteGoldLine} />
             </View>
 
             <Text style={styles.poweredBy}>Powered by Bizfonal Infotech</Text>
@@ -149,93 +249,291 @@ export default function LoginScreen() {
   );
 }
 
-const LOGO_SIZE = 92;
-
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.primary },
-  scrollContent: { flexGrow: 1 },
-
-  hero: {
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    paddingTop: 72,
-    paddingBottom: 56,
-    paddingHorizontal: spacing.xl,
+  screen: {
+    flex: 1,
+    backgroundColor: '#FDFBF7',
   },
-  logoRing: {
-    width: LOGO_SIZE + 8,
-    height: LOGO_SIZE + 8,
-    borderRadius: 28,
-    borderWidth: 3,
-    borderColor: colors.surface,
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: spacing.xl,
+  },
+  hero: {
+    backgroundColor: '#0B2347', // Royal Deep Navy
+    alignItems: 'center',
+    paddingTop: 56,
+    paddingBottom: 28,
+    paddingHorizontal: spacing.lg,
+    position: 'relative',
+  },
+  topRightIcon: {
+    position: 'absolute',
+    top: 48,
+    right: 20,
+    zIndex: 10,
+  },
+  settingsCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: spacing.lg,
   },
-  logoBox: {
-    width: LOGO_SIZE,
-    height: LOGO_SIZE,
-    borderRadius: 24,
-    backgroundColor: colors.surface,
+  logoOuterBorder: {
+    width: 88,
+    height: 88,
+    borderRadius: 26,
+    borderWidth: 2,
+    borderColor: 'rgba(253, 224, 71, 0.35)',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  logoCard: {
+    width: 76,
+    height: 76,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.18,
-    shadowRadius: 12,
-    elevation: 6,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  logoImage: { width: '100%', height: '100%' },
+  logoImage: {
+    width: '100%',
+    height: '100%',
+  },
+  fallbackLogo: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fallbackLogoText: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0B2347',
+  },
+  fallbackLogoSub: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#B45309',
+    marginTop: -2,
+  },
   companyName: {
-    fontSize: 24,
+    fontSize: 27,
     fontWeight: '700',
-    color: colors.surface,
+    color: '#FDE047', // Warm Gold
     textAlign: 'center',
-    letterSpacing: 0.2,
+    letterSpacing: 0.3,
+    fontFamily: Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }),
   },
-  heroSubtitle: {
-    fontSize: 13.5,
-    color: colors.surface,
-    marginTop: spacing.xs,
+  taglineWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+    marginBottom: 20,
+  },
+  taglineLine: {
+    width: 24,
+    height: 1,
+    backgroundColor: 'rgba(253, 224, 71, 0.4)',
+  },
+  taglineText: {
+    fontSize: 12.5,
+    color: '#F1F5F9',
+    letterSpacing: 0.4,
+    fontWeight: '400',
+  },
+  pillarsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 36,
+  },
+  pillarItem: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  pillarLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#E2E8F0',
+  },
+  curveContainer: {
+    marginTop: -1,
+    backgroundColor: '#0B2347',
+  },
+  svgCurve: {
+    display: 'flex',
+  },
+  bodyWrapper: {
+    flex: 1,
+    paddingHorizontal: spacing.lg,
+    marginTop: -24,
+  },
+  loginCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.08,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 18,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(226, 232, 240, 0.8)',
+  },
+  cardHeading: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0B2347',
     textAlign: 'center',
+    letterSpacing: -0.3,
   },
-
-  sheetWrap: {
-    flex: 1,
-    marginTop: -CURVE_HEIGHT + spacing.xl,
-  },
-  sheetCurve: {},
-  sheet: {
-    flex: 1,
-    backgroundColor: colors.background,
-    paddingTop: spacing.lg,
-    paddingHorizontal: spacing.xl,
-    paddingBottom: spacing.xl,
-    justifyContent: 'space-between',
+  cardSubheading: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+    marginTop: 4,
+    marginBottom: 20,
   },
   errorBox: {
+    backgroundColor: '#FEF2F2',
     borderWidth: 1,
-    borderColor: colors.error,
-    backgroundColor: colors.errorSurface,
-    borderRadius: 8,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    marginBottom: spacing.md,
+    borderColor: '#FCA5A5',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 16,
   },
-  errorText: { fontSize: 13, color: colors.error },
-  passwordWrap: { position: 'relative', justifyContent: 'center' },
-  eyeButton: {
-    position: 'absolute',
-    right: spacing.md,
-    top: 34,
+  errorText: {
+    fontSize: 12.5,
+    color: '#B91C1C',
+    textAlign: 'center',
   },
-  link: { fontSize: 12.5, color: colors.primaryLight, textAlign: 'center', marginTop: spacing.lg, fontWeight: '500' },
+  inputFieldBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  inputIcon: {
+    marginRight: 10,
+  },
+  inputContent: {
+    flex: 1,
+  },
+  inputLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  textInput: {
+    fontSize: 14,
+    color: '#0F172A',
+    paddingVertical: 2,
+    paddingHorizontal: 0,
+    marginTop: 2,
+  },
+  eyeBtn: {
+    padding: 6,
+  },
+  signInBtn: {
+    backgroundColor: '#0F3E78', // Radiant Navy Blue Button
+    borderRadius: 16,
+    paddingVertical: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 22,
+    shadowColor: '#0F3E78',
+    shadowOpacity: 0.28,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  btnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  signInBtnText: {
+    fontSize: 15.5,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  secureBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 20,
+    gap: 10,
+  },
+  secureLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E2E8F0',
+  },
+  secureContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  secureText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: '#92400E',
+  },
+  bottomBrandSection: {
+    alignItems: 'center',
+    marginTop: 28,
+    paddingBottom: 16,
+  },
+  watermarkLotus: {
+    marginBottom: 6,
+  },
+  quoteLine1: {
+    fontSize: 14.5,
+    fontWeight: '600',
+    color: '#B45309',
+    fontStyle: 'italic',
+    fontFamily: Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }),
+  },
+  quoteLine2: {
+    fontSize: 15.5,
+    fontWeight: '700',
+    color: '#92400E',
+    fontStyle: 'italic',
+    marginTop: 1,
+    fontFamily: Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }),
+  },
+  goldSeparator: {
+    width: 60,
+    height: 1.5,
+    backgroundColor: '#F59E0B',
+    marginTop: 8,
+    marginBottom: 16,
+    borderRadius: 1,
+    opacity: 0.6,
+  },
+  quoteGoldLine: {
+    width: '100%',
+    height: '100%',
+  },
   poweredBy: {
     fontSize: 11.5,
-    color: colors.textMuted,
-    textAlign: 'center',
-    marginTop: spacing.xl,
-    letterSpacing: 0.2,
+    color: '#94A3B8',
+    letterSpacing: 0.3,
   },
 });
