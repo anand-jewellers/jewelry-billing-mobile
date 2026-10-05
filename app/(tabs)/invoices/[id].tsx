@@ -1,15 +1,37 @@
+// app/(tabs)/invoices/[id].tsx
+
 import { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator, Pressable, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, ActivityIndicator, Pressable, Alert, Platform } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
-import { Share2, ArrowLeft, Printer, Receipt } from 'lucide-react-native';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
+import { ArrowLeft, Printer, Receipt, MessageCircle } from 'lucide-react-native';
 import { Card } from '../../../src/components/ui';
 import { colors, spacing, radius } from '../../../src/theme';
 import { getInvoiceById } from '../../../src/lib/api/invoices';
 import { getCompanySettings, getInvoiceSettings } from '../../../src/lib/api/settings';
-import { buildInvoiceHtml, buildThermalReceiptHtml, companyToShopDetails, type ShopDetails } from '../../../src/lib/invoicePdf';
+import {
+  buildInvoiceHtml,
+  buildThermalReceiptHtml,
+  companyToShopDetails,
+  printHtml,
+  printInvoice,
+  sharePdfFromHtml,
+  type ShopDetails,
+} from '../../../src/lib/invoicePdf';
+import {
+  shareInvoiceOnWhatsApp,
+  reviewUrlFromCompany,
+  createInvoicePdfFile,
+  createInvoicePdfBlobWeb,
+  preloadHtml2PdfWeb,
+} from '../../../src/lib/whatsappShare';
 import type { InvoiceDetail } from '../../../src/types/invoices';
+import { HeaderFooterModal } from '../../../src/components/invoice/HeaderFooterModal';
+import { displayNetWeight } from '../../../src/lib/exchangeGold';
+// import { getSavedPrinter } from '../../../src/lib/thermalPrint/printerStore';
+// import { getConnectedPrinter, disconnectActive } from '../../../src/lib/thermalPrint/printerService';
+// import { printThermalReceiptDirect } from '../../../src/lib/thermalPrint/escposReceipt';
+
+const WHATSAPP_GREEN = '#25D366';
 
 function money(n: number): string {
   return `₹${Number(n || 0).toLocaleString('en-IN')}`;
@@ -31,9 +53,17 @@ export default function InvoiceDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null);
   const [shop, setShop] = useState<ShopDetails | undefined>(undefined);
+  const [reviewUrl, setReviewUrl] = useState<string | null>(null);
   const [displayConfig, setDisplayConfig] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
-  const [sharing, setSharing] = useState(false);
+  const [waSharing, setWaSharing] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [printModalOpen, setPrintModalOpen] = useState(false);
+
+  // Web: load the PDF library early so the share tap stays within the browser's user-gesture window
+  useEffect(() => {
+    preloadHtml2PdfWeb();
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -45,6 +75,7 @@ export default function InvoiceDetailScreen() {
       .then(([invoiceData, companySettings, invoiceSettings]) => {
         setInvoice(invoiceData);
         setShop(companyToShopDetails(companySettings));
+        setReviewUrl(reviewUrlFromCompany(companySettings));
         if (invoiceSettings) {
           setDisplayConfig({
             show_logo: invoiceSettings.show_logo,
@@ -61,33 +92,51 @@ export default function InvoiceDetailScreen() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Top-bar share icon still generates/shares the full A4 PDF.
-  const handleShare = async () => {
-    if (!invoice) return;
-    setSharing(true);
+  // Single share button: sends the invoice PDF + thank-you note + Google
+  // review link as ONE WhatsApp message (PDF with the note as its caption).
+  //  - Native: react-native-share straight into the customer's WhatsApp chat.
+  //  - Web: browser share sheet with the PDF attached; if the browser can't
+  //    share files, the PDF is downloaded and WhatsApp opens with the note.
+  //  - Expo Go / WhatsApp missing: clipboard + normal share sheet.
+  const handleWhatsAppShare = async () => {
+    if (!invoice || waSharing) return;
+    setWaSharing(true);
     try {
       const html = buildInvoiceHtml(invoice, shop, displayConfig);
-      const { uri } = await Print.printToFileAsync({ html, base64: false });
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Invoice ${invoice.invoice_number}` });
-      } else {
-        Alert.alert('Sharing unavailable', 'PDF generated but sharing is not supported on this device.');
-      }
+      await shareInvoiceOnWhatsApp({
+        invoice,
+        shopName: shop?.name ?? null,
+        reviewUrl,
+        getPdfUri: () => createInvoicePdfFile(html, invoice.invoice_number),
+        getPdfBlob: () => createInvoicePdfBlobWeb(html),
+        sharePdfFallback: async () => {
+          // Last resort on web: open the print dialog.
+          if (Platform.OS === 'web') {
+            await printHtml(html);
+            return;
+          }
+          await sharePdfFromHtml(html, invoice.invoice_number, 'a4');
+        },
+      });
     } catch (e: any) {
-      Alert.alert('Could not generate PDF', e.message ?? 'Unknown error');
+      Alert.alert('Could not share on WhatsApp', e?.message ?? 'Unknown error');
     } finally {
-      setSharing(false);
+      setWaSharing(false);
     }
   };
 
-  const handlePrint = async () => {
-    if (!invoice) return;
+  // Print A4: the button opens the "Do you want header and footer?" popup.
+  //   Yes -> header + footer printed, No -> neither, X -> nothing is printed.
+  const runPrintA4 = async (showHeaderFooter: boolean) => {
+    setPrintModalOpen(false);
+    if (!id || printing) return;
+    setPrinting(true);
     try {
-      const html = buildInvoiceHtml(invoice, shop, displayConfig);
-      await Print.printAsync({ html });
+      await printInvoice(id, 'a4', { showHeaderFooter });
     } catch (e: any) {
-      Alert.alert('Could not print', e.message ?? 'Unknown error');
+      Alert.alert('Could not generate PDF', e?.message ?? 'Unknown error');
+    } finally {
+      setPrinting(false);
     }
   };
 
@@ -95,7 +144,7 @@ export default function InvoiceDetailScreen() {
     if (!invoice) return;
     try {
       const html = buildThermalReceiptHtml(invoice, shop, displayConfig);
-      await Print.printAsync({ html });
+      await printHtml(html);
     } catch (e: any) {
       Alert.alert('Could not print receipt', e.message ?? 'Unknown error');
     }
@@ -117,6 +166,19 @@ export default function InvoiceDetailScreen() {
     );
   }
 
+  // Only one GST scheme is actually charged: CGST + SGST together, or IGST alone.
+  // A tax setting can carry all three rates, so older invoices may have an IGST
+  // charge saved next to CGST/SGST — hide it when the split scheme is present.
+  const hasSplitGst =
+    invoice.charges.some((c) => c.charge_name === 'CGST' && c.amount > 0) &&
+    invoice.charges.some((c) => c.charge_name === 'SGST' && c.amount > 0);
+  const visibleCharges = invoice.charges.filter(
+    (c) => !(hasSplitGst && (c.charge_name === 'IGST' || c.charge_name === 'GST'))
+  );
+
+  const exchangeItems = invoice.exchange_items ?? [];
+  const exchangeTotal = invoice.exchange_total ?? 0;
+
   return (
     <View style={styles.screen}>
       <View style={styles.topBar}>
@@ -124,12 +186,11 @@ export default function InvoiceDetailScreen() {
           <ArrowLeft size={22} color={colors.textPrimary} />
         </Pressable>
         <Text style={styles.topBarTitle}>{invoice.invoice_number}</Text>
-        <Pressable onPress={handleShare} hitSlop={8} disabled={sharing}>
-          <Share2 size={20} color={colors.primary} />
-        </Pressable>
+        {/* Spacer keeps the title centered now that the share icon is gone */}
+        <View style={{ width: 22 }} />
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 140 }}>
+      <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 200 }}>
         {/* Company / shop details — same data used to build the PDF, shown here too */}
         {shop && (
           <Card style={styles.companyCard}>
@@ -176,6 +237,13 @@ export default function InvoiceDetailScreen() {
           </View>
         </Card>
 
+        {invoice.remark && (
+          <Card style={styles.remarkCard}>
+            <Text style={styles.remarkLabel}>Remark</Text>
+            <Text style={styles.remarkText}>{invoice.remark}</Text>
+          </Card>
+        )}
+
         <Text style={styles.sectionTitle}>Items</Text>
         <Card padded={false}>
           {invoice.items.map((item, idx) => (
@@ -196,9 +264,28 @@ export default function InvoiceDetailScreen() {
           ))}
         </Card>
 
+        {exchangeItems.length > 0 && (
+          <>
+            <Text style={styles.sectionTitle}>Old Gold Exchange</Text>
+            <Card padded={false}>
+              {exchangeItems.map((item, idx) => (
+                <View key={item.id} style={[styles.itemRow, idx === exchangeItems.length - 1 && { borderBottomWidth: 0 }]}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.itemName}>{item.description}</Text>
+                    <Text style={styles.itemMeta}>
+                      {item.gross_weight}g gross · {item.purity_percent}% purity · {item.deduction_percent}% deduction · net {displayNetWeight(item)}g · ₹{item.rate_per_gram}/g
+                    </Text>
+                  </View>
+                  <Text style={styles.itemAmount}>{money(item.amount)}</Text>
+                </View>
+              ))}
+            </Card>
+          </>
+        )}
+
         <View style={styles.totalsCard}>
           <Row label="Subtotal" value={invoice.subtotal} />
-          {invoice.charges.map((c) => {
+          {visibleCharges.map((c) => {
             const label = RATE_LABELED_CHARGE_NAMES.has(c.charge_name)
               ? `${c.charge_name}${formatRate(c.amount, invoice.subtotal)}`
               : c.charge_name;
@@ -207,21 +294,50 @@ export default function InvoiceDetailScreen() {
           <Row label="Discount" value={-invoice.invoice_discount} />
           <View style={styles.dividerThin} />
           <Row label="Grand Total" value={invoice.grand_total} bold />
+          {exchangeTotal > 0 && <Row label="Old Gold Exchange" value={-exchangeTotal} />}
           <Row label="Amount Paid" value={invoice.paid_amount} />
           {invoice.balance_amount > 0 && <Row label="Balance Due" value={invoice.balance_amount} bold negative />}
         </View>
       </ScrollView>
 
       <View style={styles.footer}>
-        <Pressable style={styles.footerBtn} onPress={handlePrint}>
-          <Printer size={18} color="#fff" />
-          <Text style={styles.footerBtnText}>Print A4</Text>
+        <Pressable
+          style={({ pressed }) => [styles.whatsappBtn, (pressed || waSharing) && styles.footerBtnDisabled]}
+          onPress={handleWhatsAppShare}
+          disabled={waSharing}
+        >
+          {waSharing ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <>
+              <MessageCircle size={18} color="#fff" />
+              <Text style={styles.footerBtnText}>Share on WhatsApp</Text>
+            </>
+          )}
         </Pressable>
-        <Pressable style={styles.footerBtn} onPress={handleThermalPrint}>
-          <Receipt size={18} color="#fff" />
-          <Text style={styles.footerBtnText}>Print Receipt</Text>
-        </Pressable>
+
+        <View style={styles.footerRow}>
+          <Pressable
+            style={[styles.footerBtn, printing && styles.footerBtnDisabled]}
+            onPress={() => setPrintModalOpen(true)}
+            disabled={printing}
+          >
+            <Printer size={18} color="#fff" />
+            <Text style={styles.footerBtnText}>Print A4</Text>
+          </Pressable>
+          <Pressable style={styles.footerBtn} onPress={handleThermalPrint}>
+            <Receipt size={18} color="#fff" />
+            <Text style={styles.footerBtnText}>Print Receipt</Text>
+          </Pressable>
+        </View>
       </View>
+
+      <HeaderFooterModal
+        visible={printModalOpen}
+        onYes={() => runPrintA4(true)}
+        onNo={() => runPrintA4(false)}
+        onClose={() => setPrintModalOpen(false)}
+      />
     </View>
   );
 }
@@ -252,7 +368,7 @@ const styles = StyleSheet.create({
   metaLabel: { fontSize: 13, color: colors.textMuted },
   metaValue: { fontSize: 13, color: colors.textPrimary, fontWeight: '600' },
   statusBadge: { textTransform: 'capitalize' },
-  sectionTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.sm },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.sm, marginTop: spacing.lg },
   itemRow: { flexDirection: 'row', justifyContent: 'space-between', padding: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
   itemName: { fontSize: 14, fontWeight: '600', color: colors.textPrimary },
   itemMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
@@ -264,16 +380,13 @@ const styles = StyleSheet.create({
   rowValue: { color: colors.textPrimary, fontSize: 14 },
   rowBold: { fontWeight: '800', fontSize: 16 },
   rowNegative: { color: colors.error ?? 'crimson' },
-  footer: { flexDirection: 'row', gap: spacing.md, padding: spacing.lg, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.background },
-  footerBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    backgroundColor: colors.primary,
-    borderRadius: radius?.md ?? 10,
-  },
+  footer: { gap: spacing.sm, padding: spacing.lg, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.background },
+  footerRow: { flexDirection: 'row', gap: spacing.md },
+  footerBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, backgroundColor: colors.primary, borderRadius: radius?.md ?? 10 },
+  whatsappBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, backgroundColor: WHATSAPP_GREEN, borderRadius: radius?.md ?? 10 },
+  footerBtnDisabled: { opacity: 0.6 },
   footerBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  remarkCard: { padding: spacing.md, marginBottom: spacing.lg, backgroundColor: colors.surface },
+  remarkLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginBottom: 4, textTransform: 'uppercase' },
+  remarkText: { fontSize: 13, color: colors.textPrimary },
 });

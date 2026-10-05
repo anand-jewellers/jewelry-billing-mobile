@@ -1,3 +1,4 @@
+//\src\types\settings.ts
 export type CalculationType = 'fixed' | 'per_gram' | 'percentage';
 
 export interface CompanySettings {
@@ -55,6 +56,16 @@ export interface Category {
   is_active: boolean;
 }
 
+// Subcategories — child of Category. The `subcategories` table already
+// exists in the DB (products.subcategory_id references it); this type just
+// gives the settings screen and API layer a shape to work with.
+export interface Subcategory {
+  id: string;
+  category_id: string;
+  name: string;
+  is_active: boolean;
+}
+
 export interface MakingChargeRule {
   id: string;
   metal_id: string;
@@ -97,6 +108,14 @@ export interface InvoiceSettings {
   show_value_added_charges: boolean;
 }
 
+// Stone Name master, used on the product form (a product can have multiple
+// stones — see product_stones join table).
+export interface StoneName {
+  id: string;
+  name: string;
+  is_active: boolean;
+}
+
 // Append this block to the bottom of src/types/settings.ts
 
 export type StaffRole = 'admin' | 'manager' | 'staff';
@@ -127,16 +146,19 @@ export const PAGE_REGISTRY = [
   { key: 'customers', label: 'Customers', group: 'Main' },
   { key: 'settings', label: 'Settings (menu)', group: 'Main' },
   { key: 'settings.company', label: 'Company', group: 'Settings' },
-  { key: 'settings.company_logo', label: 'Company Logo', group: 'Settings' }, // NEW
+  { key: 'settings.company_logo', label: 'Company Logo', group: 'Settings' },
   { key: 'settings.metals', label: 'Metals', group: 'Settings' },
   { key: 'settings.purity', label: 'Purity', group: 'Settings' },
   { key: 'settings.categories', label: 'Categories', group: 'Settings' },
+  { key: 'settings.subcategories', label: 'Sub Categories', group: 'Settings' },
+  { key: 'settings.stone_names', label: 'Stone Names', group: 'Settings' },
   { key: 'settings.gold_rates', label: 'Gold Rates', group: 'Settings' },
   { key: 'settings.making_charges', label: 'Making Charges', group: 'Settings' },
   { key: 'settings.value_added_charges', label: 'Value Added Charges', group: 'Settings' },
   { key: 'settings.tax', label: 'Tax', group: 'Settings' },
   { key: 'settings.invoice_settings', label: 'Invoice Settings', group: 'Settings' },
   { key: 'settings.staff', label: 'Staff', group: 'Settings' },
+  { key: 'settings.printer', label: 'Printer', group: 'Settings' }, // NEW
 ] as const;
 
 export type PageKey = (typeof PAGE_REGISTRY)[number]['key'];

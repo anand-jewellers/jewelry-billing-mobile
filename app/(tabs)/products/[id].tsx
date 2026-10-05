@@ -5,10 +5,18 @@ import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radius } from '../../../src/theme';
 import { getProductById, setProductStatus } from '../../../src/lib/products';
+import { listTaxSettings } from '../../../src/lib/api/settings';
 import { getProductImageUrl } from '../../../src/lib/storage';
 import { ProductBarcodeLabel } from '../../../src/components/product/ProductBarcodeLabel';
 import { useStaff } from '../../../src/context/StaffContext';
-import { shareProductOnWhatsApp } from '../../../src/lib/share';
+import { shareProductOnWhatsApp, getShopShareInfo } from '../../../src/lib/whatsappShare';
+
+// Same helpers the invoice uses -> product page and invoice can never disagree.
+import {
+  parseCarat,
+  diamondChargeAmount,
+  DIAMOND_AMOUNT_IS_RATE_PER_CARAT,
+} from '../../../src/lib/invoiceCalc';
 
 export default function ProductDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -19,13 +27,30 @@ export default function ProductDetailsScreen() {
   const [sharing, setSharing] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [gstPercent, setGstPercent] = useState<number | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       if (!id) return;
       setLoading(true);
       getProductById(id)
-        .then(setProduct)
+        .then(async (p) => {
+          setProduct(p);
+          if (p?.tax_settings?.tax_percentage != null) {
+            // Product was saved with a specific GST slab — use that.
+            setGstPercent(p.tax_settings.tax_percentage);
+          } else {
+            // Older product saved before tax_setting_id existed — fall
+            // back to whatever the current default active rate is.
+            try {
+              const rates = await listTaxSettings();
+              const active = (rates ?? []).filter((t) => t.is_active);
+              setGstPercent(active[0]?.tax_percentage ?? null);
+            } catch {
+              setGstPercent(null);
+            }
+          }
+        })
         .catch((e) => console.error('Failed to load product', e))
         .finally(() => setLoading(false));
     }, [id])
@@ -50,16 +75,44 @@ export default function ProductDetailsScreen() {
   const isSold = product.status === 'sold';
   const primary = product.product_images?.find((i: any) => i.is_primary) ?? product.product_images?.[0];
   const imageUrl = primary ? getProductImageUrl(primary.storage_path) : null;
+  const charges = product.product_value_added_charges ?? [];
+
+  // ---- Values for the barcode label ----
+  const chargeVal = (name: string) =>
+    Number(charges.find((c: any) => c.charge_name === name)?.value) || 0;
+  const diamonds: any[] = [...(product.product_diamonds ?? [])].sort(
+    (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
+  );
+
+  // ---- Diamond maths: identical to the invoice (src/lib/invoiceCalc.ts) ----
+  // `size`   = diamond weight in carats
+  // `amount` = RATE PER CARAT (when DIAMOND_AMOUNT_IS_RATE_PER_CARAT is true)
+  // charge   = weight × rate
+  const diamondWt = (d: any) => parseCarat(d.size);
+  const diamondAmt = (d: any) => diamondChargeAmount(d.size, d.amount);
+  const diamondRate = (d: any) =>
+    DIAMOND_AMOUNT_IS_RATE_PER_CARAT
+      ? Number(d.amount) || 0
+      : diamondWt(d) > 0
+        ? (Number(d.amount) || 0) / diamondWt(d)
+        : 0;
+  const totalDiamondWt = diamonds.reduce((s, d) => s + diamondWt(d), 0);
+  const totalDiamondAmt = diamonds.reduce((s, d) => s + diamondAmt(d), 0);
 
   async function handleShare() {
     setSharing(true);
     try {
-      await shareProductOnWhatsApp(product, imageUrl);
+      const shop = await getShopShareInfo();
+      await shareProductOnWhatsApp(product, imageUrl, shop);
     } catch (e) {
       console.error('Failed to open WhatsApp', e);
     } finally {
       setSharing(false);
     }
+  }
+
+  function handleEdit() {
+    router.push(`/products/edit/${product.id}` as never);
   }
 
   async function handleToggleSold() {
@@ -87,6 +140,10 @@ export default function ProductDetailsScreen() {
         },
       ]
     );
+  }
+
+  function formatCharge(c: any) {
+    return c.calculation_type === 'percentage' ? `${c.value}%` : `₹${Number(c.value).toFixed(2)}`;
   }
 
   return (
@@ -123,14 +180,20 @@ export default function ProductDetailsScreen() {
           </View>
           <Text style={styles.code}>{product.product_code}</Text>
         </View>
-        <TouchableOpacity style={styles.shareBtn} onPress={handleShare} disabled={sharing}>
-          {sharing ? (
-            <ActivityIndicator size="small" color="#25D366" />
-          ) : (
-            <Ionicons name="logo-whatsapp" size={22} color="#25D366" />
-          )}
-          <Text style={styles.shareBtnText}>Share</Text>
-        </TouchableOpacity>
+        <View style={styles.titleActions}>
+          <TouchableOpacity style={styles.editBtn} onPress={handleEdit}>
+            <Ionicons name="create-outline" size={20} color={colors.textPrimary} />
+            <Text style={styles.editBtnText}>Edit</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.shareBtn} onPress={handleShare} disabled={sharing}>
+            {sharing ? (
+              <ActivityIndicator size="small" color="#25D366" />
+            ) : (
+              <Ionicons name="logo-whatsapp" size={22} color="#25D366" />
+            )}
+            <Text style={styles.shareBtnText}>Share</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <TouchableOpacity
@@ -155,6 +218,7 @@ export default function ProductDetailsScreen() {
         <Row label="Subcategory" value={product.subcategories?.name ?? '—'} />
         <Row label="Metal" value={product.metals?.name ?? '—'} />
         <Row label="Purity" value={product.purities?.name ?? '—'} />
+        {product.size ? <Row label="Size" value={product.size} /> : null}
         {product.huid ? <Row label="HUID" value={product.huid} /> : null}
         {product.barcode ? <Row label="Barcode" value={product.barcode} /> : null}
         {product.design_number ? <Row label="Design No." value={product.design_number} /> : null}
@@ -168,6 +232,55 @@ export default function ProductDetailsScreen() {
         <Row label="Net" value={`${Number(product.net_weight).toFixed(3)} g`} bold />
       </View>
 
+      {diamonds.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Diamond</Text>
+          {diamonds.map((d: any, i: number) => (
+            <View key={d.id ?? i}>
+              {diamonds.length > 1 && <Text style={styles.subTitle}>Diamond {i + 1}</Text>}
+              <Row
+                label="Diamond Weight"
+                value={diamondWt(d) > 0 ? `${diamondWt(d).toFixed(3)} ct` : '—'}
+              />
+              <Row
+                label="Diamond Rate"
+                value={diamondRate(d) > 0 ? `₹${diamondRate(d).toFixed(2)} / ct` : '—'}
+              />
+              <Row label="Diamond Charge" value={`₹${diamondAmt(d).toFixed(2)}`} />
+            </View>
+          ))}
+          {diamonds.length > 1 && (
+            <>
+              <View style={styles.divider} />
+              <Row label="Total Weight" value={`${totalDiamondWt.toFixed(3)} ct`} />
+              <Row label="Total Charge" value={`₹${totalDiamondAmt.toFixed(2)}`} bold />
+            </>
+          )}
+        </View>
+      )}
+
+      {charges.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Charges</Text>
+          {charges.map((c: any) => (
+            <Row key={c.id} label={c.charge_name} value={formatCharge(c)} />
+          ))}
+          <Text style={styles.helperNote}>
+            Applied against the metal rate at invoice time — not a frozen amount.
+          </Text>
+        </View>
+      )}
+
+      {gstPercent !== null && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Tax</Text>
+          <Row
+            label={product.tax_settings ? 'GST' : 'GST (default, not set on this product)'}
+            value={`${gstPercent}%`}
+          />
+        </View>
+      )}
+
       {!currentStaff ? (
         <Text style={styles.notFound}>Log in again to generate a barcode label.</Text>
       ) : !product.barcode ? (
@@ -178,8 +291,16 @@ export default function ProductDetailsScreen() {
           productCode={product.product_code}
           barcode={product.barcode}
           productName={product.product_name}
+          category={product.categories?.name ?? ''}
+          grossWeight={Number(product.gross_weight)}
           netWeight={Number(product.net_weight)}
-          purity={product.purities?.name ?? '—'}
+          purity={product.purities?.name ?? ''}
+          huid={product.huid}
+          vaPercent={chargeVal('Value Added Charge')}
+          makingCharge={chargeVal('Making Charge')}
+          stoneCharge={chargeVal('Stone Charge')}
+          diamondWeight={totalDiamondWt > 0 ? totalDiamondWt.toFixed(3) : ''}
+          diamondCharge={totalDiamondAmt}
           staffId={currentStaff.id}
         />
       )}
@@ -226,7 +347,6 @@ const styles = StyleSheet.create({
   notFound: { color: colors.textMuted, fontSize: 14 },
   content: { padding: spacing.lg, paddingBottom: spacing.xl * 2 },
   image: { width: '100%', height: 220, borderRadius: radius.lg, backgroundColor: colors.border },
-  // imageSold: { opacity: 0.5 },
   imagePlaceholder: { alignItems: 'center', justifyContent: 'center' },
   soldRibbon: {
     position: 'absolute',
@@ -244,6 +364,18 @@ const styles = StyleSheet.create({
   code: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   soldBadge: { backgroundColor: '#B00020', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   soldBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  titleActions: { flexDirection: 'row', gap: spacing.sm },
+  editBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingVertical: 6,
+    paddingHorizontal: spacing.sm,
+    minWidth: 64,
+  },
+  editBtnText: { fontSize: 10, color: colors.textPrimary, fontWeight: '700', marginTop: 2 },
   shareBtn: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -269,11 +401,13 @@ const styles = StyleSheet.create({
   statusBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md },
   cardTitle: { fontSize: 13, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.sm },
+  subTitle: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginTop: spacing.xs, marginBottom: 2 },
   row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   rowLabel: { fontSize: 13, color: colors.textMuted },
   rowValue: { fontSize: 13, color: colors.textPrimary },
   rowBold: { fontWeight: '700', fontSize: 14, color: colors.textPrimary },
   divider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.xs },
+  helperNote: { color: colors.textMuted, fontSize: 11, marginTop: spacing.xs, fontStyle: 'italic' },
   previewBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.92)',

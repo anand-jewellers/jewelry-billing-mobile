@@ -1,3 +1,4 @@
+// app\(tabs)\settings\metals.tsx
 import { useCallback, useState } from 'react';
 import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFocusEffect } from 'expo-router';
@@ -11,6 +12,7 @@ const METAL_TYPES = [
   { id: 'gold', label: 'Gold' },
   { id: 'silver', label: 'Silver' },
   { id: 'platinum', label: 'Platinum' },
+  { id: 'diamond', label: 'Diamond' },
   { id: 'other', label: 'Other' },
 ];
 

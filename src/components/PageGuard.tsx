@@ -4,11 +4,20 @@ import { useStaff } from '../context/StaffContext';
 import type { PageKey } from '../types/settings';
 import { colors, spacing } from '../theme';
 
-export function PageGuard({ pageKey, children }: { pageKey: PageKey; children: React.ReactNode }) {
+interface Props {
+  pageKey?: PageKey;
+  anyOf?: PageKey[]; // allow if the user has ANY of these keys
+  children: React.ReactNode;
+}
+
+export function PageGuard({ pageKey, anyOf, children }: Props) {
   const { hasAccess, currentStaff } = useStaff();
   if (!currentStaff) return null;
 
-  if (!hasAccess(pageKey)) {
+  const keys = anyOf ?? (pageKey ? [pageKey] : []);
+  const allowed = keys.some((k) => hasAccess(k));
+
+  if (!allowed) {
     return (
       <View style={styles.wrap}>
         <Text style={styles.title}>Access restricted</Text>

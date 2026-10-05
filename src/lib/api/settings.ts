@@ -1,3 +1,5 @@
+// src\lib\api\settings.ts
+
 import { supabase } from '../supabaseClient';
 import type {
   CompanySettings,
@@ -5,10 +7,12 @@ import type {
   Purity,
   CurrentMetalRate,
   Category,
+  Subcategory,
   MakingChargeRule,
   ValueAddedChargeType,
   TaxSetting,
   InvoiceSettings,
+  StoneName,
   CalculationType,
 } from '../../types/settings';
 
@@ -55,9 +59,10 @@ export async function listPurities(metalId?: string): Promise<Purity[]> {
   return data as Purity[];
 }
 
-export async function createPurity(input: { metal_id: string; name: string; purity_percentage: number | null }) {
-  const { error } = await supabase.from('purities').insert(input);
+export async function createPurity(input: { metal_id: string; name: string; purity_percentage: number | null }): Promise<Purity> {
+  const { data, error } = await supabase.from('purities').insert(input).select().single();
   if (error) throw error;
+  return data as Purity;
 }
 
 export async function updatePurity(id: string, patch: Partial<Purity>) {
@@ -100,9 +105,10 @@ export async function listCategories(): Promise<Category[]> {
   return data as Category[];
 }
 
-export async function createCategory(input: { name: string }) {
-  const { error } = await supabase.from('categories').insert(input);
+export async function createCategory(input: { name: string }): Promise<Category> {
+  const { data, error } = await supabase.from('categories').insert(input).select().single();
   if (error) throw error;
+  return data as Category;
 }
 
 export async function updateCategory(id: string, patch: Partial<Category>) {
@@ -112,6 +118,58 @@ export async function updateCategory(id: string, patch: Partial<Category>) {
 
 export async function deleteCategory(id: string) {
   const { error } = await supabase.from('categories').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// ---------- Subcategories ----------
+// Settings-screen version: lists ALL subcategories (with parent category name
+// joined in), unlike products.ts's getSubcategories() which filters to one
+// active category_id for the product form dropdown.
+export async function listSubcategories(): Promise<(Subcategory & { categories?: { name: string } })[]> {
+  const { data, error } = await supabase
+    .from('subcategories')
+    .select('*, categories(name)')
+    .order('name');
+  if (error) throw error;
+  return data as (Subcategory & { categories?: { name: string } })[];
+}
+
+export async function createSubcategory(input: { category_id: string; name: string }): Promise<Subcategory> {
+  const { data, error } = await supabase.from('subcategories').insert(input).select().single();
+  if (error) throw error;
+  return data as Subcategory;
+}
+
+export async function updateSubcategory(id: string, patch: Partial<Subcategory>) {
+  const { error } = await supabase.from('subcategories').update(patch).eq('id', id);
+  if (error) throw error;
+}
+
+export async function deleteSubcategory(id: string) {
+  const { error } = await supabase.from('subcategories').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// ---------- Stone Names ----------
+export async function listStoneNames(): Promise<StoneName[]> {
+  const { data, error } = await supabase.from('stones').select('*').order('name');
+  if (error) throw error;
+  return data as StoneName[];
+}
+
+export async function createStoneName(input: { name: string }): Promise<StoneName> {
+  const { data, error } = await supabase.from('stones').insert(input).select().single();
+  if (error) throw error;
+  return data as StoneName;
+}
+
+export async function updateStoneName(id: string, patch: Partial<StoneName>) {
+  const { error } = await supabase.from('stones').update(patch).eq('id', id);
+  if (error) throw error;
+}
+
+export async function deleteStoneName(id: string) {
+  const { error } = await supabase.from('stones').delete().eq('id', id);
   if (error) throw error;
 }
 
@@ -207,4 +265,16 @@ export async function getInvoiceSettings(): Promise<InvoiceSettings> {
 export async function updateInvoiceSettings(patch: Partial<InvoiceSettings>) {
   const { error } = await supabase.from('invoice_settings').update(patch).eq('id', 1);
   if (error) throw error;
+}
+
+export async function getPrimaryTaxSetting(): Promise<TaxSetting | null> {
+  const { data, error } = await supabase
+    .from('tax_settings')
+    .select('*')
+    .eq('is_active', true)
+    .order('tax_percentage', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data as TaxSetting | null;
 }

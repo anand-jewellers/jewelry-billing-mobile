@@ -1,7 +1,14 @@
+//\src\types\invoices.ts
+
 import type { CalculationType } from './settings';
 
 export type ProductStatus = 'active' | 'inactive' | 'sold' | 'discontinued';
-export type PaymentMode = 'cash' | 'card' | 'upi' | 'bank_transfer' | 'cheque';
+
+// 'split' is not a mode a cashier picks for a single payment row — it's the
+// value stored on the invoice header when payment_splits.length > 1, so
+// anything still reading the single `payment_mode` field knows to look at
+// the breakdown instead of trusting one mode.
+export type PaymentMode = 'cash' | 'card' | 'upi' | 'bank_transfer' | 'cheque' | 'split';
 
 export interface Product {
   id: string;
@@ -66,6 +73,7 @@ export interface InvoiceItem {
   tax_amount: number;
   total_amount: number;
   huid: string | null;
+  gst_enabled?: boolean; //
 }
 
 export interface Customer {
@@ -73,6 +81,15 @@ export interface Customer {
   name: string;
   phone: string | null;
   email: string | null;
+}
+
+// One leg of a (possibly split) payment — e.g. ₹5000 cash + ₹8500 UPI.
+// `amount` is always >= 0; rows with 0/blank amount are dropped before save.
+export interface PaymentSplitEntry {
+  id: string;
+  mode: PaymentMode;
+  amount: number;
+  reference?: string | null; // optional UPI/txn/cheque reference
 }
 
 export interface Invoice {
@@ -87,9 +104,11 @@ export interface Invoice {
   paid_amount: number;
   balance_amount: number;
   payment_status: string;
-  payment_mode: PaymentMode;   // NEW
+  payment_mode: PaymentMode;   // 'split' when payment_splits.length > 1
   status: string;
   created_at: string;
+  exchange_total: number;
+  payment_splits?: PaymentSplitEntry[];
 }
 
 export interface InvoiceItemVaCharge {
@@ -145,9 +164,33 @@ export interface InvoiceDetail {
   paid_amount: number;
   balance_amount: number;
   payment_status: string;
-  payment_mode: PaymentMode;   // NEW
+  payment_mode: PaymentMode;   // 'split' when payment_splits.length > 1
   status: string;
   items: InvoiceItemDetail[];
   charges: InvoiceCharge[];
+  created_at: string;
+  exchange_total: number;
+  exchange_items: ExchangeItemDetail[];
+  payment_splits?: PaymentSplitEntry[]; // NEW — per-mode breakdown, if split
+  remark: string | null; // NEW — internal reference note, not shown on the printed slip
+}
+
+
+export interface ExchangeItem {
+  id: string;
+  description: string;
+  gross_weight: number;
+  stone_weight: number;
+  purity_id: string | null;
+  purity_percent: number;     // nominal/claimed purity, e.g. 91.6 for 22K
+  old_percent: number;        // NEW — tested purity from your touchstone/acid test
+  deduction_percent: number;  // derived: purity_percent − old_percent
+  rate_per_gram: number;
+  net_weight: number;         // (gross_weight − stone_weight) × old_percent/100
+  amount: number;
+}
+
+export interface ExchangeItemDetail extends ExchangeItem {
+  invoice_id: string;
   created_at: string;
 }

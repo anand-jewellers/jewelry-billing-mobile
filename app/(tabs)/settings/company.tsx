@@ -13,6 +13,8 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { File } from 'expo-file-system';
 import { Card, Input, Button } from '../../../src/components/ui';
+import { ErrorModal } from '../../../src/components/ui/ErrorModal';
+import { SuccessModal } from '../../../src/components/ui/SuccessModal';
 import { colors, radius, spacing } from '../../../src/theme';
 import { supabase } from '../../../src/lib/supabaseClient';
 import { getCompanySettings, updateCompanySettings } from '../../../src/lib/api/settings';
@@ -139,39 +141,52 @@ export default function CompanySettingsScreen() {
   const { hasAccess } = useStaff();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [uploadingLogo, setUploadingLogo] = useState(false);
-  const [logoSaved, setLogoSaved] = useState(false);
   const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+
+  // Error modal state. errorInfo is intentionally NOT cleared on close so the
+  // message stays mounted while the modal fades out; errorVisible drives it.
+  const [errorInfo, setErrorInfo] = useState<{ title: string; message: string } | null>(null);
+  const [errorVisible, setErrorVisible] = useState(false);
+
+  function showError(message: string, title = 'Something went wrong') {
+    setErrorInfo({ title, message });
+    setErrorVisible(true);
+  }
+
+  // Success modal state — same pattern as the error modal.
+  const [successInfo, setSuccessInfo] = useState<{ title: string; message: string } | null>(null);
+  const [successVisible, setSuccessVisible] = useState(false);
+
+  function showSuccess(message: string, title = 'Success') {
+    setSuccessInfo({ title, message });
+    setSuccessVisible(true);
+  }
 
   const canChangeLogo = hasAccess('settings.company_logo');
 
   useEffect(() => {
     getCompanySettings()
       .then((data) => setForm(data))
-      .catch(() => setError('Could not load company settings.'))
+      .catch(() => showError('Could not load company settings.', 'Could not load settings'))
       .finally(() => setLoading(false));
   }, []);
 
   const handleSave = async () => {
-    setError(null);
-    setSaved(false);
     setSaving(true);
     try {
       await updateCompanySettings(form);
-      setSaved(true);
       setGlobalSettings(form as CompanySettings);
+      showSuccess('Company details have been updated.', 'Saved');
     } catch {
-      setError('Could not save. Check your connection and try again.');
+      showError('Could not save. Check your connection and try again.', 'Could not save');
     } finally {
       setSaving(false);
     }
   };
 
   const set = (key: keyof typeof form) => (value: string) => {
-    setLogoSaved(false);
     setForm((f) => ({ ...f, [key]: value }));
   };
 
@@ -181,21 +196,19 @@ export default function CompanySettingsScreen() {
     const { data: { session } } = await supabase.auth.getSession();
     console.log('Current user id:', session?.user?.id, 'session exists:', !!session);
 
-    setError(null);
-    setSaved(false);
     setLogoLoadFailed(false);
     setUploadingLogo(true);
     try {
       const url = await pickAndUploadLogo();
       setForm((f) => ({ ...f, logo_url: url }));
       await updateCompanySettings({ logo_url: url });
-      setLogoSaved(true);
       setGlobalSettings({ ...(form as CompanySettings), logo_url: url });
+      showSuccess('Your company logo has been updated.', 'Logo saved');
     } catch (err) {
       if (err instanceof Error && err.message === 'CANCELED') return;
       console.error('Logo upload failed:', err);
       const detail = err instanceof Error ? err.message : String(err);
-      setError(`Could not upload the logo: ${detail}`);
+      showError(`Could not upload the logo: ${detail}`, 'Logo upload failed');
     } finally {
       setUploadingLogo(false);
     }
@@ -210,83 +223,91 @@ export default function CompanySettingsScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
-    >
-      <ScrollView
-        style={styles.screen}
-        contentContainerStyle={{
-          padding: spacing.lg,
-          paddingBottom: spacing.lg + 120,
-        }}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
+    <>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
       >
-        <Card>
-          {error && <Text style={styles.error}>{error}</Text>}
-          {saved && <Text style={styles.success}>Saved.</Text>}
-
-          <Text style={styles.label}>Company Logo</Text>
-          <View style={styles.logoRow}>
-            <View style={styles.logoPreview}>
-              {form.logo_url && !logoLoadFailed ? (
-                <Image
-                  source={{ uri: form.logo_url }}
-                  style={styles.logoImage}
-                  resizeMode="contain"
-                  onError={(e) => {
-                    console.error('Logo preview failed to load:', e.nativeEvent.error);
-                    setLogoLoadFailed(true);
-                  }}
-                />
-              ) : (
-                <Text style={styles.logoPlaceholder}>
-                  {logoLoadFailed ? 'Failed to load' : 'No logo'}
-                </Text>
+        <ScrollView
+          style={styles.screen}
+          contentContainerStyle={{
+            padding: spacing.lg,
+            paddingBottom: spacing.lg + 120,
+          }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+        >
+          <Card>
+            <Text style={styles.label}>Company Logo</Text>
+            <View style={styles.logoRow}>
+              <View style={styles.logoPreview}>
+                {form.logo_url && !logoLoadFailed ? (
+                  <Image
+                    source={{ uri: form.logo_url }}
+                    style={styles.logoImage}
+                    resizeMode="contain"
+                    onError={(e) => {
+                      console.error('Logo preview failed to load:', e.nativeEvent.error);
+                      setLogoLoadFailed(true);
+                    }}
+                  />
+                ) : (
+                  <Text style={styles.logoPlaceholder}>
+                    {logoLoadFailed ? 'Failed to load' : 'No logo'}
+                  </Text>
+                )}
+              </View>
+              {canChangeLogo && (
+                <Pressable onPress={handleChangeLogo} disabled={uploadingLogo} style={styles.logoButton}>
+                  {uploadingLogo ? (
+                    <ActivityIndicator color={colors.primary} size="small" />
+                  ) : (
+                    <Text style={styles.logoButtonText}>{form.logo_url ? 'Change Logo' : 'Upload Logo'}</Text>
+                  )}
+                </Pressable>
               )}
             </View>
-            {canChangeLogo && (
-              <Pressable onPress={handleChangeLogo} disabled={uploadingLogo} style={styles.logoButton}>
-                {uploadingLogo ? (
-                  <ActivityIndicator color={colors.primary} size="small" />
-                ) : (
-                  <Text style={styles.logoButtonText}>{form.logo_url ? 'Change Logo' : 'Upload Logo'}</Text>
-                )}
-              </Pressable>
-            )}
-          </View>
-          {logoSaved && !uploadingLogo && !logoLoadFailed && (
-            <Text style={styles.logoSaved}>Logo saved ✓</Text>
-          )}
-          <Text style={styles.logoHint}>
-            Used on the login screen, the app header, and printed invoices. Square images work best.
-          </Text>
+            <Text style={styles.logoHint}>
+              Used on the login screen, the app header, and printed invoices. Square images work best.
+            </Text>
 
-          <Input label="Company Name" value={form.company_name} onChangeText={set('company_name')} placeholder="Your shop's name" />
-          <Input label="Address" value={form.address ?? ''} onChangeText={set('address')} placeholder="Street address" />
-          <Input label="City" value={form.city ?? ''} onChangeText={set('city')} />
-          <Input label="State" value={form.state ?? ''} onChangeText={set('state')} />
-          <Input label="Pincode" value={form.pincode ?? ''} onChangeText={set('pincode')} keyboardType="number-pad" />
-          <Input label="Phone" value={form.phone ?? ''} onChangeText={set('phone')} keyboardType="phone-pad" />
-          <Input label="Email" value={form.email ?? ''} onChangeText={set('email')} keyboardType="email-address" autoCapitalize="none" />
-          <Input label="GSTIN" value={form.gstin ?? ''} onChangeText={set('gstin')} autoCapitalize="characters" />
-          <Input label="PAN" value={form.pan ?? ''} onChangeText={set('pan')} autoCapitalize="characters" />
-          <Input label="Website" value={form.website ?? ''} onChangeText={set('website')} autoCapitalize="none" keyboardType="url" />
+            <Input label="Company Name" value={form.company_name} onChangeText={set('company_name')} placeholder="Your shop's name" />
+            <Input label="Address" value={form.address ?? ''} onChangeText={set('address')} placeholder="Street address" />
+            <Input label="City" value={form.city ?? ''} onChangeText={set('city')} />
+            <Input label="State" value={form.state ?? ''} onChangeText={set('state')} />
+            <Input label="Pincode" value={form.pincode ?? ''} onChangeText={set('pincode')} keyboardType="number-pad" />
+            <Input label="Phone" value={form.phone ?? ''} onChangeText={set('phone')} keyboardType="phone-pad" />
+            <Input label="Email" value={form.email ?? ''} onChangeText={set('email')} keyboardType="email-address" autoCapitalize="none" />
+            <Input label="GSTIN" value={form.gstin ?? ''} onChangeText={set('gstin')} autoCapitalize="characters" />
+            <Input label="PAN" value={form.pan ?? ''} onChangeText={set('pan')} autoCapitalize="characters" />
+            <Input label="Website" value={form.website ?? ''} onChangeText={set('website')} autoCapitalize="none" keyboardType="url" />
 
-          <Button label={saving ? 'Saving…' : 'Save Changes'} onPress={handleSave} loading={saving} />
-        </Card>
-      </ScrollView>
-    </KeyboardAvoidingView>
+            <Button label={saving ? 'Saving…' : 'Save Changes'} onPress={handleSave} loading={saving} />
+          </Card>
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      <SuccessModal
+        visible={successVisible}
+        title={successInfo?.title}
+        message={successInfo?.message ?? null}
+        onClose={() => setSuccessVisible(false)}
+      />
+
+      <ErrorModal
+        visible={errorVisible}
+        title={errorInfo?.title}
+        message={errorInfo?.message ?? null}
+        onClose={() => setErrorVisible(false)}
+      />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  error: { fontSize: 13, color: colors.error, marginBottom: spacing.md, textAlign: 'center' },
-  success: { fontSize: 13, color: colors.success, marginBottom: spacing.md, textAlign: 'center' },
   label: { fontSize: 12, color: colors.textSecondary, marginBottom: 6, fontWeight: '500' },
   logoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.xs },
   logoPreview: {
@@ -310,6 +331,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   logoButtonText: { fontSize: 13, color: colors.primary, fontWeight: '600' },
-  logoSaved: { fontSize: 12, color: colors.success, fontWeight: '600', marginBottom: spacing.xs },
   logoHint: { fontSize: 11.5, color: colors.textMuted, marginBottom: spacing.lg },
 });

@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabaseClient';
 import { useStaff } from './StaffContext';
 import { useCompanySettings } from './CompanySettingsContext';
 
-type NotificationType = 'product' | 'invoice' | 'settings';
+type NotificationType = 'product' | 'invoice' | 'settings' | 'order';
 
 export type AppNotification = {
   id: string;

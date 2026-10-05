@@ -154,3 +154,37 @@ export async function deleteProductImages(storagePaths: string[]): Promise<void>
     throw error;
   }
 }
+
+
+/**
+ * Uploads an already-compressed JPEG (base64, from ImagePickerGrid) to the
+ * product-images bucket. Returns { storagePath } for the product_images row.
+ */
+export async function uploadProductImageBase64(
+  productId: string,
+  base64: string,
+  index: number
+): Promise<{ storagePath: string }> {
+  if (!base64) {
+    throw new Error('Image data is missing. Please re-pick the photo.');
+  }
+
+  const bytes = decode(base64);
+  if (bytes.byteLength < 1024) {
+    throw new Error(
+      `Image looks too small (${bytes.byteLength} bytes), it may not have processed correctly.`
+    );
+  }
+
+  const storagePath = `${productId}/${Date.now()}_${index}.jpg`;
+
+  const { error } = await supabase.storage
+    .from(PRODUCT_IMAGES_BUCKET)
+    .upload(storagePath, bytes, { contentType: 'image/jpeg', upsert: true });
+  if (error) {
+    console.error('Product image upload error:', error);
+    throw error;
+  }
+
+  return { storagePath };
+}

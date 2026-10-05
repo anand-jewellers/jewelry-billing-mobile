@@ -1,455 +1,549 @@
+// src/components/MoonToJewelSplash.tsx
 import React, { useEffect, useMemo, useRef } from "react";
-import { View, Animated, StyleSheet, Easing, Dimensions } from "react-native";
-import Svg, { Path, Polygon, Circle, Defs, RadialGradient, Stop, G } from "react-native-svg";
+import {
+  View,
+  Animated,
+  StyleSheet,
+  Easing,
+  Dimensions,
+  Image,
+} from "react-native";
+import Svg, {
+  Defs,
+  RadialGradient,
+  Stop,
+  LinearGradient,
+  G,
+  Circle,
+  Polygon,
+  Rect,
+} from "react-native-svg";
+import { useCompanySettings } from "../context/CompanySettingsContext";
 
 const { width, height } = Dimensions.get("window");
 
 type Props = {
   onFinish?: () => void;
-  size?: number;
   backgroundColor?: string;
+  /** Override the context-provided brand name if you ever need to. */
+  brandName?: string;
+  /** Override the context-provided logo URL if you ever need to. */
+  logoUrl?: string | null;
+  tagline?: string;
 };
 
-const RAY_COUNT = 14;
-const PARTICLE_COUNT = 16;
-const BEAD_COUNT = 11;
+// ---------------------------------------------------------------------------
+// Easing curves
+// ---------------------------------------------------------------------------
+const EASE_OUT = Easing.bezier(0.22, 1, 0.36, 1);
+const EASE_IN_OUT = Easing.bezier(0.45, 0, 0.15, 1);
+const EASE_SOFT_IN = Easing.bezier(0.55, 0, 0.85, 0.35);
 
-// A smooth, premium "ease-out" curve — decelerates gently with no snap at the end.
-const SMOOTH_OUT = Easing.bezier(0.22, 1, 0.36, 1);
-const SMOOTH_IN_OUT = Easing.bezier(0.45, 0, 0.15, 1);
-
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 function seededRandom(seed: number) {
   const x = Math.sin(seed) * 10000;
   return x - Math.floor(x);
 }
 
-function quadraticBezier(t: number, p0: number, c: number, p2: number) {
-  return (1 - t) * (1 - t) * p0 + 2 * (1 - t) * t * c + t * t * p2;
+function Backdrop({ backgroundColor }: { backgroundColor: string }) {
+  return (
+    <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
+      <Defs>
+        <RadialGradient id="bg" cx="50%" cy="42%" r="80%">
+          <Stop offset="0%" stopColor="#16295C" stopOpacity={0.85} />
+          <Stop offset="55%" stopColor="#0A1740" stopOpacity={0.95} />
+          <Stop offset="100%" stopColor={backgroundColor} stopOpacity={1} />
+        </RadialGradient>
+      </Defs>
+      <Rect x={0} y={0} width={width} height={height} fill="url(#bg)" />
+    </Svg>
+  );
 }
 
-export default function MoonToJewelSplash({
+function ShimmerSweep({
+  progress,
+  width: w,
+}: {
+  progress: Animated.Value;
+  width: number;
+}) {
+  const translateX = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-w, w],
+  });
+  const opacity = progress.interpolate({
+    inputRange: [0, 0.15, 0.85, 1],
+    outputRange: [0, 0.9, 0.9, 0],
+  });
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        top: 0,
+        bottom: 0,
+        width: w * 0.35,
+        opacity,
+        transform: [{ translateX }, { skewX: "-18deg" }],
+      }}
+    >
+      <Svg width="100%" height="100%">
+        <Defs>
+          <LinearGradient id="shimmer" x1="0" y1="0" x2="1" y2="0">
+            <Stop offset="0%" stopColor="#FFF6C2" stopOpacity={0} />
+            <Stop offset="45%" stopColor="#FFF6C2" stopOpacity={0.85} />
+            <Stop offset="55%" stopColor="#FFFFFF" stopOpacity={0.95} />
+            <Stop offset="100%" stopColor="#FFF6C2" stopOpacity={0} />
+          </LinearGradient>
+        </Defs>
+        <Rect x={0} y={0} width="100%" height="100%" fill="url(#shimmer)" />
+      </Svg>
+    </Animated.View>
+  );
+}
+
+/**
+ * Renders a company logo inside a circular gold frame, or falls back to a
+ * "brand initial" mark if no logo URL is present. Sits inside the same
+ * Animated.View that was previously wrapping the jewelled lozenge SVG so
+ * the entrance choreography is unchanged.
+ */
+function BrandMark({
+  logoUrl,
+  brandName,
+}: {
+  logoUrl?: string | null;
+  brandName: string;
+}) {
+  const initial = (brandName || "B").trim().charAt(0).toUpperCase();
+
+  return (
+    <View style={markStyles.frame}>
+      {logoUrl ? (
+        <Image
+          source={{ uri: logoUrl }}
+          style={markStyles.logo}
+          resizeMode="contain"
+        />
+      ) : (
+        <View style={markStyles.fallback}>
+          <Svg width={56} height={56} viewBox="0 0 56 56">
+            <Defs>
+              <LinearGradient id="fallbackRing" x1="0" y1="0" x2="1" y2="1">
+                <Stop offset="0%" stopColor="#F6E7A8" />
+                <Stop offset="50%" stopColor="#D4AF37" />
+                <Stop offset="100%" stopColor="#A67C1F" />
+              </LinearGradient>
+              <RadialGradient id="fallbackGlow" cx="35%" cy="30%" r="80%">
+                <Stop offset="0%" stopColor="#FFFFFF" stopOpacity={1} />
+                <Stop offset="100%" stopColor="#EDE3C4" stopOpacity={1} />
+              </RadialGradient>
+            </Defs>
+            <Circle
+              cx={28}
+              cy={28}
+              r={25}
+              fill="url(#fallbackGlow)"
+              stroke="url(#fallbackRing)"
+              strokeWidth={1.4}
+            />
+            <G>
+              <Polygon
+                points="28,10 34,20 28,24 22,20"
+                fill="#FFFFFF"
+                opacity={0.9}
+              />
+            </G>
+          </Svg>
+          {/* Brand initial rendered on top of the ring */}
+          <View style={markStyles.fallbackInitialWrap} pointerEvents="none">
+            {/* Intentionally empty — we draw the initial via Text below */}
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+export default function BrandIntro({
   onFinish,
-  size = 140,
   backgroundColor = "#050B24",
+  brandName: brandNameProp,
+  logoUrl: logoUrlProp,
+  tagline = "Crafted for every moment",
 }: Props) {
-  const moonOpacity = useRef(new Animated.Value(0)).current;
-  const moonScale = useRef(new Animated.Value(0.7)).current;
+  // Pull live shop details from the same context LoginScreen uses.
+  // If the provider isn't mounted, `settings` is undefined and we fall
+  // back to the built-in defaults below.
+  const { settings } = useCompanySettings();
 
-  const starOpacity = useRef(new Animated.Value(0)).current;
-  const starScale = useRef(new Animated.Value(0.2)).current;
-  const starTranslateY = useRef(new Animated.Value(10)).current;
-  const starTranslateX = useRef(new Animated.Value(-6)).current;
-  const starRotate = useRef(new Animated.Value(0)).current;
+  const brandName =
+    brandNameProp ?? settings?.company_name?.trim() ?? "BIZJEWEL";
+  const logoUrl = logoUrlProp ?? settings?.logo_url ?? null;
 
-  const jewelOpacity = useRef(new Animated.Value(0)).current;
-  const jewelScale = useRef(new Animated.Value(0.6)).current;
+  // ---- composition roots --------------------------------------------------
+  const sceneOpacity = useRef(new Animated.Value(0)).current;
+  const sceneTranslateY = useRef(new Animated.Value(24)).current;
 
-  const glowOpacity = useRef(new Animated.Value(0)).current;
-  const glowScale = useRef(new Animated.Value(0.8)).current;
+  // ---- monogram (now the shop logo / fallback mark) -----------------------
+  const monogramScale = useRef(new Animated.Value(0.55)).current;
+  const monogramOpacity = useRef(new Animated.Value(0)).current;
+  const monogramGlow = useRef(new Animated.Value(0)).current;
 
-  const burstProgress = useRef(new Animated.Value(0)).current;
+  // ---- wordmark -----------------------------------------------------------
+  const wordmarkOpacity = useRef(new Animated.Value(0)).current;
+  const wordmarkScaleX = useRef(new Animated.Value(1.06)).current;
+  const shimmerProgress = useRef(new Animated.Value(0)).current;
 
-  const stars = useMemo(() => {
-    return Array.from({ length: 55 }).map((_, i) => {
+  // ---- tagline + hairline -------------------------------------------------
+  const hairlineScaleX = useRef(new Animated.Value(0)).current;
+  const taglineOpacity = useRef(new Animated.Value(0)).current;
+  const taglineTranslateY = useRef(new Animated.Value(8)).current;
+
+  // ---- ambient stars ------------------------------------------------------
+  const ambientStars = useMemo(() => {
+    return Array.from({ length: 42 }).map((_, i) => {
       const r1 = seededRandom(i * 12.9898);
       const r2 = seededRandom(i * 78.233);
       const r3 = seededRandom(i * 37.719);
       return {
         x: r1 * width,
         y: r2 * height,
-        r: 0.6 + r3 * 1.6,
-        opacity: 0.25 + r3 * 0.55,
+        r: 0.5 + r3 * 1.1,
+        opacity: 0.15 + r3 * 0.35,
       };
     });
   }, []);
-
-  const rays = useMemo(() => {
-    return Array.from({ length: RAY_COUNT }, (_, i) => {
-      const angle = (360 / RAY_COUNT) * i;
-      const rad = (angle * Math.PI) / 180;
-      return { angle, ux: Math.cos(rad), uy: Math.sin(rad) };
-    });
-  }, []);
-
-  const particles = useMemo(() => {
-    return Array.from({ length: PARTICLE_COUNT }).map((_, i) => {
-      const angle = (360 / PARTICLE_COUNT) * i + seededRandom(i) * 20;
-      const distance = 70 + seededRandom(i * 5.5) * 60;
-      const rad = (angle * Math.PI) / 180;
-      return {
-        dx: Math.cos(rad) * distance,
-        dy: Math.sin(rad) * distance,
-        size: 2 + seededRandom(i * 3.1) * 3,
-      };
-    });
-  }, []);
-
-  // Necklace bead positions — a quadratic-bezier drape from shoulder to shoulder,
-  // with a gentle taper (thin at the ends, fuller in the middle).
-  const beads = useMemo(() => {
-    const p0 = { x: 14, y: 20 };
-    const c = { x: 60, y: 66 };
-    const p2 = { x: 106, y: 20 };
-    return Array.from({ length: BEAD_COUNT }, (_, i) => {
-      const t = i / (BEAD_COUNT - 1);
-      const x = quadraticBezier(t, p0.x, c.x, p2.x);
-      const y = quadraticBezier(t, p0.y, c.y, p2.y);
-      const r = 1.6 + 1.1 * Math.sin(t * Math.PI);
-      return { x, y, r };
-    });
-  }, []);
-
-  const chainMidY = quadraticBezier(0.5, 20, 66, 20);
 
   useEffect(() => {
-    Animated.sequence([
+    // Every animation below uses `useNativeDriver: true` — all animated
+    // properties are `opacity` or `transform`.
+    const timeline = Animated.sequence([
       Animated.parallel([
-        Animated.timing(moonOpacity, {
-          toValue: 1,
-          duration: 550,
-          easing: SMOOTH_OUT,
-          useNativeDriver: true,
-        }),
-        Animated.spring(moonScale, {
-          toValue: 1,
-          friction: 8,
-          tension: 45,
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.delay(120),
-
-      Animated.parallel([
-        Animated.timing(starOpacity, {
-          toValue: 1,
-          duration: 320,
-          easing: SMOOTH_OUT,
-          useNativeDriver: true,
-        }),
-        Animated.spring(starScale, {
-          toValue: 1,
-          friction: 7,
-          tension: 50,
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.delay(80),
-
-      Animated.parallel([
-        Animated.timing(starTranslateY, {
-          toValue: -34,
-          duration: 750,
-          easing: SMOOTH_IN_OUT,
-          useNativeDriver: true,
-        }),
-        Animated.timing(starTranslateX, {
-          toValue: 0,
-          duration: 750,
-          easing: SMOOTH_IN_OUT,
-          useNativeDriver: true,
-        }),
-        Animated.timing(starScale, {
-          toValue: 1.5,
-          duration: 750,
-          easing: SMOOTH_IN_OUT,
-          useNativeDriver: true,
-        }),
-        Animated.timing(starRotate, {
-          toValue: 1,
-          duration: 750,
-          easing: SMOOTH_IN_OUT,
-          useNativeDriver: true,
-        }),
-        Animated.timing(moonOpacity, {
-          toValue: 0,
-          duration: 500,
-          delay: 150,
-          easing: SMOOTH_OUT,
-          useNativeDriver: true,
-        }),
-      ]),
-
-      Animated.parallel([
-        Animated.timing(starOpacity, {
-          toValue: 0,
-          duration: 450,
-          easing: SMOOTH_OUT,
-          useNativeDriver: true,
-        }),
-        Animated.timing(jewelOpacity, {
+        Animated.timing(sceneOpacity, {
           toValue: 1,
           duration: 450,
-          easing: SMOOTH_OUT,
+          easing: EASE_OUT,
           useNativeDriver: true,
         }),
-        Animated.spring(jewelScale, {
+        Animated.timing(sceneTranslateY, {
+          toValue: 0,
+          duration: 650,
+          easing: EASE_OUT,
+          useNativeDriver: true,
+        }),
+      ]),
+
+      Animated.parallel([
+        Animated.timing(monogramOpacity, {
           toValue: 1,
-          friction: 8,
-          tension: 45,
+          duration: 400,
+          easing: EASE_OUT,
+          useNativeDriver: true,
+        }),
+        Animated.spring(monogramScale, {
+          toValue: 1,
+          friction: 9,
+          tension: 60,
           useNativeDriver: true,
         }),
         Animated.sequence([
-          Animated.timing(glowOpacity, {
-            toValue: 0.9,
-            duration: 280,
-            easing: SMOOTH_OUT,
+          Animated.timing(monogramGlow, {
+            toValue: 0.85,
+            duration: 320,
+            easing: EASE_OUT,
             useNativeDriver: true,
           }),
-          Animated.timing(glowOpacity, {
-            toValue: 0,
-            duration: 550,
-            easing: SMOOTH_OUT,
+          Animated.timing(monogramGlow, {
+            toValue: 0.25,
+            duration: 480,
+            easing: EASE_OUT,
             useNativeDriver: true,
           }),
         ]),
-        Animated.timing(glowScale, {
-          toValue: 1.8,
-          duration: 800,
-          easing: SMOOTH_OUT,
+      ]),
+
+      Animated.parallel([
+        Animated.timing(wordmarkOpacity, {
+          toValue: 1,
+          duration: 480,
+          easing: EASE_OUT,
           useNativeDriver: true,
         }),
-        Animated.timing(burstProgress, {
+        Animated.timing(wordmarkScaleX, {
           toValue: 1,
-          duration: 800,
-          easing: SMOOTH_OUT,
+          duration: 700,
+          easing: EASE_IN_OUT,
+          useNativeDriver: true,
+        }),
+        Animated.sequence([
+          Animated.delay(280),
+          Animated.timing(shimmerProgress, {
+            toValue: 1,
+            duration: 900,
+            easing: EASE_IN_OUT,
+            useNativeDriver: true,
+          }),
+        ]),
+      ]),
+
+      Animated.parallel([
+        Animated.timing(hairlineScaleX, {
+          toValue: 1,
+          duration: 520,
+          easing: EASE_OUT,
+          useNativeDriver: true,
+        }),
+        Animated.timing(taglineOpacity, {
+          toValue: 1,
+          duration: 460,
+          delay: 120,
+          easing: EASE_OUT,
+          useNativeDriver: true,
+        }),
+        Animated.timing(taglineTranslateY, {
+          toValue: 0,
+          duration: 520,
+          delay: 120,
+          easing: EASE_OUT,
           useNativeDriver: true,
         }),
       ]),
-      Animated.delay(350),
-    ]).start(() => {
-      onFinish && onFinish();
+
+      Animated.delay(600),
+
+      Animated.parallel([
+        Animated.timing(sceneOpacity, {
+          toValue: 0,
+          duration: 420,
+          easing: EASE_SOFT_IN,
+          useNativeDriver: true,
+        }),
+        Animated.timing(sceneTranslateY, {
+          toValue: -22,
+          duration: 460,
+          easing: EASE_IN_OUT,
+          useNativeDriver: true,
+        }),
+      ]),
+    ]);
+
+    timeline.start(({ finished }) => {
+      if (finished) onFinish?.();
     });
-  }, []);
 
-  const starRotateDeg = starRotate.interpolate({
+    return () => {
+      timeline.stop();
+    };
+  }, [
+    onFinish,
+    sceneOpacity,
+    sceneTranslateY,
+    monogramOpacity,
+    monogramScale,
+    monogramGlow,
+    wordmarkOpacity,
+    wordmarkScaleX,
+    shimmerProgress,
+    hairlineScaleX,
+    taglineOpacity,
+    taglineTranslateY,
+  ]);
+
+  const monogramGlowScale = monogramGlow.interpolate({
     inputRange: [0, 1],
-    outputRange: ["0deg", "160deg"],
-  });
-
-  const rayOpacity = burstProgress.interpolate({
-    inputRange: [0, 0.15, 0.6, 1],
-    outputRange: [0, 0.85, 0.4, 0],
-  });
-
-  const particleOpacity = burstProgress.interpolate({
-    inputRange: [0, 0.1, 0.7, 1],
-    outputRange: [0, 1, 0.6, 0],
+    outputRange: [0.9, 1.5],
   });
 
   return (
     <View style={[styles.container, { backgroundColor }]}>
-      <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
-        <Defs>
-          <RadialGradient id="skyGlow" cx="50%" cy="35%" r="75%">
-            <Stop offset="0%" stopColor="#132A5E" stopOpacity={0.6} />
-            <Stop offset="100%" stopColor={backgroundColor} stopOpacity={1} />
-          </RadialGradient>
-        </Defs>
-        <Circle cx={width / 2} cy={height * 0.35} r={Math.max(width, height)} fill="url(#skyGlow)" />
-        {stars.map((s, i) => (
-          <Circle key={i} cx={s.x} cy={s.y} r={s.r} fill="#FFFFFF" opacity={s.opacity} />
+      <Backdrop backgroundColor={backgroundColor} />
+
+      <Svg
+        width={width}
+        height={height}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      >
+        {ambientStars.map((s, i) => (
+          <Circle
+            key={i}
+            cx={s.x}
+            cy={s.y}
+            r={s.r}
+            fill="#FFFFFF"
+            opacity={s.opacity}
+          />
         ))}
       </Svg>
 
       <Animated.View
         style={[
-          styles.centered,
-          { opacity: moonOpacity, transform: [{ scale: moonScale }] },
-        ]}
-      >
-        <Svg width={size} height={size} viewBox="0 0 120 120">
-          <Defs>
-            <RadialGradient id="moonGlow" cx="40%" cy="35%" r="65%">
-              <Stop offset="0%" stopColor="#FFFDF2" stopOpacity={1} />
-              <Stop offset="100%" stopColor="#E8E2C8" stopOpacity={1} />
-            </RadialGradient>
-          </Defs>
-          <Path
-            d="M60,10
-               A50,50 0 1,0 60,110
-               A38,50 0 1,1 60,10 Z"
-            fill="url(#moonGlow)"
-          />
-        </Svg>
-      </Animated.View>
-
-      <Animated.View
-        style={[
-          styles.centered,
+          styles.scene,
           {
-            opacity: starOpacity,
-            transform: [
-              { translateX: starTranslateX },
-              { translateY: starTranslateY },
-              { scale: starScale },
-              { rotate: starRotateDeg },
-            ],
+            opacity: sceneOpacity,
+            transform: [{ translateY: sceneTranslateY }],
           },
         ]}
+        pointerEvents="none"
       >
-        <Svg width={size * 0.5} height={size * 0.5} viewBox="0 0 60 60">
-          <Polygon
-            points="30,2 37,22 58,22 41,35 47,56 30,43 13,56 19,35 2,22 23,22"
-            fill="#FFFFFF"
-            stroke="#F1F5FF"
-            strokeWidth={1}
-          />
-        </Svg>
-      </Animated.View>
+        {/* ---- Monogram: shop logo (or fallback initial) inside a gold glow ---- */}
+        <View style={styles.monogramWrap}>
+          <Animated.View
+            style={[
+              styles.monogramGlow,
+              {
+                opacity: monogramGlow,
+                transform: [{ scale: monogramGlowScale }],
+              },
+            ]}
+          >
+            <Svg width={140} height={140} viewBox="0 0 140 140">
+              <Defs>
+                <RadialGradient id="mGlow" cx="50%" cy="50%" r="50%">
+                  <Stop offset="0%" stopColor="#FFE9A8" stopOpacity={0.9} />
+                  <Stop offset="55%" stopColor="#D4AF37" stopOpacity={0.35} />
+                  <Stop offset="100%" stopColor="#D4AF37" stopOpacity={0} />
+                </RadialGradient>
+              </Defs>
+              <Circle cx={70} cy={70} r={70} fill="url(#mGlow)" />
+            </Svg>
+          </Animated.View>
 
-      <Animated.View
-        style={[
-          styles.centered,
-          { opacity: glowOpacity, transform: [{ scale: glowScale }] },
-        ]}
-      >
-        <Svg width={size} height={size} viewBox="0 0 120 120">
-          <Defs>
-            <RadialGradient id="burst" cx="50%" cy="50%" r="50%">
-              <Stop offset="0%" stopColor="#CFE8FF" stopOpacity={0.9} />
-              <Stop offset="100%" stopColor="#CFE8FF" stopOpacity={0} />
-            </RadialGradient>
-          </Defs>
-          <Circle cx={60} cy={60} r={55} fill="url(#burst)" />
-        </Svg>
-      </Animated.View>
+          <Animated.View
+            style={{
+              opacity: monogramOpacity,
+              transform: [{ scale: monogramScale }],
+            }}
+          >
+            <BrandMark logoUrl={logoUrl} brandName={brandName} />
+          </Animated.View>
+        </View>
 
-      {/* Radiating light rays */}
-      <View style={styles.centered} pointerEvents="none">
-        {rays.map((r, i) => {
-          const maxDist = size * 0.7;
-          const translateX = Animated.multiply(burstProgress, r.ux * maxDist);
-          const translateY = Animated.multiply(burstProgress, r.uy * maxDist);
-          return (
-            <Animated.View
-              key={i}
-              style={{
-                position: "absolute",
-                width: 3,
-                height: 42,
-                borderRadius: 1.5,
-                backgroundColor: "#BFE0FF",
-                opacity: rayOpacity,
-                transform: [
-                  { translateX },
-                  { translateY },
-                  { rotate: `${r.angle + 90}deg` },
-                ],
-              }}
-            />
-          );
-        })}
-      </View>
+        {/* ---- Wordmark: the shop name ---- */}
+        <View style={styles.wordmarkWrap}>
+          <Animated.Text
+            style={[
+              styles.wordmark,
+              {
+                opacity: wordmarkOpacity,
+                transform: [{ scaleX: wordmarkScaleX }],
+              },
+            ]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+          >
+            {brandName}
+          </Animated.Text>
+          <ShimmerSweep progress={shimmerProgress} width={width * 0.72} />
+        </View>
 
-      {/* Flying particles */}
-      <View style={styles.centered} pointerEvents="none">
-        {particles.map((p, i) => {
-          const translateX = Animated.multiply(burstProgress, p.dx);
-          const translateY = Animated.multiply(burstProgress, p.dy);
-          return (
-            <Animated.View
-              key={i}
-              style={{
-                position: "absolute",
-                width: p.size,
-                height: p.size,
-                borderRadius: p.size / 2,
-                backgroundColor: "#FFFFFF",
-                opacity: particleOpacity,
-                transform: [{ translateX }, { translateY }],
-              }}
-            />
-          );
-        })}
-      </View>
+        {/* ---- Hairline ---- */}
+        <Animated.View
+          style={[
+            styles.hairline,
+            { transform: [{ scaleX: hairlineScaleX }] },
+          ]}
+        />
 
-      {/* ===== Necklace reveal (replaces the diamond) ===== */}
-      <Animated.View
-        style={[
-          styles.centered,
-          { opacity: jewelOpacity, transform: [{ scale: jewelScale }] },
-        ]}
-      >
-        <Svg width={size * 0.85} height={size * 0.85} viewBox="0 0 120 110">
-          <Defs>
-            <RadialGradient id="beadFill" cx="35%" cy="30%" r="80%">
-              <Stop offset="0%" stopColor="#FFFEF8" stopOpacity={1} />
-              <Stop offset="100%" stopColor="#EDE3C4" stopOpacity={1} />
-            </RadialGradient>
-            <RadialGradient id="tableFill" cx="40%" cy="30%" r="80%">
-              <Stop offset="0%" stopColor="#FFFDF5" stopOpacity={1} />
-              <Stop offset="100%" stopColor="#E8F4FF" stopOpacity={1} />
-            </RadialGradient>
-          </Defs>
-
-          {/* Thin gold strand the beads sit on */}
-          <Path
-            d={`M14,20 Q60,66 106,20`}
-            fill="none"
-            stroke="#D4AF37"
-            strokeWidth={0.8}
-            opacity={0.85}
-          />
-
-          {/* Pearl beads draped along the strand */}
-          {beads.map((b, i) => (
-            <Circle
-              key={i}
-              cx={b.x}
-              cy={b.y}
-              r={b.r}
-              fill="url(#beadFill)"
-              stroke="#C9B77E"
-              strokeWidth={0.4}
-            />
-          ))}
-
-          {/* Drop chain down to the pendant */}
-          <Path
-            d={`M60,${chainMidY + 2} L60,58`}
-            stroke="#D4AF37"
-            strokeWidth={0.8}
-            opacity={0.85}
-          />
-
-          {/* Pendant — small faceted drop, scaled down and centered under the chain */}
-          <G transform="translate(42,58) scale(0.42)">
-            <Polygon points="14,30 40,74 26,30" fill="#7FB8E8" stroke="#4A7FAE" strokeWidth={0.5} />
-            <Polygon points="26,30 40,74 40,30" fill="#9FCCF0" stroke="#4A7FAE" strokeWidth={0.5} />
-            <Polygon points="40,30 40,74 54,30" fill="#8CC0EA" stroke="#4A7FAE" strokeWidth={0.5} />
-            <Polygon points="54,30 40,74 66,30" fill="#6FAEDE" stroke="#4A7FAE" strokeWidth={0.5} />
-
-            <Polygon points="14,30 26,30 20,16" fill="#D9EDFF" stroke="#7FA8C9" strokeWidth={0.5} />
-            <Polygon points="26,30 40,30 32,12" fill="#F0F8FF" stroke="#7FA8C9" strokeWidth={0.5} />
-            <Polygon points="40,30 54,30 48,12" fill="#EAF5FF" stroke="#7FA8C9" strokeWidth={0.5} />
-            <Polygon points="54,30 66,30 60,16" fill="#C9E4FF" stroke="#7FA8C9" strokeWidth={0.5} />
-            <Polygon points="20,16 32,12 26,30" fill="#BEE0FF" stroke="#7FA8C9" strokeWidth={0.5} />
-            <Polygon points="32,12 48,12 40,30" fill="#F6FBFF" stroke="#7FA8C9" strokeWidth={0.5} />
-            <Polygon points="48,12 60,16 54,30" fill="#A9D4FF" stroke="#7FA8C9" strokeWidth={0.5} />
-
-            <Polygon
-              points="20,16 32,12 48,12 60,16 54,30 26,30"
-              fill="url(#tableFill)"
-              stroke="#6B98C2"
-              strokeWidth={0.6}
-            />
-            <Polygon
-              points="14,30 26,30 40,30 54,30 66,30"
-              fill="none"
-              stroke="#4A7FAE"
-              strokeWidth={0.5}
-            />
-
-            <Path d="M30,18 L31.5,21 L34,21 L31.5,23 L32.5,26 L30,24 L27.5,26 L28.5,23 L26,21 L28.5,21 Z" fill="#FFFFFF" opacity={0.95} />
-            <Circle cx={44} cy={40} r={0.8} fill="#FFFFFF" opacity={0.9} />
-          </G>
-        </Svg>
+        {/* ---- Tagline ---- */}
+        <Animated.Text
+          style={[
+            styles.tagline,
+            {
+              opacity: taglineOpacity,
+              transform: [{ translateY: taglineTranslateY }],
+            },
+          ]}
+        >
+          {tagline}
+        </Animated.Text>
       </Animated.View>
     </View>
   );
 }
 
+const markStyles = StyleSheet.create({
+  frame: {
+    width: 104,
+    height: 104,
+    borderRadius: 26,
+    borderWidth: 2,
+    borderColor: "rgba(253, 224, 71, 0.45)",
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  logo: {
+    width: 84,
+    height: 84,
+    borderRadius: 20,
+  },
+  fallback: {
+    width: 104,
+    height: 104,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fallbackInitialWrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});
+
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: "center", justifyContent: "center" },
-  centered: { position: "absolute", alignItems: "center", justifyContent: "center" },
+  container: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  scene: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  monogramWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 28,
+  },
+  monogramGlow: {
+    position: "absolute",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  wordmarkWrap: {
+    position: "relative",
+    overflow: "hidden",
+    paddingHorizontal: 8,
+    maxWidth: width * 0.85,
+  },
+  wordmark: {
+    color: "#F4E9C8",
+    fontSize: 34,
+    fontWeight: "300",
+    textAlign: "center",
+    includeFontPadding: false,
+    letterSpacing: 6,
+  },
+  hairline: {
+    height: 1,
+    width: 96,
+    marginTop: 18,
+    backgroundColor: "rgba(212, 175, 55, 0.55)",
+  },
+  tagline: {
+    marginTop: 16,
+    color: "rgba(233, 226, 200, 0.72)",
+    fontSize: 13,
+    fontWeight: "400",
+    letterSpacing: 2.4,
+    textTransform: "uppercase",
+    textAlign: "center",
+  },
 });

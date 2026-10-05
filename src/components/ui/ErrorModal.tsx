@@ -1,3 +1,5 @@
+// src\components\ui\ErrorModal.tsx
+
 import { useEffect, useRef } from 'react';
 import { Animated, Modal, Pressable, Text, View, StyleSheet } from 'react-native';
 import { AlertTriangle, X } from 'lucide-react-native';

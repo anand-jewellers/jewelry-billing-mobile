@@ -1,0 +1,10 @@
+{
+  "name": "anand-share-page",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Branded product share page (Open Graph preview for WhatsApp)",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}

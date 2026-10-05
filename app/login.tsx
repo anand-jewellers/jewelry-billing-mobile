@@ -6,10 +6,10 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  ScrollView,
   Pressable,
   TextInput,
   ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import {
@@ -25,9 +25,13 @@ import {
 } from 'lucide-react-native';
 import { useStaff } from '../src/context/StaffContext';
 import { useCompanySettings } from '../src/context/CompanySettingsContext';
-import { colors, spacing } from '../src/theme';
+import { ErrorModal } from '../src/components/ui/ErrorModal';
+import { spacing } from '../src/theme';
 
 export default function LoginScreen() {
+  const { width } = useWindowDimensions();
+  const isDesktop = Platform.OS === 'web' && width >= 768;
+
   const { settings } = useCompanySettings();
   const { loginStaff } = useStaff();
   const [email, setEmail] = useState('');
@@ -52,28 +56,23 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.screen}
+      style={[styles.screen, isDesktop && styles.desktopScreen]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView
-        style={styles.screen}
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-        bounces={false}
-      >
+      <View style={[styles.container, isDesktop && styles.desktopContainer]}>
         {/* Top Royal Navy Hero Header */}
-        <View style={styles.hero}>
-          {/* Top Right Quick Settings Icon */}
-          <View style={styles.topRightIcon}>
-            <View style={styles.settingsCircle}>
-              <Settings size={18} color="#CBD5E1" />
+        <View style={[styles.hero, isDesktop && styles.desktopHero]}>
+          {/* Settings Icon: ONLY visible on mobile */}
+          {!isDesktop && (
+            <View style={styles.topRightIcon}>
+              <View style={styles.settingsCircle}>
+                <Settings size={18} color="#CBD5E1" />
+              </View>
             </View>
-          </View>
+          )}
 
-          {/* Logo Badge Container */}
-          <View style={styles.logoOuterBorder}>
-            <View style={styles.logoCard}>
+          <View style={[styles.logoOuterBorder, isDesktop && styles.desktopLogoOuterBorder]}>
+            <View style={[styles.logoCard, isDesktop && styles.desktopLogoCard]}>
               {settings?.logo_url ? (
                 <Image
                   source={{ uri: settings.logo_url }}
@@ -82,35 +81,33 @@ export default function LoginScreen() {
                 />
               ) : (
                 <View style={styles.fallbackLogo}>
-                  <Text style={styles.fallbackLogoText}>AJ</Text>
+                  <Text style={[styles.fallbackLogoText, isDesktop && { fontSize: 17 }]}>AJ</Text>
                   <Text style={styles.fallbackLogoSub}>Jewellers</Text>
                 </View>
               )}
             </View>
           </View>
 
-          {/* Store Name & Tagline */}
-          <Text style={styles.companyName}>
+          <Text style={[styles.companyName, isDesktop && { fontSize: 20 }]}>
             {settings?.company_name || 'Anand Jewellers'}
           </Text>
-          <View style={styles.taglineWrap}>
+          <View style={[styles.taglineWrap, isDesktop && { marginTop: 2, marginBottom: 10, gap: 6 }]}>
             <View style={styles.taglineLine} />
             <Text style={styles.taglineText}>Trust in Every Ornament</Text>
             <View style={styles.taglineLine} />
           </View>
 
-          {/* Value Pillars: Quality, Purity, Trust */}
-          <View style={styles.pillarsRow}>
+          <View style={[styles.pillarsRow, isDesktop && { gap: 24 }]}>
             <View style={styles.pillarItem}>
-              <Diamond size={20} color="#FDE047" strokeWidth={1.8} />
+              <Diamond size={isDesktop ? 16 : 18} color="#FDE047" strokeWidth={1.8} />
               <Text style={styles.pillarLabel}>Quality</Text>
             </View>
             <View style={styles.pillarItem}>
-              <ShieldCheck size={20} color="#FDE047" strokeWidth={1.8} />
+              <ShieldCheck size={isDesktop ? 16 : 18} color="#FDE047" strokeWidth={1.8} />
               <Text style={styles.pillarLabel}>Purity</Text>
             </View>
             <View style={styles.pillarItem}>
-              <Flower2 size={20} color="#FDE047" strokeWidth={1.8} />
+              <Flower2 size={isDesktop ? 16 : 18} color="#FDE047" strokeWidth={1.8} />
               <Text style={styles.pillarLabel}>Trust</Text>
             </View>
           </View>
@@ -120,12 +117,11 @@ export default function LoginScreen() {
         <View style={styles.curveContainer}>
           <Svg
             width="100%"
-            height={60}
+            height={isDesktop ? 30 : 40}
             viewBox="0 0 400 60"
             preserveAspectRatio="none"
             style={styles.svgCurve}
           >
-            {/* Golden Ribbon Accent */}
             <Path
               d="M0,28 C140,65 260,10 400,48 L400,60 L0,60 Z"
               fill="#D97706"
@@ -143,108 +139,110 @@ export default function LoginScreen() {
         </View>
 
         {/* Floating White Login Card */}
-        <View style={styles.bodyWrapper}>
-          <View style={styles.loginCard}>
-            <Text style={styles.cardHeading}>Welcome Back</Text>
+        <View style={[styles.bodyWrapper, isDesktop && styles.desktopBodyWrapper]}>
+          <View style={[styles.loginCard, isDesktop && styles.desktopLoginCard]}>
+            <Text style={[styles.cardHeading, isDesktop && { fontSize: 18 }]}>Welcome Back</Text>
             <Text style={styles.cardSubheading}>
               Sign in to continue to your billing system
             </Text>
 
-            {error && (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            )}
-
             {/* Email Field */}
-            <View style={styles.inputFieldBox}>
-              <Mail size={18} color="#64748B" style={styles.inputIcon} />
-              <View style={styles.inputContent}>
-                <Text style={styles.inputLabel}>Email</Text>
-                <TextInput
-                  style={styles.textInput}
-                  value={email}
-                  onChangeText={setEmail}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="email-address"
-                  placeholder="you@yourshop.com"
-                  placeholderTextColor="#94A3B8"
-                />
-              </View>
+            <View style={[styles.inputFieldBox, isDesktop && styles.desktopInputFieldBox]}>
+              <Mail size={isDesktop ? 16 : 18} color="#64748B" style={styles.inputIcon} />
+              <TextInput
+                style={[
+                  styles.textInput,
+                  Platform.OS === 'web' && ({ outlineStyle: 'none' } as any),
+                ]}
+                value={email}
+                onChangeText={setEmail}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                placeholder="Email Address"
+                placeholderTextColor="#94A3B8"
+                onSubmitEditing={handleSubmit}
+                returnKeyType="next"
+              />
             </View>
 
             {/* Password Field */}
-            <View style={[styles.inputFieldBox, { marginTop: 14 }]}>
-              <Lock size={18} color="#64748B" style={styles.inputIcon} />
-              <View style={styles.inputContent}>
-                <Text style={styles.inputLabel}>Password</Text>
-                <TextInput
-                  style={styles.textInput}
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry={!showPassword}
-                  placeholder="••••••••"
-                  placeholderTextColor="#94A3B8"
-                />
-              </View>
+            <View style={[styles.inputFieldBox, isDesktop && styles.desktopInputFieldBox]}>
+              <Lock size={isDesktop ? 16 : 18} color="#64748B" style={styles.inputIcon} />
+              <TextInput
+                style={[
+                  styles.textInput,
+                  Platform.OS === 'web' && ({ outlineStyle: 'none' } as any),
+                ]}
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry={!showPassword}
+                placeholder="Password"
+                placeholderTextColor="#94A3B8"
+                onSubmitEditing={handleSubmit}
+                returnKeyType="go"
+              />
               <Pressable
                 onPress={() => setShowPassword((prev) => !prev)}
-                style={styles.eyeBtn}
+                style={[styles.eyeBtn, Platform.OS === 'web' && ({ cursor: 'pointer' } as any)]}
                 hitSlop={10}
               >
                 {showPassword ? (
-                  <EyeOff size={18} color="#64748B" />
+                  <EyeOff size={16} color="#64748B" />
                 ) : (
-                  <Eye size={18} color="#64748B" />
+                  <Eye size={16} color="#64748B" />
                 )}
               </Pressable>
             </View>
 
             {/* Sign In Button */}
             <Pressable
-              style={styles.signInBtn}
+              style={({ pressed }) => [
+                styles.signInBtn,
+                isDesktop && styles.desktopSignInBtn,
+                Platform.OS === 'web' && ({ cursor: submitting ? 'not-allowed' : 'pointer' } as any),
+                pressed && { opacity: 0.9 },
+              ]}
               onPress={handleSubmit}
               disabled={submitting}
             >
               {submitting ? (
-                <ActivityIndicator color="#FFFFFF" />
+                <ActivityIndicator color="#FFFFFF" size="small" />
               ) : (
                 <View style={styles.btnRow}>
                   <Text style={styles.signInBtnText}>Sign In</Text>
-                  <ArrowRight size={18} color="#FFFFFF" strokeWidth={2.4} />
+                  <ArrowRight size={isDesktop ? 16 : 18} color="#FFFFFF" strokeWidth={2.4} />
                 </View>
               )}
             </Pressable>
 
-            {/* Secure Access Ribbon */}
-            <View style={styles.secureBadgeRow}>
+            <View style={[styles.secureBadgeRow, isDesktop && { marginTop: 4 }]}>
               <View style={styles.secureLine} />
               <View style={styles.secureContent}>
-                <ShieldCheck size={14} color="#D97706" />
+                <ShieldCheck size={isDesktop ? 13 : 14} color="#D97706" />
                 <Text style={styles.secureText}>Secure Access</Text>
               </View>
               <View style={styles.secureLine} />
             </View>
           </View>
 
-          {/* Bottom Brand Quote & Decorative Lotus */}
-          <View style={styles.bottomBrandSection}>
-            <View style={styles.watermarkLotus}>
-              <Flower2 size={44} color="#FDE68A" opacity={0.6} />
-            </View>
-
+          {/* Bottom Brand Quote */}
+          <View style={[styles.bottomBrandSection, isDesktop && styles.desktopBottomBrandSection]}>
             <Text style={styles.quoteLine1}>More Than Jewellery</Text>
             <Text style={styles.quoteLine2}>A Part of Your Story</Text>
-
-            <View style={styles.goldSeparator}>
-              <View style={styles.quoteGoldLine} />
-            </View>
-
+            <View style={styles.goldSeparator} />
             <Text style={styles.poweredBy}>Powered by Bizfonal Infotech</Text>
           </View>
         </View>
-      </ScrollView>
+      </View>
+
+      {/* Error Modal */}
+      <ErrorModal
+        visible={!!error}
+        title="Sign In Failed"
+        message={error}
+        onClose={() => setError(null)}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -254,56 +252,85 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FDFBF7',
   },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: spacing.xl,
+  desktopScreen: {
+    backgroundColor: '#EEF2F6',
+    justifyContent: 'center',
+    paddingVertical: 24,
+  },
+  container: {
+    flex: 1,
+    width: '100%',
+  },
+  desktopContainer: {
+    flex: undefined,
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: 440,
+    backgroundColor: '#FDFBF7',
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: '#0B2347',
+    shadowOpacity: 0.14,
+    shadowOffset: { width: 0, height: 10 },
+    shadowRadius: 22,
+    elevation: 8,
   },
   hero: {
-    backgroundColor: '#0B2347', // Royal Deep Navy
+    backgroundColor: '#0B2347',
     alignItems: 'center',
-    paddingTop: 56,
-    paddingBottom: 28,
+    paddingTop: 44,
+    paddingBottom: 18,
     paddingHorizontal: spacing.lg,
     position: 'relative',
   },
+  desktopHero: {
+    paddingTop: 24,
+    paddingBottom: 12,
+  },
   topRightIcon: {
     position: 'absolute',
-    top: 48,
+    top: 40,
     right: 20,
     zIndex: 10,
   },
   settingsCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   logoOuterBorder: {
-    width: 88,
-    height: 88,
-    borderRadius: 26,
+    width: 76,
+    height: 76,
+    borderRadius: 22,
     borderWidth: 2,
     borderColor: 'rgba(253, 224, 71, 0.35)',
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
+  },
+  desktopLogoOuterBorder: {
+    width: 62,
+    height: 62,
+    borderRadius: 18,
+    marginBottom: 8,
   },
   logoCard: {
-    width: 76,
-    height: 76,
-    borderRadius: 22,
+    width: 66,
+    height: 66,
+    borderRadius: 18,
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.18,
-    shadowRadius: 8,
-    elevation: 4,
+  },
+  desktopLogoCard: {
+    width: 54,
+    height: 54,
+    borderRadius: 14,
   },
   logoImage: {
     width: '100%',
@@ -314,20 +341,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   fallbackLogoText: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     color: '#0B2347',
   },
   fallbackLogoSub: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
     color: '#B45309',
     marginTop: -2,
   },
   companyName: {
-    fontSize: 27,
+    fontSize: 23,
     fontWeight: '700',
-    color: '#FDE047', // Warm Gold
+    color: '#FDE047',
     textAlign: 'center',
     letterSpacing: 0.3,
     fontFamily: Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }),
@@ -336,16 +363,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginTop: 6,
-    marginBottom: 20,
+    marginTop: 4,
+    marginBottom: 14,
   },
   taglineLine: {
-    width: 24,
+    width: 22,
     height: 1,
     backgroundColor: 'rgba(253, 224, 71, 0.4)',
   },
   taglineText: {
-    fontSize: 12.5,
+    fontSize: 12,
     color: '#F1F5F9',
     letterSpacing: 0.4,
     fontWeight: '400',
@@ -354,14 +381,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 36,
+    gap: 32,
   },
   pillarItem: {
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
   },
   pillarLabel: {
-    fontSize: 12,
+    fontSize: 11.5,
     fontWeight: '500',
     color: '#E2E8F0',
   },
@@ -375,47 +402,47 @@ const styles = StyleSheet.create({
   bodyWrapper: {
     flex: 1,
     paddingHorizontal: spacing.lg,
-    marginTop: -24,
+    marginTop: 20,
+  },
+  desktopBodyWrapper: {
+    flex: undefined,
+    paddingHorizontal: 22,
+    marginTop: 54, // Clean separation below the gold curve
+    paddingBottom: 20,
   },
   loginCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    padding: 24,
+    borderRadius: 22,
+    padding: 20,
     shadowColor: '#0F172A',
     shadowOpacity: 0.08,
-    shadowOffset: { width: 0, height: 8 },
-    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 14,
     elevation: 4,
     borderWidth: 1,
     borderColor: 'rgba(226, 232, 240, 0.8)',
+    gap: 12,
+  },
+  desktopLoginCard: {
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    marginTop: 4,
+    gap: 10,
   },
   cardHeading: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     color: '#0B2347',
     textAlign: 'center',
     letterSpacing: -0.3,
   },
   cardSubheading: {
-    fontSize: 13,
+    fontSize: 12.5,
     color: '#64748B',
     textAlign: 'center',
-    marginTop: 4,
-    marginBottom: 20,
-  },
-  errorBox: {
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginBottom: 16,
-  },
-  errorText: {
-    fontSize: 12.5,
-    color: '#B91C1C',
-    textAlign: 'center',
+    marginTop: -4,
+    marginBottom: 6,
   },
   inputFieldBox: {
     flexDirection: 'row',
@@ -423,45 +450,40 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8FAFC',
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderRadius: 16,
+    borderRadius: 14,
     paddingHorizontal: 14,
-    paddingVertical: 8,
+    height: 50,
+  },
+  desktopInputFieldBox: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 42,
   },
   inputIcon: {
     marginRight: 10,
   },
-  inputContent: {
-    flex: 1,
-  },
-  inputLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#64748B',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
   textInput: {
+    flex: 1,
     fontSize: 14,
     color: '#0F172A',
-    paddingVertical: 2,
-    paddingHorizontal: 0,
-    marginTop: 2,
+    paddingVertical: 0,
+    height: '100%',
   },
   eyeBtn: {
-    padding: 6,
+    padding: 4,
   },
   signInBtn: {
-    backgroundColor: '#0F3E78', // Radiant Navy Blue Button
-    borderRadius: 16,
-    paddingVertical: 15,
+    backgroundColor: '#0F3E78',
+    borderRadius: 14,
+    paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 22,
-    shadowColor: '#0F3E78',
-    shadowOpacity: 0.28,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 10,
-    elevation: 3,
+    marginTop: 6,
+  },
+  desktopSignInBtn: {
+    borderRadius: 10,
+    paddingVertical: 10,
+    marginTop: 4,
   },
   btnRow: {
     flexDirection: 'row',
@@ -469,7 +491,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   signInBtnText: {
-    fontSize: 15.5,
+    fontSize: 15,
     fontWeight: '700',
     color: '#FFFFFF',
   },
@@ -477,7 +499,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 20,
+    marginTop: 8,
     gap: 10,
   },
   secureLine: {
@@ -491,27 +513,28 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   secureText: {
-    fontSize: 11.5,
+    fontSize: 11,
     fontWeight: '600',
     color: '#92400E',
   },
   bottomBrandSection: {
     alignItems: 'center',
-    marginTop: 28,
-    paddingBottom: 16,
+    marginTop: 60,
+    paddingBottom: 8,
   },
-  watermarkLotus: {
-    marginBottom: 6,
+  desktopBottomBrandSection: {
+    marginTop: 20,
+    paddingBottom: 4,
   },
   quoteLine1: {
-    fontSize: 14.5,
+    fontSize: 13.5,
     fontWeight: '600',
     color: '#B45309',
     fontStyle: 'italic',
     fontFamily: Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }),
   },
   quoteLine2: {
-    fontSize: 15.5,
+    fontSize: 14.5,
     fontWeight: '700',
     color: '#92400E',
     fontStyle: 'italic',
@@ -519,20 +542,16 @@ const styles = StyleSheet.create({
     fontFamily: Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }),
   },
   goldSeparator: {
-    width: 60,
+    width: 56,
     height: 1.5,
     backgroundColor: '#F59E0B',
-    marginTop: 8,
-    marginBottom: 16,
+    marginTop: 6,
+    marginBottom: 10,
     borderRadius: 1,
     opacity: 0.6,
   },
-  quoteGoldLine: {
-    width: '100%',
-    height: '100%',
-  },
   poweredBy: {
-    fontSize: 11.5,
+    fontSize: 11,
     color: '#94A3B8',
     letterSpacing: 0.3,
   },

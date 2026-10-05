@@ -1,4 +1,5 @@
-import { useState } from 'react';
+// src/components/AppHeader.tsx
+import { memo, useCallback, useState } from 'react';
 import { View, Text, Image, Pressable, Modal, StyleSheet, FlatList } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,22 +23,122 @@ const TYPE_ICON: Record<AppNotification['type'], keyof typeof Ionicons.glyphMap>
   product: 'cube-outline',
   invoice: 'document-text-outline',
   settings: 'settings-outline',
+  order: 'diamond-outline',
 };
 
-export function AppHeader() {
+/* ---------- Profile menu (mounted only while open) ---------- */
+const ProfileMenu = memo(function ProfileMenu({
+  initial,
+  name,
+  role,
+  onClose,
+  onSignOut,
+}: {
+  initial: string;
+  name: string;
+  role?: string;
+  onClose: () => void;
+  onSignOut: () => void;
+}) {
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.backdrop} onPress={onClose}>
+        <View style={styles.menu}>
+          <View style={styles.menuHeader}>
+            <View style={styles.menuAvatar}>
+              <Text style={styles.menuAvatarInitial}>{initial}</Text>
+            </View>
+            <View style={styles.menuHeaderText}>
+              <Text style={styles.menuName} numberOfLines={1}>
+                {name}
+              </Text>
+              {role ? <Text style={styles.menuRole}>{role}</Text> : null}
+            </View>
+          </View>
+
+          <View style={styles.menuDivider} />
+
+          <Pressable
+            onPress={onSignOut}
+            style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}
+          >
+            <Text style={styles.menuItemText}>Sign out</Text>
+          </Pressable>
+        </View>
+      </Pressable>
+    </Modal>
+  );
+});
+
+/* ---------- Notification panel (mounted only while open) ---------- */
+const NotificationPanel = memo(function NotificationPanel({ onClose }: { onClose: () => void }) {
+  const { notifications, clearOne, clearAll } = useNotifications();
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.backdrop} onPress={onClose}>
+        <Pressable style={styles.notifPanel} onPress={() => {}}>
+          <View style={styles.notifHeader}>
+            <Text style={styles.notifTitle}>Notifications</Text>
+            {notifications.length > 0 && (
+              <Pressable onPress={clearAll} hitSlop={8}>
+                <Text style={styles.clearAllText}>Clear all</Text>
+              </Pressable>
+            )}
+          </View>
+
+          <View style={styles.menuDivider} />
+
+          {notifications.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons name="notifications-off-outline" size={22} color={colors.textMuted} />
+              <Text style={styles.emptyText}>No notifications</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={notifications}
+              keyExtractor={(item) => item.id}
+              style={styles.notifList}
+              renderItem={({ item }) => (
+                <View style={styles.notifItem}>
+                  <View style={styles.notifIconBox}>
+                    <Ionicons name={TYPE_ICON[item.type]} size={16} color={colors.primary} />
+                  </View>
+                  <View style={styles.notifItemText}>
+                    <Text style={styles.notifItemTitle} numberOfLines={1}>{item.title}</Text>
+                    <Text style={styles.notifItemMessage} numberOfLines={4}>{item.message}</Text>
+                    <Text style={styles.notifItemTime}>{timeAgo(item.created_at)}</Text>
+                  </View>
+                  <Pressable onPress={() => clearOne(item.id)} hitSlop={8} style={styles.notifClearButton}>
+                    <Ionicons name="close" size={16} color={colors.textMuted} />
+                  </Pressable>
+                </View>
+              )}
+            />
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+});
+
+/* ---------- Header ---------- */
+export const AppHeader = memo(function AppHeader() {
   const { settings } = useCompanySettings();
   const { currentStaff, logoutStaff } = useStaff();
-  const { notifications, unreadCount, clearOne, clearAll } = useNotifications();
+  const { unreadCount } = useNotifications();
   const [menuOpen, setMenuOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const insets = useSafeAreaInsets();
 
   const initial = currentStaff?.name?.trim()?.[0]?.toUpperCase() ?? '?';
 
-  const handleSignOut = async () => {
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const closeNotif = useCallback(() => setNotifOpen(false), []);
+  const handleSignOut = useCallback(async () => {
     setMenuOpen(false);
     await logoutStaff();
-  };
+  }, [logoutStaff]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
@@ -69,79 +170,19 @@ export function AppHeader() {
         </Pressable>
       </View>
 
-      {/* Profile menu */}
-      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setMenuOpen(false)}>
-          <View style={styles.menu}>
-            <View style={styles.menuHeader}>
-              <View style={styles.menuAvatar}>
-                <Text style={styles.menuAvatarInitial}>{initial}</Text>
-              </View>
-              <View style={styles.menuHeaderText}>
-                <Text style={styles.menuName} numberOfLines={1}>
-                  {currentStaff?.name || 'User'}
-                </Text>
-                {currentStaff?.role ? <Text style={styles.menuRole}>{currentStaff.role}</Text> : null}
-              </View>
-            </View>
-
-            <View style={styles.menuDivider} />
-
-            <Pressable onPress={handleSignOut} style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}>
-              <Text style={styles.menuItemText}>Sign out</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
-
-      {/* Notification panel */}
-      <Modal visible={notifOpen} transparent animationType="fade" onRequestClose={() => setNotifOpen(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setNotifOpen(false)}>
-          <Pressable style={styles.notifPanel} onPress={() => {}}>
-            <View style={styles.notifHeader}>
-              <Text style={styles.notifTitle}>Notifications</Text>
-              {notifications.length > 0 && (
-                <Pressable onPress={clearAll} hitSlop={8}>
-                  <Text style={styles.clearAllText}>Clear all</Text>
-                </Pressable>
-              )}
-            </View>
-
-            <View style={styles.menuDivider} />
-
-            {notifications.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Ionicons name="notifications-off-outline" size={22} color={colors.textMuted} />
-                <Text style={styles.emptyText}>No notifications</Text>
-              </View>
-            ) : (
-              <FlatList
-                data={notifications}
-                keyExtractor={(item) => item.id}
-                style={styles.notifList}
-                renderItem={({ item }) => (
-                  <View style={styles.notifItem}>
-                    <View style={styles.notifIconBox}>
-                      <Ionicons name={TYPE_ICON[item.type]} size={16} color={colors.primary} />
-                    </View>
-                    <View style={styles.notifItemText}>
-                      <Text style={styles.notifItemTitle} numberOfLines={1}>{item.title}</Text>
-                      <Text style={styles.notifItemMessage} numberOfLines={2}>{item.message}</Text>
-                      <Text style={styles.notifItemTime}>{timeAgo(item.created_at)}</Text>
-                    </View>
-                    <Pressable onPress={() => clearOne(item.id)} hitSlop={8} style={styles.notifClearButton}>
-                      <Ionicons name="close" size={16} color={colors.textMuted} />
-                    </Pressable>
-                  </View>
-                )}
-              />
-            )}
-          </Pressable>
-        </Pressable>
-      </Modal>
+      {menuOpen && (
+        <ProfileMenu
+          initial={initial}
+          name={currentStaff?.name || 'User'}
+          role={currentStaff?.role}
+          onClose={closeMenu}
+          onSignOut={handleSignOut}
+        />
+      )}
+      {notifOpen && <NotificationPanel onClose={closeNotif} />}
     </View>
   );
-}
+});
 
 const AVATAR_SIZE = 34;
 

@@ -1,9 +1,9 @@
 {
   "expo": {
-    "name": "jewelry billing",
+    "name": "Swarnam",
     "slug": "jewelry-billing-mobile",
-    "scheme": "jewelrybilling",
-    "version": "2.0.1",
+    "scheme": "swarnam",
+    "version": "2.0.2",
     "orientation": "portrait",
     "plugins": [
       "expo-router",
@@ -26,7 +26,7 @@
         }
       ]
     ],
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
@@ -41,15 +41,26 @@
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "CAMERA",
+        "RECORD_AUDIO",
+        "SYSTEM_ALERT_WINDOW",
+        "VIBRATE",
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "ACCESS_FINE_LOCATION",
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT"
       ],
       "package": "com.venkat.sk.jewelrybillingmobile",
       "edgeToEdgeEnabled": true,
       "statusBar": {
         "translucent": true,
         "backgroundColor": "transparent"
-      }
+      },
+      "queries": [
+        { "package": "com.whatsapp" },
+        { "package": "com.whatsapp.w4b" }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"

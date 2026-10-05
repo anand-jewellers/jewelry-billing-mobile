@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { View, Text, TouchableOpacity, Modal, FlatList, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, Modal, FlatList, StyleSheet, TextInput, ActivityIndicator, Alert } from 'react-native';
 import { colors, spacing } from '../../theme';
 
 export interface SelectOption {
@@ -14,11 +14,43 @@ interface Props {
   onChange: (id: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  // When provided, a "+ Add New" row appears at the bottom of the list.
+  // Tapping it swaps the list for a text input; submitting calls
+  // onAddNew(name), which must create the record and resolve with the
+  // new { id, label } option. The field then auto-selects it and closes.
+  onAddNew?: (name: string) => Promise<SelectOption>;
+  addNewLabel?: string;
 }
 
-export function SelectField({ label, value, options, onChange, placeholder = 'Select...', disabled }: Props) {
+export function SelectField({
+  label, value, options, onChange, placeholder = 'Select...', disabled, onAddNew, addNewLabel = '+ Add New',
+}: Props) {
   const [open, setOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [saving, setSaving] = useState(false);
   const selected = options.find((o) => o.id === value);
+
+  function closeModal() {
+    setOpen(false);
+    setAdding(false);
+    setNewName('');
+  }
+
+  async function handleCreate() {
+    const name = newName.trim();
+    if (!name || !onAddNew) return;
+    setSaving(true);
+    try {
+      const created = await onAddNew(name);
+      onChange(created.id);
+      closeModal();
+    } catch (e: any) {
+      Alert.alert('Error', e.message ?? `Failed to add ${label.toLowerCase()}`);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <View style={styles.wrap}>
@@ -33,26 +65,68 @@ export function SelectField({ label, value, options, onChange, placeholder = 'Se
         </Text>
       </TouchableOpacity>
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={() => setOpen(false)}>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={closeModal}>
+        <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={closeModal}>
           <View style={styles.sheet}>
             <Text style={styles.sheetTitle}>{label}</Text>
-            <FlatList
-              data={options}
-              keyExtractor={(item) => item.id}
-              style={{ maxHeight: 360 }}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={styles.option}
-                  onPress={() => { onChange(item.id); setOpen(false); }}
-                >
-                  <Text style={item.id === value ? styles.optionTextSelected : styles.optionText}>
-                    {item.label}
-                  </Text>
-                </TouchableOpacity>
-              )}
-              ListEmptyComponent={<Text style={styles.empty}>No options available</Text>}
-            />
+
+            {!adding && (
+              <FlatList
+                data={options}
+                keyExtractor={(item) => item.id}
+                style={{ maxHeight: 360 }}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.option}
+                    onPress={() => { onChange(item.id); closeModal(); }}
+                  >
+                    <Text style={item.id === value ? styles.optionTextSelected : styles.optionText}>
+                      {item.label}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                ListEmptyComponent={<Text style={styles.empty}>No options available</Text>}
+                ListFooterComponent={
+                  onAddNew ? (
+                    <TouchableOpacity style={styles.addNewRow} onPress={() => setAdding(true)}>
+                      <Text style={styles.addNewText}>{addNewLabel}</Text>
+                    </TouchableOpacity>
+                  ) : null
+                }
+              />
+            )}
+
+            {adding && (
+              <View style={styles.addNewForm}>
+                <TextInput
+                  style={styles.addNewInput}
+                  placeholder={`New ${label.toLowerCase()} name`}
+                  placeholderTextColor={colors.textMuted}
+                  value={newName}
+                  onChangeText={setNewName}
+                  autoFocus
+                  editable={!saving}
+                />
+                <View style={styles.addNewActions}>
+                  <TouchableOpacity
+                    style={styles.addNewCancelBtn}
+                    onPress={() => { setAdding(false); setNewName(''); }}
+                    disabled={saving}
+                  >
+                    <Text style={styles.addNewCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.addNewSaveBtn, (!newName.trim() || saving) && styles.addNewSaveBtnDisabled]}
+                    onPress={handleCreate}
+                    disabled={!newName.trim() || saving}
+                  >
+                    {saving
+                      ? <ActivityIndicator color="#fff" size="small" />
+                      : <Text style={styles.addNewSaveText}>Save</Text>}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -74,4 +148,17 @@ const styles = StyleSheet.create({
   optionText: { fontSize: 15, color: colors.text },
   optionTextSelected: { fontSize: 15, color: colors.primary, fontWeight: '700' },
   empty: { textAlign: 'center', color: colors.textMuted, paddingVertical: spacing.lg },
+  addNewRow: { paddingVertical: 14, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, marginTop: 4 },
+  addNewText: { fontSize: 15, color: colors.primary, fontWeight: '700' },
+  addNewForm: { paddingTop: spacing.sm },
+  addNewInput: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingVertical: 12,
+    paddingHorizontal: spacing.md, fontSize: 15, color: colors.text, backgroundColor: colors.background ?? '#fff',
+  },
+  addNewActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm, marginTop: spacing.sm },
+  addNewCancelBtn: { paddingVertical: 10, paddingHorizontal: 16 },
+  addNewCancelText: { color: colors.textMuted, fontWeight: '600', fontSize: 14 },
+  addNewSaveBtn: { backgroundColor: colors.primary, borderRadius: 8, paddingVertical: 10, paddingHorizontal: 20, minWidth: 64, alignItems: 'center' },
+  addNewSaveBtnDisabled: { opacity: 0.5 },
+  addNewSaveText: { color: '#fff', fontWeight: '700', fontSize: 14 },
 });

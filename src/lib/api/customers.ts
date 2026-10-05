@@ -1,11 +1,16 @@
+// src\lib\api\customers.ts
 import { supabase } from '../supabaseClient';
 import type { Customer } from '../../types/invoices';
+import type { OrderStatus } from './customerOrders';
 
 export interface CustomerListItem extends Customer {
   address: string | null;
   gstin: string | null;
   latest_invoice_number?: string | null;
   latest_invoice_date?: string | null;
+  latest_order_id?: string | null;
+  latest_order_status?: OrderStatus | null;
+  latest_order_metal?: string | null;
 }
 
 export interface ListCustomersParams {
@@ -16,60 +21,52 @@ export interface ListCustomersParams {
   toDate?: string;
 }
 
+function orderPriority(status?: OrderStatus | null): number {
+  if (status === 'ready') return 0;
+  if (status === 'pending') return 1;
+  return 2; // completed or no order — falls back to normal invoice sorting
+}
+
+function invoiceSortValue(invoiceNumber: string | null | undefined): number | null {
+  if (!invoiceNumber) return null;
+  const matches = invoiceNumber.match(/\d+/g);
+  if (!matches || matches.length === 0) return null;
+  return parseInt(matches[matches.length - 1], 10);
+}
+
+export function compareCustomerListItems(a: CustomerListItem, b: CustomerListItem): number {
+  // Customers with an active jewel order (pending/ready) always float to the
+  // top of the queue, ready before pending, ahead of everyone sorted by
+  // invoice number. Once an order is completed it no longer gets priority.
+  const aPri = orderPriority(a.latest_order_status);
+  const bPri = orderPriority(b.latest_order_status);
+  if (aPri !== bPri) return aPri - bPri;
+
+  const aValue = invoiceSortValue(a.latest_invoice_number);
+  const bValue = invoiceSortValue(b.latest_invoice_number);
+  if (aValue === null && bValue === null) return 0;
+  if (aValue === null) return 1;
+  if (bValue === null) return -1;
+  return bValue - aValue;
+}
+
+/**
+ * Single round trip: the list_customers_rpc Postgres function returns each
+ * customer together with their latest invoice and latest jewel order, and
+ * applies the search + date filter server-side.
+ * (See list_customers_rpc.sql for the function and indexes.)
+ */
 export async function listCustomers(params?: ListCustomersParams): Promise<CustomerListItem[]> {
   const { search, fromDate, toDate } = params ?? {};
 
-  let q = supabase
-    .from('customers')
-    .select('id, name, phone:mobile, email, address, gstin')
-    .order('name');
-
-  if (search?.trim()) {
-    q = q.or(`name.ilike.%${search}%,mobile.ilike.%${search}%`);
-  }
-
-  const { data: customers, error } = await q;
+  const { data, error } = await supabase.rpc('list_customers_rpc', {
+    p_search: search?.trim() || null,
+    p_from: fromDate ?? null,
+    p_to: toDate ?? null,
+  });
   if (error) throw error;
-  if (!customers?.length) return [];
 
-  // Fetch invoices for the visible customers in one shot, newest first,
-  // then keep only the first (latest) one we see per customer. When a date
-  // range is given, it's applied here so "latest" means latest within range.
-  const ids = customers.map((c) => c.id);
-  let invQuery = supabase
-    .from('invoices')
-    .select('customer_id, invoice_number, invoice_date')
-    .in('customer_id', ids)
-    .order('invoice_date', { ascending: false });
-
-  if (fromDate) invQuery = invQuery.gte('invoice_date', fromDate);
-  if (toDate) invQuery = invQuery.lte('invoice_date', toDate);
-
-  const { data: invoices, error: invErr } = await invQuery;
-  if (invErr) throw invErr;
-
-  const latestByCustomer = new Map<string, { invoice_number: string; invoice_date: string }>();
-  for (const inv of invoices ?? []) {
-    if (!latestByCustomer.has(inv.customer_id)) {
-      latestByCustomer.set(inv.customer_id, {
-        invoice_number: inv.invoice_number,
-        invoice_date: inv.invoice_date,
-      });
-    }
-  }
-
-  // With a date range active, only keep customers who actually have an
-  // invoice in that range — otherwise every customer would still show up
-  // with a blank "latest invoice" and the range filter would do nothing.
-  const hasDateFilter = Boolean(fromDate || toDate);
-
-  return customers
-    .filter((c) => !hasDateFilter || latestByCustomer.has(c.id))
-    .map((c) => ({
-      ...c,
-      latest_invoice_number: latestByCustomer.get(c.id)?.invoice_number ?? null,
-      latest_invoice_date: latestByCustomer.get(c.id)?.invoice_date ?? null,
-    })) as CustomerListItem[];
+  return ((data ?? []) as CustomerListItem[]).slice().sort(compareCustomerListItems);
 }
 
 export async function getCustomerById(id: string): Promise<CustomerListItem> {

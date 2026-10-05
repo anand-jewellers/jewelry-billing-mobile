@@ -1,7 +1,9 @@
+// app/(tabs)/index.tsx
 import { useCallback, useState, useEffect } from 'react';
 import { View, Text, ScrollView, StyleSheet, useWindowDimensions } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { Card, SummaryCard, Button } from '../../src/components/ui';
+import { Ionicons } from '@expo/vector-icons';
+import { Card, Button } from '../../src/components/ui';
 import { DateFilter, DateFilterValue } from '../../src/components/ui/DateFilter';
 import { colors, spacing } from '../../src/theme';
 import { listMetals, listPurities, listCurrentRates } from '../../src/lib/api/settings';
@@ -10,6 +12,7 @@ import { resolveRange, getSalesReport, ReportSummary } from '../../src/lib/api/r
 import { downloadSalesReportPdf } from '../../src/lib/pdfReport';
 import type { Metal, Purity, CurrentMetalRate } from '../../src/types/settings';
 import { PaymentBreakdownChart } from '../../src/components/ui/PaymentBreakdownChart';
+import { PageGuard } from '../../src/components/PageGuard';
 
 const RATE_ROWS: { label: string; metalMatch: string; purityMatch: string }[] = [
   { label: '24K Gold', metalMatch: 'gold', purityMatch: '24k' },
@@ -20,7 +23,7 @@ const RATE_ROWS: { label: string; metalMatch: string; purityMatch: string }[] = 
 
 function getIndianDateTimeLabel(): { date: string; time: string } {
   const now = new Date();
-  
+
   const day = now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit' });
   const month = now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', month: 'short' });
   const year = now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric' });
@@ -39,7 +42,60 @@ function getIndianDateTimeLabel(): { date: string; time: string } {
   return { date, time };
 }
 
+// Exported screen: only renders the dashboard (and runs its data fetching)
+// when the user has the 'dashboard' permission.
 export default function DashboardScreen() {
+  return (
+    <PageGuard pageKey="dashboard">
+      <DashboardScreenInner />
+    </PageGuard>
+  );
+}
+
+const NAVY = '#12337A'; // value / icon colour - change to match your theme if needed
+
+type StatCardProps = {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  value: string;
+  compact?: boolean; // true on desktop/tablet -> shorter card
+};
+
+// Card whose number auto-shrinks as it gets longer (works on web + native).
+function StatCard({ icon, label, value, compact }: StatCardProps) {
+  const [valueWidth, setValueWidth] = useState(0);
+
+  const maxSize = compact ? 22 : 26;
+  const minSize = 12;
+  // average bold digit is ~0.62em wide, so fit the text into the available width
+  const fitted = valueWidth > 0 ? Math.floor(valueWidth / (Math.max(value.length, 1) * 0.62)) : maxSize;
+  const fontSize = Math.max(minSize, Math.min(maxSize, fitted));
+
+  return (
+    <Card style={[styles.statCard, compact && styles.statCardCompact]}>
+      <View style={styles.statHeader}>
+        <View style={styles.statIconWrap}>
+          <Ionicons name={icon} size={16} color={NAVY} />
+        </View>
+        <Text style={styles.statLabel} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+      <View style={styles.statValueWrap} onLayout={(e) => setValueWidth(e.nativeEvent.layout.width)}>
+        <Text
+          style={[styles.statValue, { fontSize }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.6}
+        >
+          {value}
+        </Text>
+      </View>
+    </Card>
+  );
+}
+
+function DashboardScreenInner() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isSideBySide = width >= 768;
@@ -152,6 +208,40 @@ export default function DashboardScreen() {
 
   const inr = (n: number) => `₹${n.toLocaleString('en-IN')}`;
 
+  // ---- Summary cards (rendered in a 2-column grid on every device) ----
+  const summaryCards = [
+    {
+      icon: 'cash-outline',
+      label: 'Sales',
+      value: reportLoading ? '…' : inr(report?.totalSales ?? 0),
+    },
+    {
+      icon: 'receipt-outline',
+      label: 'Invoices',
+      value: reportLoading ? '…' : String(report?.totalInvoices ?? 0),
+    },
+    {
+      icon: 'people-outline',
+      label: 'Customers',
+      value: String(totalCustomers),
+    },
+    {
+      icon: 'diamond-outline',
+      label: 'Products',
+      value: String(totalProducts),
+    },
+    {
+      icon: 'pricetag-outline',
+      label: 'Discount',
+      value: reportLoading ? '…' : inr(report?.totalDiscount ?? 0),
+    },
+    {
+      icon: 'checkmark-circle-outline',
+      label: 'Collection',
+      value: reportLoading ? '…' : inr(report?.totalCollected ?? 0),
+    },
+  ];
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={{ paddingTop: spacing.lg, paddingBottom: spacing.xxl }}>
       {/* Filter sits at the top */}
@@ -159,13 +249,18 @@ export default function DashboardScreen() {
 
       {reportError && <Text style={styles.errorText}>{reportError}</Text>}
 
+      {/* 2 cards per row on phones (left / right), 3 per row on tablets */}
       <View style={styles.grid}>
-        <SummaryCard icon="cash-outline" label="Sales" value={reportLoading ? '…' : inr(report?.totalSales ?? 0)} tone="primary" />
-        <SummaryCard icon="receipt-outline" label="Invoices" value={reportLoading ? '…' : String(report?.totalInvoices ?? 0)} tone="primary" />
-        <SummaryCard icon="people-outline" label="Customers" value={String(totalCustomers)} tone="primary" />
-        <SummaryCard icon="diamond-outline" label="Products" value={String(totalProducts)} tone="primary" />
-        <SummaryCard icon="time-outline" label="Pending Payments" value={reportLoading ? '…' : inr(report?.totalPending ?? 0)} tone="primary" />
-        <SummaryCard icon="checkmark-circle-outline" label="Collection" value={reportLoading ? '…' : inr(report?.totalCollected ?? 0)} tone="primary" />
+        {summaryCards.map((item) => (
+          <View key={item.label} style={[styles.gridCell, isSideBySide && styles.gridCellTablet]}>
+            <StatCard
+              icon={item.icon as any}
+              label={item.label}
+              value={item.value}
+              compact={isSideBySide}
+            />
+          </View>
+        ))}
       </View>
 
       {/* Side-by-side Row: Jewel Rate & Payment Breakdown */}
@@ -220,7 +315,7 @@ export default function DashboardScreen() {
       {/* Download PDF */}
       <View style={styles.downloadWrap}>
         <Button
-          label={downloading ? 'Generating PDF…' : `Download PDF (${report?.range.label ?? ''})`}
+          label={downloading ? 'Generating PDF…' : `Download PDF`}
           variant="primary"
           onPress={handleDownload}
           disabled={downloading || reportLoading || !report || report.totalInvoices === 0}
@@ -235,9 +330,52 @@ const styles = StyleSheet.create({
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.md,
+    justifyContent: 'space-between', // left card / right card
+    rowGap: spacing.md,
     paddingHorizontal: spacing.lg,
     marginTop: spacing.lg,
+  },
+  gridCell: {
+    width: '48%', // always 2 per row, on every phone size
+  },
+  gridCellTablet: {
+    width: '32%', // 3 per row on tablets / desktop
+  },
+  statCard: {
+    marginHorizontal: 0,
+    padding: spacing.md,
+    minHeight: 96,
+    justifyContent: 'space-between',
+  },
+  statCardCompact: {
+    minHeight: 100,
+    paddingVertical: spacing.sm,
+  },
+  statHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statIconWrap: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#EEF1F8',
+  },
+  statLabel: {
+    flexShrink: 1,
+    fontSize: 13,
+    color: colors.textSecondary,
+  },
+  statValueWrap: {
+    width: '100%',
+    marginTop: spacing.sm,
+  },
+  statValue: {
+    fontWeight: '700',
+    color: NAVY,
   },
   sideBySideContainer: {
     marginTop: spacing.xl,
@@ -297,7 +435,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1E8E3E',
   },
-  ratesCard: { 
+  ratesCard: {
     marginHorizontal: 0,
   },
   matchedCard: {

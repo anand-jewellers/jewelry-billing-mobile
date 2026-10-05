@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Card } from './';
 import { colors, spacing } from '../../theme';
+import { toYMD, fromYMD, formatDisplayDate } from '../../lib/dateUtils';
 
 /**
  * DateFilter
@@ -33,9 +34,9 @@ interface DateFilterProps {
 
 const MODE_OPTIONS: { key: DateFilterMode; label: string }[] = [
   { key: 'today', label: 'Today' },
-  { key: 'week', label: 'This Week' },
-  { key: 'month', label: 'This Month' },
-  { key: 'custom', label: 'Custom Range' },
+  { key: 'week', label: 'Week' },
+  { key: 'month', label: 'Month' },
+  { key: 'custom', label: 'Custom' },
 ];
 
 const WEEKDAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -463,6 +464,65 @@ export function CalendarModal({
   );
 }
 
+/**
+ * DateField
+ * ----------
+ * Form input for a single optional date (e.g. order due date).
+ * Value is a 'YYYY-MM-DD' string (or null). Uses CalendarModal above.
+ */
+interface DateFieldProps {
+  value: string | null;
+  onChange: (value: string | null) => void;
+  placeholder?: string;
+  minimumDate?: Date;
+  title?: string;
+}
+
+export function DateField({
+  value,
+  onChange,
+  placeholder = 'Select date',
+  minimumDate,
+  title = 'Select date',
+}: DateFieldProps) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <View>
+      <View style={styles.fieldBox}>
+        <Pressable style={{ flex: 1 }} onPress={() => setOpen(true)}>
+          <Text style={value ? styles.fieldText : styles.fieldPlaceholder}>
+            {value ? formatDisplayDate(value) : placeholder}
+          </Text>
+        </Pressable>
+        {value && (
+          <Pressable onPress={() => onChange(null)} hitSlop={8}>
+            <Text style={styles.fieldClear}>Clear</Text>
+          </Pressable>
+        )}
+      </View>
+
+      <CalendarModal
+        visible={open}
+        onClose={() => setOpen(false)}
+        mode="single"
+        title={title}
+        selectedDate={value ? fromYMD(value) : undefined}
+        minimumDate={minimumDate}
+        onDayPress={(day) => {
+          onChange(toYMD(day));
+          setOpen(false);
+        }}
+        onClear={() => {
+          onChange(null);
+          setOpen(false);
+        }}
+        onApplyRange={() => { }}
+      />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   chipRow: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg },
   chip: {
@@ -534,4 +594,20 @@ const styles = StyleSheet.create({
   applyBtn: { paddingVertical: spacing.sm, paddingHorizontal: spacing.lg, borderRadius: 8, backgroundColor: colors.gold },
   applyBtnDisabled: { opacity: 0.4 },
   applyBtnText: { fontSize: 13, color: '#FFFFFF', fontWeight: '700' },
+
+  // DateField styles
+  fieldBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.surface,
+    marginBottom: spacing.sm,
+  },
+  fieldText: { fontSize: 15, color: colors.textPrimary },
+  fieldPlaceholder: { fontSize: 15, color: colors.textMuted },
+  fieldClear: { fontSize: 13, color: colors.primary, fontWeight: '600' },
 });

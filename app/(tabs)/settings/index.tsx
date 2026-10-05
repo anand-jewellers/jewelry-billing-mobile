@@ -14,6 +14,8 @@ import {
   Gem,
   Sparkles,
   LayoutGrid,
+  Layers,
+  Diamond,
   TrendingUp,
   Hammer,
   PlusCircle,
@@ -28,6 +30,7 @@ import {
   Cog,
   FileSpreadsheet,
   Boxes,
+  Printer,
   type LucideIcon,
 } from 'lucide-react-native';
 import { useStaff } from '../../../src/context/StaffContext';
@@ -99,6 +102,32 @@ const SETTINGS_ITEMS: SettingItem[] = [
       bg: '#DCFCE7',
       iconColor: '#16A34A',
       watermarkColor: 'rgba(22, 163, 74, 0.08)',
+    },
+  },
+  {
+    label: 'Sub Categories',
+    sublabel: 'Manage subcategories under each category.',
+    route: '/settings/subcategories',
+    icon: Layers,
+    watermarkIcon: Layers,
+    pageKey: 'settings.subcategories',
+    theme: {
+      bg: '#DCFCE7',
+      iconColor: '#16A34A',
+      watermarkColor: 'rgba(22, 163, 74, 0.08)',
+    },
+  },
+  {
+    label: 'Stone Names',
+    sublabel: 'Manage stone names used on products.',
+    route: '/settings/stone-names',
+    icon: Diamond,
+    watermarkIcon: Diamond,
+    pageKey: 'settings.stone_names',
+    theme: {
+      bg: '#F3E8FF',
+      iconColor: '#9333EA',
+      watermarkColor: 'rgba(147, 51, 234, 0.08)',
     },
   },
   {
@@ -179,6 +208,19 @@ const SETTINGS_ITEMS: SettingItem[] = [
       watermarkColor: 'rgba(2, 132, 199, 0.08)',
     },
   },
+    {
+    label: 'Printer',
+    sublabel: 'Set up your thermal receipt printer.',
+    route: '/settings/printer',
+    icon: Printer,
+    watermarkIcon: Printer,
+    pageKey: 'settings.printer',
+    theme: {
+      bg: '#E0E7FF',
+      iconColor: '#4F46E5',
+      watermarkColor: 'rgba(79, 70, 229, 0.08)',
+    },
+  },
 ];
 
 export default function SettingsMenuScreen() {
@@ -209,7 +251,7 @@ export default function SettingsMenuScreen() {
       showsVerticalScrollIndicator={false}
     >
       {/* Header Section: Title & Subtitle + Jewelry Rings Illustration */}
-      <View style={styles.headerSection}>
+      {/* <View style={styles.headerSection}>
         <View style={styles.headerTitleContainer}>
           <Text style={styles.headerTitle}>Master Settings</Text>
           <Text style={styles.headerSubtitle}>
@@ -237,7 +279,7 @@ export default function SettingsMenuScreen() {
             </View>
           </View>
         </View>
-      </View>
+      </View> */}
 
       {/* Search Bar */}
       <View style={styles.searchBar}>

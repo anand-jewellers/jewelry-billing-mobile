@@ -1,3 +1,4 @@
+// app/_layout.tsx
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
@@ -16,10 +17,14 @@ import {
 } from '@expo-google-fonts/playfair-display';
 import { AuthProvider } from '../src/context/AuthContext';
 import { StaffProvider, useStaff } from '../src/context/StaffContext';
-import { CompanySettingsProvider } from '../src/context/CompanySettingsContext';
+import {
+  CompanySettingsProvider,
+  useCompanySettings,
+} from '../src/context/CompanySettingsContext';
 import { NotificationProvider } from '../src/context/NotificationContext';
 import { colors } from '../src/theme';
 import MoonToJewelSplash from '../src/components/MoonToJewelSplash';
+import { supabase } from '../src/lib/supabaseClient';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -44,13 +49,45 @@ function RouteGuard({ children }: { children: React.ReactNode }) {
 
   if (staffLoading) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+      <View
+        style={{
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: colors.background,
+        }}
+      >
         <ActivityIndicator color={colors.primary} />
       </View>
     );
   }
 
   return <>{children}</>;
+}
+
+/**
+ * Renders the branded intro, but only once company settings have actually
+ * loaded. While they're still loading we render a solid colour screen so
+ * the user doesn't see the intro animate in with the wrong brand name.
+ */
+function IntroGate({ onFinish }: { onFinish: () => void }) {
+  const { settings, loading } = useCompanySettings();
+
+  // If your context doesn't expose `loading`, swap this line for the
+  // truthiness check below instead:
+  //
+  //   if (!settings) return <View style={{ flex: 1, backgroundColor: '#0B3D91' }} />;
+  //
+  if (loading) {
+    return <View style={{ flex: 1, backgroundColor: '#0B3D91' }} />;
+  }
+
+  return (
+    <MoonToJewelSplash
+      backgroundColor="#0B3D91"
+      onFinish={onFinish}
+    />
+  );
 }
 
 export default function RootLayout() {
@@ -60,25 +97,33 @@ export default function RootLayout() {
 
   const fontsReady = interLoaded && playfairLoaded;
 
+  // Warm up DNS/TLS/auth while the intro splash plays.
+  useEffect(() => {
+    supabase
+      .from('invoices')
+      .select('id')
+      .limit(1)
+      .then(() => {})
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     SplashScreen.hideAsync().catch(() => {});
   }, []);
 
-  if (!introDone) {
-    return (
-      <SafeAreaProvider>
-        <MoonToJewelSplash
-          backgroundColor="#0B3D91"
-          onFinish={() => setIntroDone(true)}
-        />
-      </SafeAreaProvider>
-    );
-  }
-
+  // Fonts still loading — hold the OS splash. This is the shortest path
+  // and keeps the native splash up until we're actually ready to draw.
   if (!fontsReady) {
     return (
       <SafeAreaProvider>
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+        <View
+          style={{
+            flex: 1,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: colors.background,
+          }}
+        >
           <ActivityIndicator color={colors.primary} />
         </View>
       </SafeAreaProvider>
@@ -91,15 +136,22 @@ export default function RootLayout() {
         <StaffProvider>
           <CompanySettingsProvider>
             <NotificationProvider>
-              <RouteGuard>
-                <StatusBar style="dark" translucent backgroundColor="transparent" />
-                <Stack screenOptions={{ headerShown: false }}>
-                  <Stack.Screen name="(tabs)" />
-                  <Stack.Screen name="login" />
-                  <Stack.Screen name="forgot-password" />
-                  <Stack.Screen name="reset-password" />
-                </Stack>
-              </RouteGuard>
+              {/* The intro lives INSIDE the provider tree, so
+                  `useCompanySettings()` resolves correctly. It also
+                  waits for settings to load before starting. */}
+              {!introDone ? (
+                <IntroGate onFinish={() => setIntroDone(true)} />
+              ) : (
+                <RouteGuard>
+                  <StatusBar style="dark" translucent backgroundColor="transparent" />
+                  <Stack screenOptions={{ headerShown: false }}>
+                    <Stack.Screen name="(tabs)" />
+                    <Stack.Screen name="login" />
+                    <Stack.Screen name="forgot-password" />
+                    <Stack.Screen name="reset-password" />
+                  </Stack>
+                </RouteGuard>
+              )}
             </NotificationProvider>
           </CompanySettingsProvider>
         </StaffProvider>

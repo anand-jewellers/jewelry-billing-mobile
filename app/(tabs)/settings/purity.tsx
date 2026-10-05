@@ -1,3 +1,5 @@
+// app\(tabs)\settings\purity.tsx
+
 import { useCallback, useEffect, useState } from 'react';
 import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFocusEffect } from 'expo-router';

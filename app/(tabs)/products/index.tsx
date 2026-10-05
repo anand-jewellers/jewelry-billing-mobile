@@ -1,3 +1,4 @@
+// app/(tabs)/products/index.tsx
 import { useCallback, useMemo, useState } from 'react';
 import {
   View,
@@ -9,10 +10,11 @@ import {
   StyleSheet,
   RefreshControl,
   ActivityIndicator,
-  Platform,
+  Platform, Alert,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { PageGuard } from '../../../src/components/PageGuard';
 import {
   Search,
   X,
@@ -22,11 +24,18 @@ import {
   Plus,
   SlidersHorizontal,
   Check,
+  Weight as WeightIcon,
 } from 'lucide-react-native';
 import { colors, spacing } from '../../../src/theme';
-import { getProducts } from '../../../src/lib/products';
+import { getProducts, getProductById } from '../../../src/lib/products';
+import { printHtml } from '../../../src/lib/invoicePdf';
+import { buildLabelsHtml, LabelData } from '../../../src/lib/barcodeLabelHtml';
 import { getProductImageUrl } from '../../../src/lib/storage';
-import { shareProductOnWhatsApp, shareProductsOnWhatsApp } from '../../../src/lib/share';
+import {
+  shareProductOnWhatsApp,
+  shareProductsOnWhatsApp,
+  getShopShareInfo,
+} from '../../../src/lib/whatsappShare';
 
 const PAGE_SIZE = 15;
 
@@ -38,8 +47,10 @@ interface ProductRow {
   status?: string;
   metal_id: string | null;
   purity_id: string | null;
+  category_id: string | null;
   metals?: { name?: string } | null;
   purities?: { name?: string } | null;
+  categories?: { name?: string } | null;
   product_images: { storage_path: string; is_primary: boolean }[];
 }
 
@@ -53,6 +64,11 @@ export default function ProductListScreen() {
   const [searchText, setSearchText] = useState('');
   const [selectedMetal, setSelectedMetal] = useState<string | null>(null);
   const [selectedPurity, setSelectedPurity] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  // Weight range filter (net weight, grams), as free-text so the user can
+  // type a decimal freely; parsed to numbers only when applying the filter.
+  const [minWeight, setMinWeight] = useState('');
+  const [maxWeight, setMaxWeight] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Pagination
@@ -62,6 +78,7 @@ export default function ProductListScreen() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkSharing, setBulkSharing] = useState(false);
+  const [bulkPrinting, setBulkPrinting] = useState(false);
 
   async function load() {
     try {
@@ -102,6 +119,11 @@ export default function ProductListScreen() {
     return Array.from(new Set(names));
   }, [products, selectedMetal]);
 
+  const categoryOptions = useMemo(() => {
+    const names = products.map((p) => p.categories?.name).filter((n): n is string => !!n);
+    return Array.from(new Set(names));
+  }, [products]);
+
   function handleSelectMetal(name: string) {
     const next = selectedMetal === name ? null : name;
     setSelectedMetal(next);
@@ -119,12 +141,25 @@ export default function ProductListScreen() {
     setCurrentPage(1);
   }
 
+  function handleSelectCategory(name: string) {
+    setSelectedCategory(selectedCategory === name ? null : name);
+    setCurrentPage(1);
+  }
+
   function clearFilters() {
     setSearchText('');
     setSelectedMetal(null);
     setSelectedPurity(null);
+    setSelectedCategory(null);
+    setMinWeight('');
+    setMaxWeight('');
     setCurrentPage(1);
   }
+
+  const minWeightNum = minWeight.trim() ? parseFloat(minWeight) : null;
+  const maxWeightNum = maxWeight.trim() ? parseFloat(maxWeight) : null;
+  const hasWeightFilter =
+    (minWeightNum !== null && !isNaN(minWeightNum)) || (maxWeightNum !== null && !isNaN(maxWeightNum));
 
   const filteredProducts = useMemo(() => {
     const q = searchText.trim().toLowerCase();
@@ -135,11 +170,28 @@ export default function ProductListScreen() {
         p.product_code.toLowerCase().includes(q);
       const matchesMetal = !selectedMetal || p.metals?.name === selectedMetal;
       const matchesPurity = !selectedPurity || p.purities?.name === selectedPurity;
-      return matchesSearch && matchesMetal && matchesPurity;
+      const matchesCategory = !selectedCategory || p.categories?.name === selectedCategory;
+      const weight = Number(p.net_weight);
+      const matchesMinWeight = minWeightNum === null || isNaN(minWeightNum) || weight >= minWeightNum;
+      const matchesMaxWeight = maxWeightNum === null || isNaN(maxWeightNum) || weight <= maxWeightNum;
+      return (
+        matchesSearch &&
+        matchesMetal &&
+        matchesPurity &&
+        matchesCategory &&
+        matchesMinWeight &&
+        matchesMaxWeight
+      );
     });
-  }, [products, searchText, selectedMetal, selectedPurity]);
+  }, [products, searchText, selectedMetal, selectedPurity, selectedCategory, minWeightNum, maxWeightNum]);
 
-  const hasActiveFilters = !!searchText || !!selectedMetal || !!selectedPurity;
+  const hasActiveFilters =
+    !!searchText || !!selectedMetal || !!selectedPurity || !!selectedCategory || hasWeightFilter;
+
+  const activeFilterCount =
+    [selectedMetal, selectedPurity, selectedCategory].filter(Boolean).length +
+    (searchText ? 1 : 0) +
+    (hasWeightFilter ? 1 : 0);
 
   // Pagination calculations
   const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
@@ -160,7 +212,8 @@ export default function ProductListScreen() {
   async function handleShare(item: ProductRow) {
     const imageUrl = primaryImageUrl(item);
     try {
-      await shareProductOnWhatsApp(item, imageUrl);
+      const shop = await getShopShareInfo();
+      await shareProductOnWhatsApp(item as any, imageUrl, shop);
     } catch (e) {
       console.error('Failed to open WhatsApp', e);
     }
@@ -202,8 +255,10 @@ export default function ProductListScreen() {
     if (!selected.length) return;
     setBulkSharing(true);
     try {
+      const shop = await getShopShareInfo();
       await shareProductsOnWhatsApp(
-        selected.map((p) => ({ ...p, imageUrl: primaryImageUrl(p) }))
+        selected.map((p) => ({ ...(p as any), imageUrl: primaryImageUrl(p) })),
+        shop
       );
       setSelectionMode(false);
       setSelectedIds(new Set());
@@ -221,11 +276,53 @@ export default function ProductListScreen() {
       </View>
     );
   }
+  async function handlePrintSelected() {
+    const selected = products.filter((p) => selectedIds.has(p.id));
+    if (!selected.length) return;
+    setBulkPrinting(true);
+    try {
+      // List rows don't carry gross/stone weight, HUID or barcode, so load full records
+      const full = await Promise.all(selected.map((p) => getProductById(p.id)));
+
+      const labels: LabelData[] = [];
+      const skipped: string[] = [];
+      full.forEach((p: any, i: number) => {
+        if (!p?.barcode) {
+          skipped.push(selected[i].product_name);
+          return;
+        }
+        labels.push({
+          barcode: String(p.barcode),
+          grossWeight: Number(p.gross_weight) || 0,
+          netWeight: Number(p.net_weight) || 0,
+          stoneWeight: Number(p.stone_weight) || 0,
+          purity: p.purities?.name ?? '—',
+          huid: p.huid,
+        });
+      });
+
+      if (!labels.length) {
+        Alert.alert('Nothing to print', 'None of the selected products have a barcode value saved.');
+        return;
+      }
+
+      await printHtml(buildLabelsHtml(labels));
+
+      if (skipped.length) {
+        Alert.alert('Some products skipped', `No barcode saved for: ${skipped.join(', ')}`);
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Could not print barcode labels');
+    } finally {
+      setBulkPrinting(false);
+    }
+  }
 
   return (
-    <View style={styles.screen}>
-      {/* Header Section: Title + Jewelry Quote Illustration */}
-      <View style={styles.headerSection}>
+    <PageGuard pageKey="products">
+      <View style={styles.screen}>
+        {/* Header Section: Title + Jewelry Quote Illustration */}
+        {/* <View style={styles.headerSection}>
         <View style={styles.headerTitleContainer}>
           <Text style={styles.headerTitle}>Products</Text>
           <Text style={styles.headerSubtitle}>Manage and showcase your collection</Text>
@@ -249,292 +346,376 @@ export default function ProductListScreen() {
             </View>
           </View>
         </View>
-      </View>
+      </View> */}
 
-      {/* Search Toolbar */}
-      <View style={styles.searchToolbar}>
-        <View style={styles.searchBar}>
-          <Search size={18} color="#94A3B8" />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search by name or code"
-            placeholderTextColor="#94A3B8"
-            value={searchText}
-            onChangeText={(text) => {
-              setSearchText(text);
-              setCurrentPage(1);
-            }}
-          />
-          {searchText.length > 0 && (
-            <Pressable
-              onPress={() => {
-                setSearchText('');
+        {/* Search Toolbar */}
+        <View style={styles.searchToolbar}>
+          <View style={styles.searchBar}>
+            <Search size={18} color="#94A3B8" />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search by name or code"
+              placeholderTextColor="#94A3B8"
+              value={searchText}
+              onChangeText={(text) => {
+                setSearchText(text);
                 setCurrentPage(1);
               }}
-              hitSlop={8}
-            >
-              <X size={16} color="#94A3B8" />
-            </Pressable>
-          )}
-        </View>
-      </View>
-
-      {/* Filter and Selection Toolbar Row */}
-      <View style={styles.toolbarRow}>
-        <Pressable
-          style={[styles.filterToggle, (filtersOpen || hasActiveFilters) && styles.filterToggleActive]}
-          onPress={() => setFiltersOpen((v) => !v)}
-        >
-          <SlidersHorizontal
-            size={15}
-            color={filtersOpen || hasActiveFilters ? '#FFFFFF' : '#475569'}
-          />
-          <Text
-            style={[
-              styles.filterToggleText,
-              (filtersOpen || hasActiveFilters) && styles.filterToggleTextActive,
-            ]}
-          >
-            Filter
-            {hasActiveFilters
-              ? ` (${[selectedMetal, selectedPurity].filter(Boolean).length + (searchText ? 1 : 0)})`
-              : ''}
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.selectToggle, selectionMode && styles.selectToggleActive]}
-          onPress={toggleSelectionMode}
-        >
-          {selectionMode ? (
-            <X size={15} color="#DC2626" />
-          ) : (
-            <Check size={15} color={colors.primary} />
-          )}
-          <Text style={[styles.selectToggleText, selectionMode && styles.selectToggleTextActive]}>
-            {selectionMode ? 'Cancel' : 'Select'}
-          </Text>
-        </Pressable>
-      </View>
-
-      {/* Filter Dropdown Tray */}
-      {filtersOpen && (metalOptions.length > 0 || purityOptions.length > 0) && (
-        <View style={styles.filterPanel}>
-          {metalOptions.length > 0 && (
-            <View style={styles.filterWrap}>
-              {metalOptions.map((name) => {
-                const active = selectedMetal === name;
-                return (
-                  <Pressable
-                    key={name}
-                    style={[styles.chip, active && styles.chipActive]}
-                    onPress={() => handleSelectMetal(name)}
-                  >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          )}
-
-          {purityOptions.length > 0 && (
-            <View style={styles.filterWrap}>
-              {purityOptions.map((name) => {
-                const active = selectedPurity === name;
-                return (
-                  <Pressable
-                    key={name}
-                    style={[styles.chip, styles.chipPurity, active && styles.chipActive]}
-                    onPress={() => handleSelectPurity(name)}
-                  >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          )}
-
-          {hasActiveFilters && (
-            <Pressable onPress={clearFilters} style={styles.clearFilters}>
-              <Text style={styles.clearFiltersText}>Clear filters</Text>
-            </Pressable>
-          )}
-        </View>
-      )}
-
-      {/* Product List */}
-      <FlatList
-        data={paginatedProducts}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
-        }
-        ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Ionicons name="cube-outline" size={42} color="#94A3B8" />
-            <Text style={styles.emptyTitle}>
-              {hasActiveFilters ? 'No products match' : 'No products yet'}
-            </Text>
-            <Text style={styles.emptySub}>
-              {hasActiveFilters
-                ? 'Try adjusting your search or active filters.'
-                : 'Tap "+ Add Product" below to list your first item.'}
-            </Text>
+            />
+            {searchText.length > 0 && (
+              <Pressable
+                onPress={() => {
+                  setSearchText('');
+                  setCurrentPage(1);
+                }}
+                hitSlop={8}
+              >
+                <X size={16} color="#94A3B8" />
+              </Pressable>
+            )}
           </View>
-        }
-        renderItem={({ item }) => {
-          const uri = primaryImageUrl(item);
-          const isSelected = selectedIds.has(item.id);
-          const isSold = item.status === 'sold';
+        </View>
 
-          return (
-            <Pressable
-              style={[
-                styles.productCard,
-                isSelected && styles.productCardSelected,
-                isSold && styles.productCardSold,
-              ]}
-              onPress={() => handleRowPress(item)}
-              onLongPress={() => handleRowLongPress(item)}
-            >
-              {selectionMode && (
-                <View style={[styles.checkbox, isSelected && styles.checkboxChecked]}>
-                  {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
-                </View>
-              )}
-
-              {/* Product Thumbnail Container */}
-              <View style={styles.thumbWrapper}>
-                {uri ? (
-                  <Image source={{ uri }} style={[styles.thumb, isSold && styles.thumbSold]} />
-                ) : (
-                  <View style={[styles.thumb, styles.thumbPlaceholder, isSold && styles.thumbSold]}>
-                    <Ionicons name="image-outline" size={24} color="#94A3B8" />
-                  </View>
-                )}
-                {isSold && (
-                  <View style={styles.soldBadge}>
-                    <Text style={styles.soldBadgeText}>SOLD</Text>
-                  </View>
-                )}
-              </View>
-
-              {/* Product Metadata Info */}
-              <View style={styles.infoCol}>
-                <Text style={styles.productName} numberOfLines={1}>
-                  {item.product_name}
-                </Text>
-                <Text style={styles.productCode}>{item.product_code}</Text>
-                <Text style={styles.productWeight}>
-                  {Number(item.net_weight).toFixed(3)} g
-                  {item.metals?.name ? ` · ${item.metals.name}` : ''}
-                  {item.purities?.name ? ` ${item.purities.name}` : ''}
-                </Text>
-              </View>
-
-              {/* Actions: WhatsApp + Chevron */}
-              {!selectionMode && (
-                <View style={styles.actionRow}>
-                  <Pressable
-                    style={styles.whatsAppBtn}
-                    onPress={() => handleShare(item)}
-                    hitSlop={8}
-                  >
-                    <Ionicons name="logo-whatsapp" size={20} color="#25D366" />
-                  </Pressable>
-                  <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
-                </View>
-              )}
-            </Pressable>
-          );
-        }}
-        ListFooterComponent={
-          filteredProducts.length > 0 ? (
-            <View style={styles.paginationContainer}>
-              <Pressable
-                style={[styles.pageButton, currentPage === 1 && styles.pageButtonDisabled]}
-                onPress={handlePrevPage}
-                disabled={currentPage === 1}
-              >
-                <ChevronLeft size={16} color={currentPage === 1 ? '#CBD5E1' : '#0F172A'} />
-                <Text
-                  style={[
-                    styles.pageButtonText,
-                    currentPage === 1 && styles.pageButtonTextDisabled,
-                  ]}
-                >
-                  Previous
-                </Text>
-              </Pressable>
-
-              <View style={styles.pageInfoWrap}>
-                <Text style={styles.pageInfoText}>
-                  Page <Text style={styles.pageInfoBold}>{currentPage}</Text> of{' '}
-                  <Text style={styles.pageInfoBold}>{totalPages}</Text>
-                </Text>
-              </View>
-
-              <Pressable
-                style={[
-                  styles.pageButton,
-                  currentPage === totalPages && styles.pageButtonDisabled,
-                ]}
-                onPress={handleNextPage}
-                disabled={currentPage === totalPages}
-              >
-                <Text
-                  style={[
-                    styles.pageButtonText,
-                    currentPage === totalPages && styles.pageButtonTextDisabled,
-                  ]}
-                >
-                  Next
-                </Text>
-                <ChevronRight
-                  size={16}
-                  color={currentPage === totalPages ? '#CBD5E1' : '#0F172A'}
-                />
-              </Pressable>
-            </View>
-          ) : null
-        }
-      />
-
-      {/* Action Footer: Bulk Share or Floating "+ Add Product" Button */}
-      {selectionMode ? (
-        <View style={styles.bulkActionContainer}>
+        {/* Filter and Selection Toolbar Row */}
+        <View style={styles.toolbarRow}>
           <Pressable
-            style={[styles.shareSelectedBtn, selectedIds.size === 0 && styles.shareSelectedBtnDisabled]}
-            onPress={handleShareSelected}
-            disabled={selectedIds.size === 0 || bulkSharing}
+            style={[styles.filterToggle, (filtersOpen || hasActiveFilters) && styles.filterToggleActive]}
+            onPress={() => setFiltersOpen((v) => !v)}
           >
-            {bulkSharing ? (
-              <ActivityIndicator color="#fff" />
+            <SlidersHorizontal
+              size={15}
+              color={filtersOpen || hasActiveFilters ? '#FFFFFF' : '#475569'}
+            />
+            <Text
+              style={[
+                styles.filterToggleText,
+                (filtersOpen || hasActiveFilters) && styles.filterToggleTextActive,
+              ]}
+            >
+              Filter
+              {hasActiveFilters ? ` (${activeFilterCount})` : ''}
+            </Text>
+          </Pressable>
+
+          <Pressable style={styles.weightToggle} onPress={() => router.push('/products/weight')}>
+            <WeightIcon size={15} color="#475569" />
+            <Text style={styles.weightToggleText}>Weight</Text>
+          </Pressable>
+
+          <Pressable
+            style={[styles.selectToggle, selectionMode && styles.selectToggleActive]}
+            onPress={toggleSelectionMode}
+          >
+            {selectionMode ? (
+              <X size={15} color="#DC2626" />
             ) : (
+              <Check size={15} color={colors.primary} />
+            )}
+            <Text style={[styles.selectToggleText, selectionMode && styles.selectToggleTextActive]}>
+              {selectionMode ? 'Cancel' : 'Select'}
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* Filter Dropdown Tray */}
+        {filtersOpen && (
+          <View style={styles.filterPanel}>
+            {categoryOptions.length > 0 && (
               <>
-                <Ionicons name="logo-whatsapp" size={20} color="#fff" />
-                <Text style={styles.shareSelectedBtnText}>
-                  Share {selectedIds.size > 0 ? `${selectedIds.size} ` : ''}Selected
-                </Text>
+                <Text style={styles.filterGroupLabel}>Category</Text>
+                <View style={styles.filterWrap}>
+                  {categoryOptions.map((name) => {
+                    const active = selectedCategory === name;
+                    return (
+                      <Pressable
+                        key={name}
+                        style={[styles.chip, active && styles.chipActive]}
+                        onPress={() => handleSelectCategory(name)}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
               </>
             )}
-          </Pressable>
-        </View>
-      ) : (
-        <View style={styles.fabWrapper}>
-          <Pressable
-            style={styles.fabButton}
-            onPress={() => router.push('/products/add')}
-          >
-            <Plus size={24} color="#FFFFFF" strokeWidth={2.5} />
-          </Pressable>
-          <Text style={styles.fabLabel}>Add Product</Text>
-        </View>
-      )}
-    </View>
+
+            {metalOptions.length > 0 && (
+              <>
+                <Text style={styles.filterGroupLabel}>Metal</Text>
+                <View style={styles.filterWrap}>
+                  {metalOptions.map((name) => {
+                    const active = selectedMetal === name;
+                    return (
+                      <Pressable
+                        key={name}
+                        style={[styles.chip, active && styles.chipActive]}
+                        onPress={() => handleSelectMetal(name)}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            {purityOptions.length > 0 && (
+              <>
+                <Text style={styles.filterGroupLabel}>Purity</Text>
+                <View style={styles.filterWrap}>
+                  {purityOptions.map((name) => {
+                    const active = selectedPurity === name;
+                    return (
+                      <Pressable
+                        key={name}
+                        style={[styles.chip, styles.chipPurity, active && styles.chipActive]}
+                        onPress={() => handleSelectPurity(name)}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            <Text style={styles.filterGroupLabel}>Net Weight (g)</Text>
+            <View style={styles.weightRangeRow}>
+              <TextInput
+                style={styles.weightInput}
+                placeholder="Min"
+                placeholderTextColor="#94A3B8"
+                keyboardType="decimal-pad"
+                value={minWeight}
+                onChangeText={(v) => {
+                  setMinWeight(v);
+                  setCurrentPage(1);
+                }}
+              />
+              <Text style={styles.weightRangeSeparator}>–</Text>
+              <TextInput
+                style={styles.weightInput}
+                placeholder="Max"
+                placeholderTextColor="#94A3B8"
+                keyboardType="decimal-pad"
+                value={maxWeight}
+                onChangeText={(v) => {
+                  setMaxWeight(v);
+                  setCurrentPage(1);
+                }}
+              />
+            </View>
+
+            <View style={styles.filterFooter}>
+              {hasActiveFilters ? (
+                <Pressable onPress={clearFilters} style={styles.clearFiltersBtn}>
+                  <Text style={styles.clearFiltersText}>Clear filters</Text>
+                </Pressable>
+              ) : (
+                <View />
+              )}
+              <Pressable onPress={() => setFiltersOpen(false)} style={styles.applyFiltersBtn}>
+                <Text style={styles.applyFiltersBtnText}>OK</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+
+        {/* Product List */}
+        <FlatList
+          data={paginatedProducts}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
+          }
+          ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Ionicons name="cube-outline" size={42} color="#94A3B8" />
+              <Text style={styles.emptyTitle}>
+                {hasActiveFilters ? 'No products match' : 'No products yet'}
+              </Text>
+              <Text style={styles.emptySub}>
+                {hasActiveFilters
+                  ? 'Try adjusting your search or active filters.'
+                  : 'Tap "+ Add Product" below to list your first item.'}
+              </Text>
+            </View>
+          }
+          renderItem={({ item }) => {
+            const uri = primaryImageUrl(item);
+            const isSelected = selectedIds.has(item.id);
+            const isSold = item.status === 'sold';
+
+            return (
+              <Pressable
+                style={[
+                  styles.productCard,
+                  isSelected && styles.productCardSelected,
+                  isSold && styles.productCardSold,
+                ]}
+                onPress={() => handleRowPress(item)}
+                onLongPress={() => handleRowLongPress(item)}
+              >
+                {selectionMode && (
+                  <View style={[styles.checkbox, isSelected && styles.checkboxChecked]}>
+                    {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
+                  </View>
+                )}
+
+                {/* Product Thumbnail Container */}
+                <View style={styles.thumbWrapper}>
+                  {uri ? (
+                    <Image source={{ uri }} style={[styles.thumb, isSold && styles.thumbSold]} />
+                  ) : (
+                    <View style={[styles.thumb, styles.thumbPlaceholder, isSold && styles.thumbSold]}>
+                      <Ionicons name="image-outline" size={24} color="#94A3B8" />
+                    </View>
+                  )}
+                  {isSold && (
+                    <View style={styles.soldBadge}>
+                      <Text style={styles.soldBadgeText}>SOLD</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* Product Metadata Info */}
+                <View style={styles.infoCol}>
+                  <Text style={styles.productName} numberOfLines={1}>
+                    {item.product_name}
+                  </Text>
+                  <Text style={styles.productCode}>{item.product_code}</Text>
+                  <Text style={styles.productWeight}>
+                    {Number(item.net_weight).toFixed(3)} g
+                    {item.metals?.name ? ` · ${item.metals.name}` : ''}
+                    {item.purities?.name ? ` ${item.purities.name}` : ''}
+                  </Text>
+                </View>
+
+                {/* Actions: WhatsApp + Chevron */}
+                {!selectionMode && (
+                  <View style={styles.actionRow}>
+                    <Pressable
+                      style={styles.whatsAppBtn}
+                      onPress={() => handleShare(item)}
+                      hitSlop={8}
+                    >
+                      <Ionicons name="logo-whatsapp" size={20} color="#25D366" />
+                    </Pressable>
+                    <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
+                  </View>
+                )}
+              </Pressable>
+            );
+          }}
+          ListFooterComponent={
+            filteredProducts.length > 0 ? (
+              <View style={styles.paginationContainer}>
+                <Pressable
+                  style={[styles.pageButton, currentPage === 1 && styles.pageButtonDisabled]}
+                  onPress={handlePrevPage}
+                  disabled={currentPage === 1}
+                >
+                  <ChevronLeft size={16} color={currentPage === 1 ? '#CBD5E1' : '#0F172A'} />
+                  <Text
+                    style={[
+                      styles.pageButtonText,
+                      currentPage === 1 && styles.pageButtonTextDisabled,
+                    ]}
+                  >
+                    Previous
+                  </Text>
+                </Pressable>
+
+                <View style={styles.pageInfoWrap}>
+                  <Text style={styles.pageInfoText}>
+                    Page <Text style={styles.pageInfoBold}>{currentPage}</Text> of{' '}
+                    <Text style={styles.pageInfoBold}>{totalPages}</Text>
+                  </Text>
+                </View>
+
+                <Pressable
+                  style={[
+                    styles.pageButton,
+                    currentPage === totalPages && styles.pageButtonDisabled,
+                  ]}
+                  onPress={handleNextPage}
+                  disabled={currentPage === totalPages}
+                >
+                  <Text
+                    style={[
+                      styles.pageButtonText,
+                      currentPage === totalPages && styles.pageButtonTextDisabled,
+                    ]}
+                  >
+                    Next
+                  </Text>
+                  <ChevronRight
+                    size={16}
+                    color={currentPage === totalPages ? '#CBD5E1' : '#0F172A'}
+                  />
+                </Pressable>
+              </View>
+            ) : null
+          }
+        />
+
+        {/* Action Footer: Bulk Share or Floating "+ Add Product" Button */}
+        {selectionMode ? (
+          <View style={styles.bulkActionContainer}>
+            <Pressable
+              style={[
+                styles.bulkBtn,
+                styles.printSelectedBtn,
+                (selectedIds.size === 0 || bulkPrinting) && styles.shareSelectedBtnDisabled,
+              ]}
+              onPress={handlePrintSelected}
+              disabled={selectedIds.size === 0 || bulkPrinting}
+            >
+              {bulkPrinting ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="print-outline" size={20} color="#fff" />
+                  <Text style={styles.shareSelectedBtnText}>
+                    Print
+                  </Text>
+                </>
+              )}
+            </Pressable>
+
+            <Pressable
+              style={[
+                styles.bulkBtn,
+                styles.shareSelectedBtn,
+                selectedIds.size === 0 && styles.shareSelectedBtnDisabled,
+              ]}
+              onPress={handleShareSelected}
+              disabled={selectedIds.size === 0 || bulkSharing}
+            >
+              {bulkSharing ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="logo-whatsapp" size={20} color="#fff" />
+                  <Text style={styles.shareSelectedBtnText}>Share</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.fabWrapper}>
+            <Pressable style={styles.fabButton} onPress={() => router.push('/products/add')}>
+              <Plus size={24} color="#FFFFFF" strokeWidth={2.5} />
+            </Pressable>
+            <Text style={styles.fabLabel}>Add Product</Text>
+          </View>
+        )}
+      </View>
+    </PageGuard>
   );
 }
 
@@ -685,6 +866,22 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     padding: 0,
   },
+  weightToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+  },
+  weightToggleText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  },
   toolbarRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -747,6 +944,15 @@ const styles = StyleSheet.create({
     borderColor: '#E2E8F0',
     backgroundColor: '#FFFFFF',
   },
+  filterGroupLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 6,
+    marginTop: 4,
+  },
   filterWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -776,14 +982,55 @@ const styles = StyleSheet.create({
   chipTextActive: {
     color: '#FFFFFF',
   },
-  clearFilters: {
-    alignSelf: 'flex-end',
-    marginTop: 4,
+  weightRangeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  weightInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    fontSize: 13,
+    color: '#0F172A',
+    backgroundColor: '#F8FAFC',
+  },
+  weightRangeSeparator: {
+    fontSize: 13,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  filterFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  clearFiltersBtn: {
+    paddingVertical: 6,
   },
   clearFiltersText: {
     fontSize: 12,
     color: '#B45309',
     fontWeight: '700',
+  },
+  applyFiltersBtn: {
+    backgroundColor: '#0F172A',
+    borderRadius: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 28,
+  },
+  applyFiltersBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
   },
   listContent: {
     paddingHorizontal: spacing.lg,
@@ -995,20 +1242,30 @@ const styles = StyleSheet.create({
     bottom: 20,
     left: spacing.lg,
     right: spacing.lg,
+    flexDirection: 'row',
+    gap: 10,
   },
-  shareSelectedBtn: {
+  // Shared by both buttons, so they always have the same size
+  bulkBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#25D366',
     borderRadius: 16,
     paddingVertical: 14,
-    shadowColor: '#25D366',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 4,
+  },
+  shareSelectedBtn: {
+    backgroundColor: '#25D366',
+    shadowColor: '#25D366',
+  },
+  printSelectedBtn: {
+    backgroundColor: '#1E3A8A',
+    shadowColor: '#1E3A8A',
   },
   shareSelectedBtnDisabled: {
     opacity: 0.5,

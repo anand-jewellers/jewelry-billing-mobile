@@ -1,8 +1,11 @@
+//src/lib/api/invoices.ts
+
 import { supabase } from '../supabaseClient';
-// import type { Product, Customer, InvoiceItem, Invoice } from '../../types/invoices';
-import type { Metal, Purity } from '../../types/settings';
+import type { Metal, Purity, CalculationType } from '../../types/settings';
 import type { Product, Customer, InvoiceItem, Invoice, InvoiceDetail } from '../../types/invoices';
-import type { PaymentMode } from '../../types/invoices';
+import type { PaymentMode, PaymentSplitEntry } from '../../types/invoices';
+import type { ExchangeItem, ExchangeItemDetail } from '../../types/invoices';
+
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -10,7 +13,38 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // Products
 // ---------------------------------------------------------
 
-export async function getProductByCode(rawCode: string): Promise<Product | null> {
+export interface ProductChargeRow {
+  id: string;
+  charge_type_id: string | null;
+  charge_name: string;
+  calculation_type: CalculationType;
+  value: number;
+  amount: number;
+}
+
+// One diamond size + amount row saved on the product (product_diamonds table).
+export interface ProductDiamondRow {
+  id: string;
+  size: string;
+  amount: number;
+  sort_order: number;
+}
+
+export interface ProductWithCharges extends Product {
+  product_value_added_charges?: ProductChargeRow[];
+  product_diamonds?: ProductDiamondRow[];
+  tax_setting_id?: string | null;
+  tax_settings?: {
+    id: string;
+    tax_name: string;
+    tax_percentage: number;
+    cgst: number;
+    sgst: number;
+    igst: number;
+  } | null;
+}
+
+export async function getProductByCode(rawCode: string): Promise<ProductWithCharges | null> {
   const code = rawCode.trim();
   if (!code) return null;
 
@@ -19,7 +53,12 @@ export async function getProductByCode(rawCode: string): Promise<Product | null>
 
   const { data, error } = await supabase
     .from('products')
-    .select('*')
+    .select(`
+      *,
+      product_value_added_charges(id, charge_type_id, charge_name, calculation_type, value, amount),
+      product_diamonds(id, size, amount, sort_order),
+      tax_settings(id, tax_name, tax_percentage, cgst, sgst, igst)
+    `)
     .or(filters.join(','))
     .is('deleted_at', null)
     .limit(1)
@@ -36,7 +75,6 @@ function sanitizeForOrFilter(s: string): string {
 export async function searchProducts(query: string): Promise<Product[]> {
   const q = query.trim();
   if (!q) return [];
-  // Escape PostgREST-reserved characters so user input can't break the filter syntax
   const safe = q.replace(/[,()]/g, '');
   if (!safe) return [];
 
@@ -67,13 +105,18 @@ export async function getCurrentRate(metalId: string, purityId: string): Promise
 }
 
 export async function getMakingChargeRule(metalId: string, purityId: string, categoryId: string | null) {
-  const { data, error } = await supabase
+  let query = supabase
     .from('making_charge_rules')
     .select('*')
     .eq('metal_id', metalId)
     .eq('is_active', true)
-    .or(`purity_id.eq.${purityId},purity_id.is.null`)
-    .or(`category_id.eq.${categoryId ?? 'null'},category_id.is.null`);
+    .or(`purity_id.eq.${purityId},purity_id.is.null`);
+
+  query = categoryId
+    ? query.or(`category_id.eq.${categoryId},category_id.is.null`)
+    : query.is('category_id', null);
+
+  const { data, error } = await query;
   if (error) throw error;
   if (!data?.length) return null;
   return data.sort(
@@ -111,9 +154,6 @@ export async function searchCustomers(query: string): Promise<Customer[]> {
   return data ?? [];
 }
 
-// Used by the Customer Picker sheet, if you have one, when the user selects
-// an existing customer directly. NOT used by the invoice save flow itself —
-// createInvoice() below resolves/creates the customer server-side instead.
 export async function findOrCreateCustomer(input: { name: string; phone: string | null }): Promise<Customer | null> {
   if (!input.name.trim()) return null;
   const { data, error } = await supabase.rpc('find_or_create_customer', {
@@ -146,25 +186,27 @@ export interface CreateInvoiceInput {
   igstTotal: number;
   makingTotal: number;
   vaChargesTotal: number;
-  paymentMode: PaymentMode;   // NEW
+  paymentSplits: PaymentSplitEntry[];
+  exchangeItems: ExchangeItem[];
+  exchangeTotal: number;
+  remark: string; // NEW — mandatory internal-reference note
 }
 
 export type PaymentStatus = 'paid' | 'partial' | 'unpaid';
 
-/**
- * FIX: previously payment_status was left entirely up to the
- * create_invoice_with_items RPC to infer from paid_amount/balance_amount.
- * If paid_amount ever arrives as 0 (e.g. because the UI's amountPaid field
- * was empty), the invoice silently gets marked "unpaid" even when the
- * cashier believed they billed it as fully paid. Computing and passing this
- * explicitly from the client makes the status transparent and lets you
- * assert on it in tests, and gives the RPC an authoritative value to store
- * (or to validate against) rather than re-deriving it.
- */
 export function computePaymentStatus(paidAmount: number, balanceAmount: number): PaymentStatus {
   if (balanceAmount <= 0) return 'paid';
   if (paidAmount > 0) return 'partial';
   return 'unpaid';
+}
+
+// A single legacy `payment_mode` still gets stored on the invoice header
+// (existing screens/reports read it) — 'split' signals "see payment_splits
+// for the real breakdown" rather than picking one mode arbitrarily.
+function derivePaymentMode(splits: PaymentSplitEntry[]): PaymentMode {
+  if (splits.length === 0) return 'cash';
+  if (splits.length === 1) return splits[0].mode;
+  return 'split';
 }
 
 export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice> {
@@ -190,6 +232,7 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice>
     discount: item.item_discount,
     tax_amount: item.tax_amount,
     total: item.total_amount,
+    // Includes the "Diamond <size>" lines, so diamonds are saved with the invoice.
     value_added_charges: item.value_added_charges.map((c) => ({
       charge_name: c.name,
       calculation_type: c.calculation_type,
@@ -206,16 +249,29 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice>
     input.igstTotal > 0 && { charge_name: 'IGST', amount: input.igstTotal },
   ].filter(Boolean);
 
-  // NOTE: payment_status / status are now derived server-side inside
-  // create_invoice_with_items (from p_paid_amount / p_balance_amount), so
-  // they are intentionally NOT passed as RPC params here. Supabase/PostgREST
-  // matches functions by exact parameter signature — sending an extra
-  // p_payment_status param that the deployed function doesn't declare
-  // produces a "Could not find the function ... in the schema cache" error.
-  // computePaymentStatus() is kept below only as a client-side helper (e.g.
-  // for optimistic UI), not for sending to the RPC.
+  const exchange_items = input.exchangeItems.map((e) => ({
+    description: e.description,
+    gross_weight: e.gross_weight,
+    stone_weight: e.stone_weight,
+    purity_id: e.purity_id,
+    purity_percent: e.purity_percent,
+    old_percent: e.old_percent,
+    deduction_percent: e.deduction_percent,
+    rate_per_gram: e.rate_per_gram,
+    net_weight: e.net_weight,
+    amount: e.amount,
+  }));
+
+  const payment_splits = input.paymentSplits
+    .filter((s) => s.amount > 0)
+    .map((s) => ({
+      payment_mode: s.mode,
+      amount: s.amount,
+      reference: s.reference ?? null,
+    }));
+
   const paymentStatus = computePaymentStatus(input.paidAmount, input.balanceAmount);
-  void paymentStatus; // available to callers if needed; not sent to the RPC
+  void paymentStatus;
 
   const { data, error } = await supabase.rpc('create_invoice_with_items', {
     p_customer_id: input.customerId,
@@ -229,12 +285,23 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice>
     p_grand_total: input.grandTotal,
     p_paid_amount: input.paidAmount,
     p_balance_amount: input.balanceAmount,
-    p_payment_mode: input.paymentMode,   // NEW
+    p_payment_mode: derivePaymentMode(input.paymentSplits),
+    p_payment_splits: payment_splits,
+    p_exchange_items: exchange_items,
+    p_exchange_total: input.exchangeTotal,
+    // NEW — this requires a matching `p_remark text default null` parameter
+    // on the create_invoice_with_items RPC, and a `remark` column on
+    // `invoices`, before it actually persists.
+    p_remark: input.remark.trim(),
   });
 
   if (error) throw error;
   return data as Invoice;
 }
+
+// ---------------------------------------------------------
+// Fetch a single invoice
+// ---------------------------------------------------------
 
 export async function getInvoiceById(invoiceId: string): Promise<InvoiceDetail> {
   const { data: invoice, error: invErr } = await supabase
@@ -258,6 +325,39 @@ export async function getInvoiceById(invoiceId: string): Promise<InvoiceDetail> 
     .order('created_at', { ascending: true });
   if (chargesErr) throw chargesErr;
 
+  const { data: exchangeItems, error: exchangeErr } = await supabase
+    .from('invoice_exchange_items')
+    .select('*')
+    .eq('invoice_id', invoiceId)
+    .order('created_at', { ascending: true });
+
+  console.log('[getInvoiceById] invoiceId:', invoiceId);
+  console.log('[getInvoiceById] exchangeItems:', JSON.stringify(exchangeItems));
+  console.log('[getInvoiceById] exchangeErr:', exchangeErr);
+
+  if (exchangeErr) throw exchangeErr;
+
+  // Per-mode payment breakdown. If the table isn't available, this is
+  // wrapped instead of thrown, and the screen falls back to the single
+  // `payment_mode`/`paid_amount` fields.
+  let paymentSplits: PaymentSplitEntry[] = [];
+  try {
+    const { data: splitRows, error: splitsErr } = await supabase
+      .from('invoice_payment_splits')
+      .select('id, payment_mode, amount, reference')
+      .eq('invoice_id', invoiceId)
+      .order('created_at', { ascending: true });
+    if (splitsErr) throw splitsErr;
+    paymentSplits = (splitRows ?? []).map((r: any) => ({
+      id: r.id,
+      mode: r.payment_mode,
+      amount: r.amount,
+      reference: r.reference ?? null,
+    }));
+  } catch (e) {
+    console.warn('[getInvoiceById] invoice_payment_splits not available yet:', e);
+  }
+
   return {
     id: invoice.id,
     invoice_number: invoice.invoice_number,
@@ -278,8 +378,17 @@ export async function getInvoiceById(invoiceId: string): Promise<InvoiceDetail> 
     items: items ?? [],
     charges: charges ?? [],
     created_at: invoice.created_at,
+    exchange_total: invoice.exchange_total ?? 0,
+    exchange_items: (exchangeItems ?? []) as ExchangeItemDetail[],
+    payment_splits: paymentSplits,
+    remark: invoice.remark ?? null,
   };
 }
+
+// ---------------------------------------------------------
+// Invoice list (server-side pagination + search)
+// Requires the `invoice_list_view` view and indexes from the SQL step.
+// ---------------------------------------------------------
 
 export interface InvoiceListItem {
   id: string;
@@ -288,75 +397,55 @@ export interface InvoiceListItem {
   grand_total: number;
   balance_amount: number;
   payment_status: string;
-  payment_mode: string;   // NEW
+  payment_mode: string;
   status: string;
   customer_name: string;
 }
 
 export interface ListInvoicesParams {
-  search?: string;     // matches invoice_number or customer name
-  fromDate?: string;   // 'YYYY-MM-DD', inclusive
-  toDate?: string;     // 'YYYY-MM-DD', inclusive
+  search?: string;
+  fromDate?: string;
+  toDate?: string;
+  page?: number; // 1-based
+  pageSize?: number;
 }
 
-export async function listInvoices(params: ListInvoicesParams = {}): Promise<InvoiceListItem[]> {
+export interface ListInvoicesResult {
+  rows: InvoiceListItem[];
+  hasMore: boolean;
+}
+
+export async function listInvoices(params: ListInvoicesParams = {}): Promise<ListInvoicesResult> {
+  const page = params.page ?? 1;
+  const pageSize = params.pageSize ?? 15;
+  const from = (page - 1) * pageSize;
+
   let query = supabase
-    .from('invoices')
-    .select('id, invoice_number, invoice_date, grand_total, balance_amount, payment_status, payment_mode, status, customer:customers(name)')
+    .from('invoice_list_view')
+    .select(
+      'id, invoice_number, invoice_date, grand_total, balance_amount, payment_status, payment_mode, status, customer_name'
+    )
     .order('created_at', { ascending: false })
-    .limit(200);
+    .range(from, from + pageSize); // pageSize + 1 rows, to detect a next page
 
   if (params.fromDate) query = query.gte('invoice_date', params.fromDate);
   if (params.toDate) query = query.lte('invoice_date', params.toDate);
-  if (params.search?.trim()) {
-    query = query.ilike('invoice_number', `%${params.search.trim()}%`);
+
+  const s = params.search?.trim().replace(/[,()%]/g, '');
+  if (s) {
+    query = query.or(`invoice_number.ilike.%${s}%,customer_name.ilike.%${s}%`);
   }
 
   const { data, error } = await query;
   if (error) throw error;
 
-  let rows = (data ?? []).map((row: any) => ({
-    id: row.id,
-    invoice_number: row.invoice_number,
-    invoice_date: row.invoice_date,
-    grand_total: row.grand_total,
-    balance_amount: row.balance_amount,
-    payment_status: row.payment_status,
-    payment_mode: row.payment_mode,   // NEW — was missing
-    status: row.status,
-    customer_name: row.customer?.name ?? 'Walk-in Customer',
-  }));
-
-  if (params.search?.trim()) {
-    const needle = params.search.trim().toLowerCase();
-    if (!rows.some((r) => r.invoice_number.toLowerCase().includes(needle))) {
-      let nameQuery = supabase
-        .from('invoices')
-        .select('id, invoice_number, invoice_date, grand_total, balance_amount, payment_status, payment_mode, status, customer:customers(name)')
-        .order('created_at', { ascending: false })
-        .limit(200);
-      if (params.fromDate) nameQuery = nameQuery.gte('invoice_date', params.fromDate);
-      if (params.toDate) nameQuery = nameQuery.lte('invoice_date', params.toDate);
-      const { data: nameData, error: nameErr } = await nameQuery;
-      if (nameErr) throw nameErr;
-      rows = (nameData ?? [])
-        .map((row: any) => ({
-          id: row.id,
-          invoice_number: row.invoice_number,
-          invoice_date: row.invoice_date,
-          grand_total: row.grand_total,
-          balance_amount: row.balance_amount,
-          payment_status: row.payment_status,
-          payment_mode: row.payment_mode,   // NEW — was missing
-          status: row.status,
-          customer_name: row.customer?.name ?? 'Walk-in Customer',
-        }))
-        .filter((r) => r.customer_name.toLowerCase().includes(needle));
-    }
-  }
-
-  return rows;
+  const all = (data ?? []) as InvoiceListItem[];
+  return { rows: all.slice(0, pageSize), hasMore: all.length > pageSize };
 }
+
+// ---------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------
 
 export interface DashboardSummary {
   todaySales: number;
@@ -368,7 +457,7 @@ export interface DashboardSummary {
 }
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const today = new Date().toISOString().slice(0, 10);
 
   const [todayInvoicesRes, customersRes, productsRes, pendingRes] = await Promise.all([
     supabase

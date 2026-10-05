@@ -15,6 +15,8 @@ export default function SettingsLayout() {
       <Stack.Screen name="metals" options={{ title: 'Metals' }} />
       <Stack.Screen name="purity" options={{ title: 'Purity' }} />
       <Stack.Screen name="categories" options={{ title: 'Categories' }} />
+      <Stack.Screen name="subcategories" options={{ title: 'Sub Categories' }} />
+      <Stack.Screen name="stone-names" options={{ title: 'Stone Names' }} />
       <Stack.Screen name="gold-rates" options={{ title: 'Gold Rates' }} />
       <Stack.Screen name="making-charges" options={{ title: 'Making Charges' }} />
       <Stack.Screen name="value-added-charges" options={{ title: 'Value Added Charges' }} />

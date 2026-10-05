@@ -1,84 +1,71 @@
 // src/components/product/ProductBarcodeLabel.tsx
-import { useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, TextInput, StyleSheet, Alert } from 'react-native';
-import ViewShot from 'react-native-view-shot';
-import * as Print from 'expo-print';
+import Svg, { Rect, Path, Text as SvgText } from 'react-native-svg';
 import { colors, spacing } from '../../theme';
-import { uploadBarcodeImage } from '../../lib/storage';
-import { updateProductQr } from '../../lib/products';
-import { Code128Barcode } from './Code128Barcode';
+import { printHtml } from '../../lib/invoicePdf';
+import { buildLabelsHtml } from '../../lib/barcodeLabelHtml';
+import {
+  LabelData,
+  buildLabelLayout,
+  LABEL_W_MM,
+  LABEL_H_MM,
+  TAIL_X_MM,
+  TAIL_W_MM,
+} from '../../lib/labelLayout';
 
 interface Props {
   productId: string;
   productCode: string;
   barcode: string;
   productName: string;
-  // Pricing is calculated only at billing time now, so the label shows the
-  // item's physical details instead of a frozen MRP.
+  category: string;
+  grossWeight: number;
   netWeight: number;
   purity: string;
+  huid?: string | null;
+  vaPercent?: number;
+  makingCharge?: number;
+  stoneCharge?: number;
+  diamondWeight?: number | string;
+  diamondCharge?: number;
   staffId: string;
-  itemLabel?: string;
   businessName?: string;
 }
 
 export function ProductBarcodeLabel({
-  productId,
   productCode,
   barcode,
   productName,
+  category,
+  grossWeight,
   netWeight,
   purity,
-  staffId,
-  itemLabel = 'JEWL',
-  businessName = 'MY STORE',
+  huid = null,
+  vaPercent = 0,
+  makingCharge = 0,
+  stoneCharge = 0,
+  diamondWeight = '',
+  diamondCharge = 0,
 }: Props) {
-  const shotRef = useRef<ViewShot>(null);
-  const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(false);
-  const [savedUrl, setSavedUrl] = useState<string | null>(null);
   const [copies, setCopies] = useState('1');
 
-  async function captureBase64() {
-    if (!shotRef.current?.capture) throw new Error('Barcode not ready');
-    return await shotRef.current.capture();
-  }
-
-  async function handleSaveToStorage() {
-    try {
-      setSaving(true);
-      const base64 = await captureBase64();
-      const { publicUrl } = await uploadBarcodeImage(productId, base64);
-      await updateProductQr(productId, publicUrl, staffId);
-      setSavedUrl(publicUrl);
-      Alert.alert('Saved', 'Barcode label saved to product.');
-    } catch (e: any) {
-      Alert.alert('Error', e.message ?? 'Could not save barcode');
-    } finally {
-      setSaving(false);
-    }
-  }
+  const data: LabelData = useMemo(
+    () => ({
+      barcode, purity, huid, category, grossWeight, netWeight,
+      vaPercent, makingCharge, stoneCharge, diamondWeight, diamondCharge,
+    }),
+    [barcode, purity, huid, category, grossWeight, netWeight,
+     vaPercent, makingCharge, stoneCharge, diamondWeight, diamondCharge]
+  );
+  const layout = useMemo(() => buildLabelLayout(data), [data]);
 
   async function handlePrint() {
     const n = Math.max(1, Math.min(100, parseInt(copies, 10) || 1));
     try {
       setPrinting(true);
-      const base64 = await captureBase64();
-      const labelHtml = `<div class="label"><img src="data:image/png;base64,${base64}" /></div>`;
-      const html = `
-        <html>
-          <head>
-            <style>
-              @page { margin: 8px; }
-              body { font-family: -apple-system, sans-serif; }
-              .sheet { display: flex; flex-wrap: wrap; gap: 6px; }
-              .label { width: 220px; }
-              .label img { width: 100%; }
-            </style>
-          </head>
-          <body><div class="sheet">${labelHtml.repeat(n)}</div></body>
-        </html>`;
-      await Print.printAsync({ html });
+      await printHtml(buildLabelsHtml(Array.from({ length: n }, () => data)));
     } catch (e: any) {
       Alert.alert('Error', e.message ?? 'Could not print barcode label');
     } finally {
@@ -88,22 +75,28 @@ export function ProductBarcodeLabel({
 
   return (
     <View style={styles.wrap}>
-      <ViewShot ref={shotRef} options={{ format: 'png', quality: 1, result: 'base64' }} style={styles.labelBox}>
-        <View style={styles.labelRow}>
-          <View style={styles.labelLeft}>
-            {/* <Text style={styles.businessName} numberOfLines={1}>{businessName}</Text> */}
-            <View style={styles.barcodeBox}>
-              <Code128Barcode value={barcode} height={40} barWidth={1.6} />
-            </View>
-            <Text style={styles.code}>{barcode}</Text>
-          </View>
-          <View style={styles.labelRight}>
-            <Text style={styles.meta}>ITEM : {itemLabel}</Text>
-            <Text style={styles.meta}>WT : {netWeight.toFixed(3)}g</Text>
-            <Text style={styles.meta}>PUR : {purity}</Text>
-          </View>
-        </View>
-      </ViewShot>
+      <View style={styles.previewFrame}>
+        <Svg viewBox={`0 0 ${LABEL_W_MM} ${LABEL_H_MM}`} style={styles.svg}>
+          <Rect x={0} y={0} width={LABEL_W_MM} height={LABEL_H_MM} fill="#fff" />
+          {/* Non-printing tail, shaded in the preview only */}
+          <Rect x={TAIL_X_MM} y={0} width={TAIL_W_MM} height={LABEL_H_MM} fill="#F1F5F9" />
+          <Path d={layout.barsPath} fill="#000" shapeRendering="crispEdges" />
+          {layout.texts.map((t, i) => (
+            <SvgText
+              key={i}
+              x={t.x}
+              y={t.y}
+              fontSize={t.size}
+              fontFamily="Arial, Helvetica, sans-serif"
+              fontWeight="700"
+              fill="#000"
+              textAnchor={t.anchor}
+            >
+              {t.text}
+            </SvgText>
+          ))}
+        </Svg>
+      </View>
 
       <Text style={styles.productName} numberOfLines={1}>{productName}</Text>
       <Text style={styles.productCode}>Code: {productCode}</Text>
@@ -114,9 +107,6 @@ export function ProductBarcodeLabel({
       </View>
 
       <View style={styles.actions}>
-        {/* <TouchableOpacity style={styles.btn} onPress={handleSaveToStorage} disabled={saving}>
-          <Text style={styles.btnText}>{saving ? 'Saving...' : savedUrl ? 'Saved ✓' : 'Save Barcode'}</Text>
-        </TouchableOpacity> */}
         <TouchableOpacity style={[styles.btn, styles.btnOutline]} onPress={handlePrint} disabled={printing}>
           <Text style={[styles.btnText, styles.btnOutlineText]}>{printing ? 'Preparing...' : 'Print Labels'}</Text>
         </TouchableOpacity>
@@ -127,14 +117,8 @@ export function ProductBarcodeLabel({
 
 const styles = StyleSheet.create({
   wrap: { alignItems: 'center', paddingVertical: spacing.lg },
-  labelBox: { padding: spacing.sm, backgroundColor: '#fff', borderRadius: 6, borderWidth: 1, borderColor: '#ddd' },
-  labelRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  labelLeft: { alignItems: 'flex-start' },
-  labelRight: { justifyContent: 'center' },
-  barcodeBox: { width: 150, height: 40, overflow: 'hidden' },
-  businessName: { fontSize: 11, fontWeight: '800', color: '#000' },
-  code: { fontSize: 10, fontWeight: '700', color: '#000', marginTop: 2 },
-  meta: { fontSize: 11, fontWeight: '700', color: '#000' },
+  previewFrame: { width: '100%', maxWidth: 560, borderWidth: 1, borderColor: '#ddd', backgroundColor: '#fff' },
+  svg: { width: '100%', aspectRatio: LABEL_W_MM / LABEL_H_MM },
   productName: { marginTop: spacing.sm, fontSize: 13, color: colors.textMuted },
   productCode: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   copiesRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.md },
