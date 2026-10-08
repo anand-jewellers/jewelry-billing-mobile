@@ -8,6 +8,7 @@ import { buildLabelsHtml } from '../../lib/barcodeLabelHtml';
 import {
   LabelData,
   buildLabelLayout,
+  productToLabelData,
   LABEL_W_MM,
   LABEL_H_MM,
   TAIL_X_MM,
@@ -15,32 +16,37 @@ import {
 } from '../../lib/labelLayout';
 
 interface Props {
-  productId: string;
+  /** Preferred: pass the full product record (same shape getProductById returns). */
+  product?: any;
+
+  // Legacy props, used only when `product` is not passed.
+  productId?: string;
   productCode: string;
-  barcode: string;
+  barcode?: string;
   productName: string;
-  category: string;
-  grossWeight: number;
-  netWeight: number;
-  purity: string;
+  category?: string;
+  grossWeight?: number;
+  netWeight?: number;
+  purity?: string;
   huid?: string | null;
   vaPercent?: number;
   makingCharge?: number;
   stoneCharge?: number;
   diamondWeight?: number | string;
   diamondCharge?: number;
-  staffId: string;
+  staffId?: string;
   businessName?: string;
 }
 
 export function ProductBarcodeLabel({
+  product,
   productCode,
-  barcode,
+  barcode = '',
   productName,
-  category,
-  grossWeight,
-  netWeight,
-  purity,
+  category = '',
+  grossWeight = 0,
+  netWeight = 0,
+  purity = '',
   huid = null,
   vaPercent = 0,
   makingCharge = 0,
@@ -51,14 +57,18 @@ export function ProductBarcodeLabel({
   const [printing, setPrinting] = useState(false);
   const [copies, setCopies] = useState('1');
 
-  const data: LabelData = useMemo(
-    () => ({
+  const data: LabelData = useMemo(() => {
+    // Same mapper the bulk-print screen uses
+    const fromProduct = product ? productToLabelData(product) : null;
+    if (fromProduct) return fromProduct;
+    return {
       barcode, purity, huid, category, grossWeight, netWeight,
       vaPercent, makingCharge, stoneCharge, diamondWeight, diamondCharge,
-    }),
-    [barcode, purity, huid, category, grossWeight, netWeight,
-     vaPercent, makingCharge, stoneCharge, diamondWeight, diamondCharge]
-  );
+    };
+  }, [
+    product, barcode, purity, huid, category, grossWeight, netWeight,
+    vaPercent, makingCharge, stoneCharge, diamondWeight, diamondCharge,
+  ]);
   const layout = useMemo(() => buildLabelLayout(data), [data]);
 
   async function handlePrint() {

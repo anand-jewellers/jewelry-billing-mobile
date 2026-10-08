@@ -1,11 +1,9 @@
-// src\components\invoice\BarcodeScannerModal.tsx
-
-import { useCallback, useRef, useState } from 'react';
+// src/components/invoice/BarcodeScannerModal.tsx
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, View, Text, TextInput, StyleSheet, Pressable } from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import { X, Zap, ZapOff } from 'lucide-react-native';
 import { colors, spacing } from '../../theme';
-
 
 interface Props {
   visible: boolean;
@@ -15,13 +13,50 @@ interface Props {
 
 const SCAN_COOLDOWN_MS = 2500;   // long enough that a dialog doesn't trigger a re-scan
 const CONFIRM_WINDOW_MS = 900;   // the same value must be read twice within this window
+const CAMERA_START_DELAY_MS = 250; // let the Modal finish animating before the camera starts
 
 export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
   const [permission, requestPermission] = useCameraPermissions();
   const [torch, setTorch] = useState(false);
   const [manualCode, setManualCode] = useState('');
+  const [cameraOn, setCameraOn] = useState(false);
+  const [cameraKey, setCameraKey] = useState(0);
+
   const lockRef = useRef(false);
   const lastReadRef = useRef<{ value: string; at: number } | null>(null);
+  const startTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retriesRef = useRef(0);
+
+  const clearStartTimer = () => {
+    if (startTimerRef.current) {
+      clearTimeout(startTimerRef.current);
+      startTimerRef.current = null;
+    }
+  };
+
+  const startCamera = useCallback(() => {
+    clearStartTimer();
+    startTimerRef.current = setTimeout(() => {
+      setCameraKey((k) => k + 1); // brand-new camera session every time
+      setCameraOn(true);
+    }, CAMERA_START_DELAY_MS);
+  }, []);
+
+  // Reset everything each time the scanner opens or closes
+  useEffect(() => {
+    if (visible) {
+      lockRef.current = false;
+      lastReadRef.current = null;
+      retriesRef.current = 0;
+      setTorch(false);
+      setManualCode('');
+    } else {
+      // Release the camera completely when closed
+      clearStartTimer();
+      setCameraOn(false);
+    }
+    return clearStartTimer;
+  }, [visible]);
 
   const handleScan = useCallback(
     (result: BarcodeScanningResult) => {
@@ -52,6 +87,14 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
     [onScanned]
   );
 
+  // If the camera fails to start, rebuild the session (max 2 retries)
+  const handleMountError = useCallback(() => {
+    if (retriesRef.current >= 2) return;
+    retriesRef.current += 1;
+    setCameraOn(false);
+    startCamera();
+  }, [startCamera]);
+
   const submitManual = () => {
     const code = manualCode.trim();
     if (!code) return;
@@ -63,7 +106,7 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
 
   if (!permission) {
     return (
-      <Modal visible animationType="slide">
+      <Modal visible animationType="fade">
         <View style={styles.permissionScreen}>
           <Text style={styles.permissionText}>Checking camera permission…</Text>
         </View>
@@ -73,7 +116,7 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
 
   if (!permission.granted) {
     return (
-      <Modal visible animationType="slide">
+      <Modal visible animationType="fade">
         <View style={styles.permissionScreen}>
           <Text style={styles.permissionText}>Camera access is needed to scan product barcodes.</Text>
           <Pressable style={styles.permBtn} onPress={requestPermission}>
@@ -88,17 +131,27 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
   }
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible
+      animationType="fade"          // fade, not slide: the size is final immediately
+      statusBarTranslucent          // same full-screen size on every open
+      onShow={startCamera}          // start the camera only after the Modal is on screen
+      onRequestClose={onClose}
+    >
       <View style={styles.container}>
-        <CameraView
-          style={StyleSheet.absoluteFill}
-          facing="back"
-          autofocus="on"
-          zoom={0.1}
-          enableTorch={torch}
-          barcodeScannerSettings={{ barcodeTypes: ['code128'] }}
-          onBarcodeScanned={handleScan}
-        />
+        {cameraOn && (
+          <CameraView
+            key={cameraKey}
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            autofocus="on"
+            zoom={0.1}
+            enableTorch={torch}
+            barcodeScannerSettings={{ barcodeTypes: ['code128'] }}
+            onBarcodeScanned={handleScan}
+            onMountError={handleMountError}
+          />
+        )}
 
         <View style={styles.frame} pointerEvents="none">
           <View style={styles.frameBox} />

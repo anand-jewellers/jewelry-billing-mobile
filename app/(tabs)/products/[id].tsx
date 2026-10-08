@@ -287,22 +287,12 @@ export default function ProductDetailsScreen() {
         <Text style={styles.notFound}>No barcode value saved for this product yet.</Text>
       ) : (
         <ProductBarcodeLabel
-          productId={product.id}
-          productCode={product.product_code}
-          barcode={product.barcode}
-          productName={product.product_name}
-          category={product.categories?.name ?? ''}
-          grossWeight={Number(product.gross_weight)}
-          netWeight={Number(product.net_weight)}
-          purity={product.purities?.name ?? ''}
-          huid={product.huid}
-          vaPercent={chargeVal('Value Added Charge')}
-          makingCharge={chargeVal('Making Charge')}
-          stoneCharge={chargeVal('Stone Charge')}
-          diamondWeight={totalDiamondWt > 0 ? totalDiamondWt.toFixed(3) : ''}
-          diamondCharge={totalDiamondAmt}
-          staffId={currentStaff.id}
-        />
+  product={product}
+  productId={product.id}
+  productCode={product.product_code}
+  productName={product.product_name}
+  staffId={currentStaff.id}
+/>
       )}
 
       {/* ===================================================

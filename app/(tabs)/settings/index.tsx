@@ -32,6 +32,7 @@ import {
   Boxes,
   Printer,
   type LucideIcon,
+  Megaphone,
 } from 'lucide-react-native';
 import { useStaff } from '../../../src/context/StaffContext';
 import { colors, spacing } from '../../../src/theme';
@@ -208,7 +209,7 @@ const SETTINGS_ITEMS: SettingItem[] = [
       watermarkColor: 'rgba(2, 132, 199, 0.08)',
     },
   },
-    {
+  {
     label: 'Printer',
     sublabel: 'Set up your thermal receipt printer.',
     route: '/settings/printer',
@@ -219,6 +220,19 @@ const SETTINGS_ITEMS: SettingItem[] = [
       bg: '#E0E7FF',
       iconColor: '#4F46E5',
       watermarkColor: 'rgba(79, 70, 229, 0.08)',
+    },
+  },
+  {
+    label: 'Discount',
+    sublabel: 'Send offer image and note to all customers.',
+    route: '/settings/discount',
+    icon: Megaphone,
+    watermarkIcon: Percent,
+    pageKey: 'settings.discount',
+    theme: {
+      bg: '#FCE7F3',
+      iconColor: '#DB2777',
+      watermarkColor: 'rgba(219, 39, 119, 0.08)',
     },
   },
 ];

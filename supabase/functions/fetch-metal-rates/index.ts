@@ -80,7 +80,10 @@ async function fetchIbjaRates(): Promise<IbjaRates> {
   return { gold, silverPerGram };
 }
 
-Deno.serve(async () => {
+Deno.serve(async (req) => {
+  if (req.headers.get('x-cron-secret') !== Deno.env.get('CRON_SECRET')) {
+    return new Response('Unauthorized', { status: 401 });
+  }
   try {
     const { data: metals, error: metalsErr } = await supabase
       .from('metals')

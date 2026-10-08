@@ -413,20 +413,24 @@ export interface ListInvoicesParams {
 export interface ListInvoicesResult {
   rows: InvoiceListItem[];
   hasMore: boolean;
+  total: number; // total rows matching the current search / date filters
+  totalPages: number; // always >= 1
 }
 
 export async function listInvoices(params: ListInvoicesParams = {}): Promise<ListInvoicesResult> {
   const page = params.page ?? 1;
   const pageSize = params.pageSize ?? 15;
   const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
 
   let query = supabase
     .from('invoice_list_view')
     .select(
-      'id, invoice_number, invoice_date, grand_total, balance_amount, payment_status, payment_mode, status, customer_name'
+      'id, invoice_number, invoice_date, grand_total, balance_amount, payment_status, payment_mode, status, customer_name',
+      { count: 'exact' } // total rows matching the filters below
     )
     .order('created_at', { ascending: false })
-    .range(from, from + pageSize); // pageSize + 1 rows, to detect a next page
+    .range(from, to);
 
   if (params.fromDate) query = query.gte('invoice_date', params.fromDate);
   if (params.toDate) query = query.lte('invoice_date', params.toDate);
@@ -436,11 +440,26 @@ export async function listInvoices(params: ListInvoicesParams = {}): Promise<Lis
     query = query.or(`invoice_number.ilike.%${s}%,customer_name.ilike.%${s}%`);
   }
 
-  const { data, error } = await query;
-  if (error) throw error;
+  const { data, error, count } = await query;
 
-  const all = (data ?? []) as InvoiceListItem[];
-  return { rows: all.slice(0, pageSize), hasMore: all.length > pageSize };
+  // PGRST103 = requested page is past the end (e.g. the last invoice on
+  // the final page was just deleted). Return an empty page instead of crashing.
+  if (error) {
+    if ((error as any).code === 'PGRST103') {
+      return { rows: [], hasMore: false, total: 0, totalPages: 1 };
+    }
+    throw error;
+  }
+
+  const rows = (data ?? []) as InvoiceListItem[];
+  const total = count ?? rows.length;
+
+  return {
+    rows,
+    hasMore: from + rows.length < total,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
 }
 
 // ---------------------------------------------------------

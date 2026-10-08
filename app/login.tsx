@@ -81,15 +81,15 @@ export default function LoginScreen() {
                 />
               ) : (
                 <View style={styles.fallbackLogo}>
-                  <Text style={[styles.fallbackLogoText, isDesktop && { fontSize: 17 }]}>AJ</Text>
-                  <Text style={styles.fallbackLogoSub}>Jewellers</Text>
+                  <Text style={[styles.fallbackLogoText, isDesktop && { fontSize: 17 }]}>MY</Text>
+                  <Text style={styles.fallbackLogoSub}>Jewellerery</Text>
                 </View>
               )}
             </View>
           </View>
 
           <Text style={[styles.companyName, isDesktop && { fontSize: 20 }]}>
-            {settings?.company_name || 'Anand Jewellers'}
+            {settings?.company_name || 'My Jewellerery Billing'}
           </Text>
           <View style={[styles.taglineWrap, isDesktop && { marginTop: 2, marginBottom: 10, gap: 6 }]}>
             <View style={styles.taglineLine} />

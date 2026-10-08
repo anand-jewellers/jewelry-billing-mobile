@@ -10,7 +10,9 @@ import {
   StyleSheet,
   RefreshControl,
   ActivityIndicator,
-  Platform, Alert,
+  Platform,
+  Alert,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,7 +31,8 @@ import {
 import { colors, spacing } from '../../../src/theme';
 import { getProducts, getProductById } from '../../../src/lib/products';
 import { printHtml } from '../../../src/lib/invoicePdf';
-import { buildLabelsHtml, LabelData } from '../../../src/lib/barcodeLabelHtml';
+import { buildLabelsHtml } from '../../../src/lib/barcodeLabelHtml';
+import { LabelData, productToLabelData } from '../../../src/lib/labelLayout';
 import { getProductImageUrl } from '../../../src/lib/storage';
 import {
   shareProductOnWhatsApp,
@@ -38,6 +41,7 @@ import {
 } from '../../../src/lib/whatsappShare';
 
 const PAGE_SIZE = 15;
+const BULK_GAP = 10;
 
 interface ProductRow {
   id: string;
@@ -56,6 +60,12 @@ interface ProductRow {
 
 export default function ProductListScreen() {
   const router = useRouter();
+  const { width: screenWidth } = useWindowDimensions();
+
+  // Exact, equal width for the Print and Share buttons:
+  // (screen width - left/right padding - gap between buttons) / 2
+  const bulkBtnWidth = Math.floor((screenWidth - spacing.lg * 2 - BULK_GAP) / 2);
+
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -79,6 +89,8 @@ export default function ProductListScreen() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkSharing, setBulkSharing] = useState(false);
   const [bulkPrinting, setBulkPrinting] = useState(false);
+
+  const bulkBusy = bulkSharing || bulkPrinting;
 
   async function load() {
     try {
@@ -268,6 +280,43 @@ export default function ProductListScreen() {
       setBulkSharing(false);
     }
   }
+async function handlePrintSelected() {
+  const selected = products.filter((p) => selectedIds.has(p.id));
+  if (!selected.length) return;
+  setBulkPrinting(true);
+  try {
+    // List rows don't carry gross/stone weight, HUID or barcode, so load full records
+    const full = await Promise.all(selected.map((p) => getProductById(p.id)));
+
+    const labels: LabelData[] = [];
+    const skipped: string[] = [];
+
+    full.forEach((p: any, i: number) => {
+      // Same mapper as the product detail screen, so labels are identical
+      const label = productToLabelData(p);
+      if (!label) {
+        skipped.push(selected[i].product_name);
+        return;
+      }
+      labels.push(label);
+    });
+
+    if (!labels.length) {
+      Alert.alert('Nothing to print', 'None of the selected products have a barcode value saved.');
+      return;
+    }
+
+    await printHtml(buildLabelsHtml(labels));
+
+    if (skipped.length) {
+      Alert.alert('Some products skipped', `No barcode saved for: ${skipped.join(', ')}`);
+    }
+  } catch (e: any) {
+    Alert.alert('Error', e?.message ?? 'Could not print barcode labels');
+  } finally {
+    setBulkPrinting(false);
+  }
+}
 
   if (loading) {
     return (
@@ -275,47 +324,6 @@ export default function ProductListScreen() {
         <ActivityIndicator color={colors.primary} />
       </View>
     );
-  }
-  async function handlePrintSelected() {
-    const selected = products.filter((p) => selectedIds.has(p.id));
-    if (!selected.length) return;
-    setBulkPrinting(true);
-    try {
-      // List rows don't carry gross/stone weight, HUID or barcode, so load full records
-      const full = await Promise.all(selected.map((p) => getProductById(p.id)));
-
-      const labels: LabelData[] = [];
-      const skipped: string[] = [];
-      full.forEach((p: any, i: number) => {
-        if (!p?.barcode) {
-          skipped.push(selected[i].product_name);
-          return;
-        }
-        labels.push({
-          barcode: String(p.barcode),
-          grossWeight: Number(p.gross_weight) || 0,
-          netWeight: Number(p.net_weight) || 0,
-          stoneWeight: Number(p.stone_weight) || 0,
-          purity: p.purities?.name ?? '—',
-          huid: p.huid,
-        });
-      });
-
-      if (!labels.length) {
-        Alert.alert('Nothing to print', 'None of the selected products have a barcode value saved.');
-        return;
-      }
-
-      await printHtml(buildLabelsHtml(labels));
-
-      if (skipped.length) {
-        Alert.alert('Some products skipped', `No barcode saved for: ${skipped.join(', ')}`);
-      }
-    } catch (e: any) {
-      Alert.alert('Error', e?.message ?? 'Could not print barcode labels');
-    } finally {
-      setBulkPrinting(false);
-    }
   }
 
   return (
@@ -663,26 +671,25 @@ export default function ProductListScreen() {
           }
         />
 
-        {/* Action Footer: Bulk Share or Floating "+ Add Product" Button */}
+        {/* Action Footer: Bulk Print/Share or Floating "+ Add Product" Button */}
         {selectionMode ? (
           <View style={styles.bulkActionContainer}>
             <Pressable
               style={[
                 styles.bulkBtn,
+                { width: bulkBtnWidth },
                 styles.printSelectedBtn,
-                (selectedIds.size === 0 || bulkPrinting) && styles.shareSelectedBtnDisabled,
+                (selectedIds.size === 0 || bulkBusy) && styles.bulkBtnDisabled,
               ]}
               onPress={handlePrintSelected}
-              disabled={selectedIds.size === 0 || bulkPrinting}
+              disabled={selectedIds.size === 0 || bulkBusy}
             >
               {bulkPrinting ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
                   <Ionicons name="print-outline" size={20} color="#fff" />
-                  <Text style={styles.shareSelectedBtnText}>
-                    Print
-                  </Text>
+                  <Text style={styles.bulkBtnText}>Print</Text>
                 </>
               )}
             </Pressable>
@@ -690,18 +697,19 @@ export default function ProductListScreen() {
             <Pressable
               style={[
                 styles.bulkBtn,
+                { width: bulkBtnWidth },
                 styles.shareSelectedBtn,
-                selectedIds.size === 0 && styles.shareSelectedBtnDisabled,
+                (selectedIds.size === 0 || bulkBusy) && styles.bulkBtnDisabled,
               ]}
               onPress={handleShareSelected}
-              disabled={selectedIds.size === 0 || bulkSharing}
+              disabled={selectedIds.size === 0 || bulkBusy}
             >
               {bulkSharing ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
                   <Ionicons name="logo-whatsapp" size={20} color="#fff" />
-                  <Text style={styles.shareSelectedBtnText}>Share</Text>
+                  <Text style={styles.bulkBtnText}>Share</Text>
                 </>
               )}
             </Pressable>
@@ -1243,17 +1251,20 @@ const styles = StyleSheet.create({
     left: spacing.lg,
     right: spacing.lg,
     flexDirection: 'row',
-    gap: 10,
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  // Shared by both buttons, so they always have the same size
+  // Shared by both buttons. Width is set inline (bulkBtnWidth) so both are
+  // exactly equal; height is fixed so the spinner never changes the size.
   bulkBtn: {
-    flex: 1,
+    height: 52,
+    flexGrow: 0,
+    flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     borderRadius: 16,
-    paddingVertical: 14,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
@@ -1267,10 +1278,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#1E3A8A',
     shadowColor: '#1E3A8A',
   },
-  shareSelectedBtnDisabled: {
+  bulkBtnDisabled: {
     opacity: 0.5,
   },
-  shareSelectedBtnText: {
+  bulkBtnText: {
     color: '#FFFFFF',
     fontWeight: '700',
     fontSize: 15,

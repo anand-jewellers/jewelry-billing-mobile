@@ -159,6 +159,8 @@ export const PAGE_REGISTRY = [
   { key: 'settings.invoice_settings', label: 'Invoice Settings', group: 'Settings' },
   { key: 'settings.staff', label: 'Staff', group: 'Settings' },
   { key: 'settings.printer', label: 'Printer', group: 'Settings' }, // NEW
+  { key: 'settings.printer', label: 'Printer', group: 'Settings' },
+  { key: 'settings.discount', label: 'Discount', group: 'Settings' },
 ] as const;
 
 export type PageKey = (typeof PAGE_REGISTRY)[number]['key'];

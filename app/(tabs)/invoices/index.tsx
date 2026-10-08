@@ -104,6 +104,7 @@ export default function InvoiceListScreen() {
   const initial = listCache.get('||' + '|' + 1);
   const [invoices, setInvoices] = useState<InvoiceListItem[]>(initial?.rows ?? []);
   const [hasMore, setHasMore] = useState(initial?.hasMore ?? false);
+  const [totalPages, setTotalPages] = useState(initial?.totalPages ?? 1);
   const [loading, setLoading] = useState(!initial);
   const [error, setError] = useState<string | null>(null);
 
@@ -147,6 +148,7 @@ export default function InvoiceListScreen() {
     if (cached) {
       setInvoices(cached.rows);
       setHasMore(cached.hasMore);
+      setTotalPages(cached.totalPages);
       setLoading(false);
     } else {
       setLoading(true);
@@ -166,6 +168,7 @@ export default function InvoiceListScreen() {
       if (id !== reqId.current) return;
       setInvoices(res.rows);
       setHasMore(res.hasMore);
+      setTotalPages(res.totalPages);
       setError(null);
     } catch {
       if (id === reqId.current) setError('Could not load invoices.');
@@ -541,7 +544,8 @@ export default function InvoiceListScreen() {
 
                   <View style={styles.pageInfoWrap}>
                     <Text style={styles.pageInfoText}>
-                      Page <Text style={styles.pageInfoBold}>{currentPage}</Text>
+                      Page <Text style={styles.pageInfoBold}>{currentPage}</Text> of{' '}
+                      <Text style={styles.pageInfoBold}>{totalPages}</Text>
                     </Text>
                   </View>
 

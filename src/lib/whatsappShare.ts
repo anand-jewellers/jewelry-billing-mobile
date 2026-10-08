@@ -71,7 +71,7 @@ export function shopInfoFromCompany(company: any): ShopShareInfo {
   let website = rawWebsite ? String(rawWebsite).trim() : '';
   if (website && !/^https?:\/\//i.test(website)) website = `https://${website}`;
 
-  return { name: String(name), address, mapsUrl, website: website || null };
+  return { name: String(name).trim(), address, mapsUrl, website: website || null };
 }
 
 // ---------------------------------------------------------
@@ -144,7 +144,8 @@ function buildProductLines(p: ShareableProduct, imageUrl?: string | null, indent
 
 // Shop name on top, website at the bottom.
 function wrapWithShopInfo(body: string, shop?: ShopShareInfo | null): string {
-  const header = shop?.name ? `*${shop.name}*\n\n` : '';
+  const name = shop?.name?.trim();
+  const header = name ? `*${name}*\n\n` : '';
   const footer = shop?.website ? `\n\n${shop.website}` : '';
   return `${header}${body}${footer}`;
 }
@@ -265,7 +266,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 //   false -> the app never left within awayMs (WhatsApp did not open),
 //            or the user took longer than maxMs -> stop the sequence
 // ---------------------------------------------------------
-function watchAwayAndBack() {
+export function watchAwayAndBack() {
   let left = AppState.currentState !== 'active';
   let returned = false;
   let notify: (() => void) | null = null;
@@ -644,7 +645,7 @@ export function buildInvoiceThanksMessage(
   const name =
     invoice.customer_name && invoice.customer_name !== 'Walk-in Customer' ? invoice.customer_name : 'there';
   lines.push(`Hi ${name},`);
-  lines.push(`Thank you for shopping with *${shopName ?? 'us'}*! 🙏`, '');
+  lines.push(`Thank you for shopping with *${shopName?.trim() || 'us'}*! 🙏`, '');
   lines.push(`Invoice: ${invoice.invoice_number}`);
   lines.push(`Amount: ₹${Number(invoice.grand_total || 0).toLocaleString('en-IN')}`);
   lines.push('', 'Your invoice is attached.');
@@ -916,4 +917,47 @@ export async function shareInvoiceOnWhatsApp(params: {
     // WhatsApp not installed or intent failed -> normal share sheet
     await sharePdfFallback();
   }
+}
+
+
+// =========================================================
+// Discount broadcast: one customer at a time
+// =========================================================
+export async function shareDiscountToCustomer(params: {
+  imageUri: string;
+  note: string;
+  customerName: string | null;
+  phone: string;
+  shop?: ShopShareInfo | null;
+}): Promise<ShareResult> {
+  const { imageUri, note, customerName, phone, shop } = params;
+
+  const greeting = customerName ? `Hi ${customerName},\n\n` : '';
+  const caption = wrapWithShopInfo(`${greeting}${note.trim()}`, shop);
+  const mime = mimeFromExt(extFromUrl(imageUri));
+
+  // Expo Go / web: no native share module, so send the text only
+  if (Platform.OS === 'web' || !RNShare) {
+    await openWhatsApp(caption, phone);
+    return 'shared';
+  }
+
+  // Safety net: WhatsApp can drop the caption, so keep it on the clipboard
+  await Clipboard.setStringAsync(caption);
+
+  const call =
+    Platform.OS === 'android' && RNShare.shareSingle && RNSocial?.Whatsapp
+      ? RNShare.shareSingle({
+        social: RNSocial.Whatsapp,
+        url: imageUri,
+        type: mime,
+        message: caption,
+        whatsAppNumber: phone, // opens this customer's chat directly
+      })
+      : RNShare.open({ urls: [imageUri], type: mime, message: caption, failOnCancel: false });
+
+  const outcome = await launchShare(call);
+  if (outcome === 'cancelled') return 'cancelled';
+  if (outcome === 'error') await openWhatsApp(caption, phone);
+  return 'shared';
 }

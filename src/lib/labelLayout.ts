@@ -3,7 +3,7 @@
 // Used by BOTH the on-screen preview and the print HTML.
 // @ts-ignore — jsbarcode ships no TS types; headless mode only
 import JsBarcode from 'jsbarcode';
-
+import { parseCarat, diamondChargeAmount } from './invoiceCalc';
 export interface LabelData {
   barcode: string;
   purity: string;
@@ -83,6 +83,47 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 interface Row {
   left: string;
   right?: string; // when present, row is drawn as "left | right" in aligned columns
+}
+
+/**
+ * SINGLE place that turns a product record (from getProductById) into label data.
+ * Both the product detail screen and the bulk-print screen must use this,
+ * so the two labels can never drift apart.
+ * Returns null when the product has no barcode.
+ */
+/**
+ * SINGLE place that turns a product record (from getProductById) into label data.
+ * Mirrors exactly what the product detail screen computes, so the single-print
+ * and bulk-print labels are identical.
+ * Returns null when the product has no barcode.
+ */
+export function productToLabelData(p: any): LabelData | null {
+  if (!p?.barcode) return null;
+
+  const charges: any[] = p.product_value_added_charges ?? [];
+  const chargeVal = (name: string) =>
+    Number(charges.find((c) => c.charge_name === name)?.value) || 0;
+
+  const diamonds: any[] = p.product_diamonds ?? [];
+  const totalDiamondWt = diamonds.reduce((s, d) => s + parseCarat(d.size), 0);
+  const totalDiamondAmt = diamonds.reduce(
+    (s, d) => s + diamondChargeAmount(d.size, d.amount),
+    0
+  );
+
+  return {
+    barcode: String(p.barcode),
+    purity: p.purities?.name ?? '',
+    huid: p.huid ?? null,
+    category: p.categories?.name ?? '',
+    grossWeight: Number(p.gross_weight) || 0,
+    netWeight: Number(p.net_weight) || 0,
+    vaPercent: chargeVal('Value Added Charge'),
+    makingCharge: chargeVal('Making Charge'),
+    stoneCharge: chargeVal('Stone Charge'),
+    diamondWeight: totalDiamondWt > 0 ? totalDiamondWt.toFixed(3) : '',
+    diamondCharge: totalDiamondAmt,
+  };
 }
 
 export function buildLabelLayout(l: LabelData): LabelLayout {

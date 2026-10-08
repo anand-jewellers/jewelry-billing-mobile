@@ -65,8 +65,14 @@ export default function MetalsScreen() {
       }
       setSheetOpen(false);
       load();
-    } catch {
-      setError('Could not save. That code may already be in use.');
+    } catch (e: any) {
+      console.log('save metal failed:', JSON.stringify(e, null, 2));
+      const msg = e?.message ?? '';
+      const code = e?.code; // Postgres/Supabase error code
+      if (code === '23505') setError('That code is already in use.');
+      else if (code === '23514') setError('Invalid metal type.');
+      else if (code === '42501') setError('Permission denied (RLS policy).');
+      else setError(msg || 'Could not save.');
     } finally {
       setSaving(false);
     }

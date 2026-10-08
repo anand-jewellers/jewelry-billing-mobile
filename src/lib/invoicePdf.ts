@@ -1158,3 +1158,12 @@ export async function printInvoice(
   const { html, invoiceNumber } = await loadInvoiceHtml(invoiceId, variant, options);
   await printHtml(html);
 }
+
+// in invoicePdf.ts
+export async function printLabelsNative(html: string) {
+  const Print = await import('expo-print');
+  // 100mm x 15mm in PDF points (1mm = 2.8346pt)
+  const { uri } = await Print.printToFileAsync({ html, width: 284, height: 43 });
+  const Sharing = await import('expo-sharing');
+  await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+}

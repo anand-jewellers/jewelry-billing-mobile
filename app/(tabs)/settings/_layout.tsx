@@ -23,6 +23,7 @@ export default function SettingsLayout() {
       <Stack.Screen name="tax" options={{ title: 'Tax' }} />
       <Stack.Screen name="invoice-settings" options={{ title: 'Invoice Settings' }} />
       <Stack.Screen name="staff" options={{ title: 'Staff' }} />
+      <Stack.Screen name="discount" options={{ title: 'Discount' }} />
     </Stack>
   );
 }

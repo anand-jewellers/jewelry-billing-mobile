@@ -16,16 +16,85 @@ import type {
   CalculationType,
 } from '../../types/settings';
 
-// ---------- Company Settings (single row) ----------
-export async function getCompanySettings(): Promise<CompanySettings> {
-  const { data, error } = await supabase.from('company_settings').select('*').eq('id', 1).single();
+// ---------- Single-row tables: helpers ----------
+// company_settings and invoice_settings each hold exactly one row (id = 1).
+// On a brand-new database that row doesn't exist yet, and a plain
+// .update().eq('id', 1) silently changes 0 rows (no error). These helpers
+// create the row from the app the first time it is needed, and make a
+// zero-row update fail loudly instead of showing a false "Saved".
+
+type SingleRowTable = 'company_settings' | 'invoice_settings';
+
+/** Fetch row id=1. If missing, try to create it (race-safe), then re-read. */
+async function fetchOrCreateSingleRow(
+  table: SingleRowTable,
+  insertDefaults: Record<string, unknown> = {}
+): Promise<Record<string, unknown> | null> {
+  const first = await supabase.from(table).select('*').eq('id', 1).maybeSingle();
+  if (first.error) throw first.error;
+  if (first.data) return first.data as Record<string, unknown>;
+
+  // ON CONFLICT DO NOTHING: safe if two devices try at the same moment.
+  // The insert may be refused by RLS for non-admin users; that is not fatal
+  // here, the caller decides what to do when nothing could be created.
+  const { error: insertError } = await supabase
+    .from(table)
+    .upsert({ id: 1, ...insertDefaults }, { onConflict: 'id', ignoreDuplicates: true });
+  if (insertError) {
+    console.warn(`Could not create default ${table} row:`, insertError.message);
+  }
+
+  const second = await supabase.from(table).select('*').eq('id', 1).maybeSingle();
+  if (second.error) throw second.error;
+  return (second.data as Record<string, unknown> | null) ?? null;
+}
+
+/** Update row id=1; if it doesn't exist yet, insert it instead. */
+async function updateOrCreateSingleRow(
+  table: SingleRowTable,
+  patch: Record<string, unknown>,
+  insertDefaults: Record<string, unknown> = {}
+) {
+  const { data, error } = await supabase.from(table).update(patch).eq('id', 1).select('id');
   if (error) throw error;
-  return data as CompanySettings;
+  if (data && data.length > 0) return; // updated an existing row
+
+  // Zero rows updated: the row is missing (or RLS hid it). Try to create it.
+  // If the row exists but RLS blocked the update, this insert fails too
+  // (duplicate key / permission), so the user sees an error, not a false "Saved".
+  const { error: insertError } = await supabase
+    .from(table)
+    .insert({ id: 1, ...insertDefaults, ...patch });
+  if (insertError) throw insertError;
+}
+
+// ---------- Company Settings (single row) ----------
+const COMPANY_DEFAULTS = {
+  company_name: '',
+  logo_url: null,
+  address: '',
+  city: '',
+  state: '',
+  pincode: '',
+  phone: '',
+  email: '',
+  gstin: '',
+  pan: '',
+  website: '',
+};
+
+export async function getCompanySettings(): Promise<CompanySettings> {
+  // Only company_name is sent on insert; other columns use the table defaults (null).
+  const row = await fetchOrCreateSingleRow('company_settings', { company_name: '' });
+  // If no row exists and this user couldn't create one (e.g. the login screen,
+  // before sign-in), fall back to empty values so the app still renders.
+  return { ...COMPANY_DEFAULTS, id: 1, ...(row ?? {}) } as unknown as CompanySettings;
 }
 
 export async function updateCompanySettings(patch: Partial<CompanySettings>) {
-  const { error } = await supabase.from('company_settings').update(patch).eq('id', 1);
-  if (error) throw error;
+  await updateOrCreateSingleRow('company_settings', patch as Record<string, unknown>, {
+    company_name: '',
+  });
 }
 
 // ---------- Metals ----------
@@ -257,14 +326,20 @@ export async function deleteTaxSetting(id: string) {
 
 // ---------- Invoice Settings (single row) ----------
 export async function getInvoiceSettings(): Promise<InvoiceSettings> {
-  const { data, error } = await supabase.from('invoice_settings').select('*').eq('id', 1).single();
-  if (error) throw error;
-  return data as InvoiceSettings;
+  // Insert sends only { id: 1 }, so every other column uses its table default.
+  // If a column is NOT NULL with no default, creating the row fails and we
+  // throw a clear error below.
+  const row = await fetchOrCreateSingleRow('invoice_settings');
+  if (!row) {
+    throw new Error(
+      'Invoice settings have not been created yet. Ask an admin to open Invoice Settings once.'
+    );
+  }
+  return row as unknown as InvoiceSettings;
 }
 
 export async function updateInvoiceSettings(patch: Partial<InvoiceSettings>) {
-  const { error } = await supabase.from('invoice_settings').update(patch).eq('id', 1);
-  if (error) throw error;
+  await updateOrCreateSingleRow('invoice_settings', patch as Record<string, unknown>);
 }
 
 export async function getPrimaryTaxSetting(): Promise<TaxSetting | null> {
