@@ -75,6 +75,9 @@ const STONE_CHARGE = 'Stone Charge';
 // named "Diamond <size>" (e.g. "Diamond 0.25 ct") — see invoiceCalc.ts.
 const DIAMOND_CHARGE_PREFIX = 'Diamond';
 const isDiamondCharge = (name: unknown) => String(name ?? '').startsWith(DIAMOND_CHARGE_PREFIX);
+// "Diamond 0.25 ct" -> "0.25 ct"
+const diamondWeightText = (name: unknown) =>
+  String(name ?? '').replace(/^Diamond\s*/i, '').trim();
 const DEFAULT_HSN = '7113';
 const OLD_GOLD_HSN = '7108';
 const LETTERHEAD_SPACE_PX = 110;
@@ -108,7 +111,7 @@ export interface ShopDetails {
 }
 
 const DEFAULT_SHOP: ShopDetails = {
-  name: 'BizJewel Pvt Ltd',
+  name: 'Jewellery Shop',
 };
 
 export function companyToShopDetails(settings: CompanySettings | null | undefined): ShopDetails {
@@ -702,9 +705,15 @@ export function buildThermalReceiptHtml(
             ? row('Tax', fixed2(item.tax_amount))
             : '';
 
-      // Diamond size + amount rows, e.g. "Diamond 0.25 ct : 12000"
+      // Diamond weight + amount rows, e.g. "Diamond Wt : 0.25 ct" / "Diamond Amt : 12000"
       const diamondRowsHtml = cfg.show_value_added_charges
-        ? diamondLines.map((c) => row(esc(c.charge_name), plain(num(c.amount) * qty))).join('')
+        ? diamondLines
+          .map(
+            (c) =>
+              row('Diamond Wt', esc(diamondWeightText(c.charge_name)) + " ct") +
+              row('Diamond Amt', plain(num(c.amount) * qty))
+          )
+          .join('')
         : '';
 
       return `
@@ -727,6 +736,8 @@ export function buildThermalReceiptHtml(
           ? otherLines.map((c) => row(esc(c.charge_name), plain(num(c.amount) * qty))).join('')
           : ''}
           <div class="tight-dash">------</div>
+          ${taxRowsHtml ? row('Total', fixed2(itemTaxable), 'item-total') : ''}
+          ${taxRowsHtml ? '<div class="tight-dash">------</div>' : ''}
           ${taxRowsHtml}
           ${row('Gross', fixed2(item.total), 'item-total')}
         </div>
@@ -920,10 +931,11 @@ export function buildThermalReceiptHtml(
       }
 
       .footer-box {
-        margin-top: 26px;
-        font-size: 12.5px;
-        line-height: 1.4;
-      }
+  margin-top: 26px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
       .footer-box .dashed-line {
         margin-bottom: 8px;
       }
@@ -952,6 +964,8 @@ export function buildThermalReceiptHtml(
     ` : ''}
 
     <!-- Overall summary: net amount only, not the full breakdown again -->
+    <!-- Discount (only when one is given) — shown before the final amount -->
+    ${f.discount > 0 ? `${dashedSep}${row('Discount', `-${fixed2(f.discount)}`)}` : ''}
     ${dashedSep}
     ${row('Nett RS', fixed2(f.netBillAmount), 'nett-rs')}
     ${dashedSep}
@@ -960,7 +974,7 @@ export function buildThermalReceiptHtml(
     <!-- Slip Footer -->
     <div class="footer-box">
       ${dashedSep}
-      <div>${contactText}</div>
+      
       <div>**valid only for 1hr, Prices May change**</div>
       <div>Join Our Monthly Savings Scheme !!</div>
       <div style="margin-top: 10px;">GST Bill will be issued on Confirmation</div>

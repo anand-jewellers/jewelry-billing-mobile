@@ -32,20 +32,21 @@ const MIN_MODULE_DOTS = 2;     // 0.25mm
 const MAX_MODULE_DOTS = 4;     // 0.5mm
 
 // ---- Left block: barcode, digits, then "purity | huid" underneath ----
-const BARS_X = 2.2;            // quiet zone left of the bars
+const BARS_X = 9.2;            // quiet zone left of the bars
 const QUIET_R = 2.2;           // quiet zone right of the bars
 const MAX_BARS_MM = 24;        // barcode width cap
-const BAR_TOP = 1.0;
-const BAR_H = 7.2;             // bars end at y = 8.2
+const BAR_TOP = 2;
+const BAR_H = 6.0;             // bars end at y = 8.2
 const DIGITS_Y = 10.9;         // barcode number baseline
-const DIGITS_SIZE = 2.4;
-const ID_Y = 14.0;             // "18K | 23JO9P" baseline
-const ID_MAX_SIZE = 2.0;
+const DIGITS_SIZE = 2.5;
+const ID_Y = 13.5;             // "18K | 23JO9P" baseline
+const ID_MAX_SIZE = 2;
 
 // ---- Right block: item details ----
 const RIGHT_GAP_MM = 10.0;      // gap between left block and details
-const RIGHT_PAD_MM = 0.5;      // keep clear of the printable edge
+const RIGHT_PAD_MM = 0.1;      // keep clear of the printable edge
 const MAX_ROW_H = 3.2;
+const LINE_RATIO = 1.15;
 const CHAR_W = 0.64;           // avg glyph width / font size (Arial bold), for fitting
 
 export interface LabelText {
@@ -195,12 +196,11 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
 
   const dwt = String(l.diamondWeight ?? '').trim();
   if ((dwt && dwt !== '0') || num(l.diamondCharge) > 0) {
-    rows.push({ left: `CTS:${dwt || '-'}`, right: `DC:${trim(num(l.diamondCharge))}` });
+    rows.push({ left: `D.WT:${dwt || '-'}`, right: `DC:${trim(num(l.diamondCharge))}` });
   }
-
   const textX = barsX + barsW + QUIET_R + RIGHT_GAP_MM;
   const avail = x0 + PRINT_W_MM - textX - RIGHT_PAD_MM;
-  const rowH = Math.min(MAX_ROW_H, (LABEL_H_MM - 1.2) / rows.length);
+  const maxRowH = Math.min(MAX_ROW_H, (LABEL_H_MM - 1.2) / rows.length);
 
   // Column widths in characters, so the "|" lines up on every paired row
   const pairs = rows.filter((r) => r.right);
@@ -208,15 +208,18 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
   const maxL = Math.max(0, ...pairs.map((r) => r.left.length));
   const maxR = Math.max(0, ...pairs.map((r) => r.right!.length));
   const maxSingle = Math.max(0, ...singles.map((r) => r.left.length));
-  const pairChars = pairs.length ? maxL + maxR + 3 : 0; // +3 = gap, pipe, gap
+  const pairChars = pairs.length ? maxL + maxR + 3 : 0;
   const widest = Math.max(pairChars, maxSingle, 1);
 
-  // One font size for all rows: capped by row height AND by available width
-  const size = r2(Math.min(rowH * 0.8, avail / (widest * CHAR_W)));
+  // Font size is unchanged: capped by row height AND available width
+  const size = r2(Math.min(maxRowH * 0.8, avail / (widest * CHAR_W)));
+  // Line pitch now follows the font size, so rows sit closer together
+  const rowH = Math.min(maxRowH, size * LINE_RATIO);
   const cw = size * CHAR_W;
   const pipeX = textX + (maxL + 1) * cw;
   const rightX = textX + (maxL + 2) * cw;
 
+  // Block is still centred vertically on the label
   const top = (LABEL_H_MM - rows.length * rowH) / 2;
   rows.forEach((row, i) => {
     const y = top + i * rowH + rowH * 0.78;

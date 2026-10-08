@@ -90,6 +90,14 @@ const PAYMENT_MODES = [
 const VA_CHARGE = 'Value Added Charge';
 const STONE_CHARGE = 'Stone Charge';
 
+// Diamond rows from a product are saved as charge lines named
+// "Diamond <size>" (e.g. "Diamond 0.25 ct").
+const DIAMOND_CHARGE_PREFIX = 'Diamond';
+const isDiamondCharge = (name: unknown) => String(name ?? '').startsWith(DIAMOND_CHARGE_PREFIX);
+// "Diamond 0.25 ct" -> "0.25 ct"
+const diamondWeightText = (name: unknown) =>
+  String(name ?? '').replace(/^Diamond\s*/i, '').trim();
+
 type Stage = 'building' | 'estimate';
 
 // One row in the on-screen payment list. `amountText` stays a raw string
@@ -142,6 +150,8 @@ export default function NewInvoiceScreen() {
     notes: orderNotes,
     orderNumber: orderNumberParam,
     heldId: heldIdParam,
+    scan: scanParam,
+    ts: scanTs,
   } = useLocalSearchParams<{
     customerId?: string;
     orderId?: string;
@@ -155,6 +165,8 @@ export default function NewInvoiceScreen() {
     notes?: string;
     orderNumber?: string;
     heldId?: string;
+    scan?: string;
+    ts?: string;
   }>();
 
   const fromOrder = Boolean(orderId);
@@ -626,6 +638,14 @@ export default function NewInvoiceScreen() {
       cancelled = true;
     };
   }, [heldIdParam]);
+  // Opened from the dashboard "Scan & Bill" quick action:
+  // open the barcode scanner straight away once master data is ready.
+  useEffect(() => {
+    if (scanParam !== '1' || loadingMaster || readOnly) return;
+    setScannerOpen(true);
+    // clear the params so the scanner doesn't reopen on refocus / back
+    router.setParams({ scan: undefined, ts: undefined });
+  }, [scanParam, scanTs, loadingMaster, readOnly]);
 
 
   // =========================================================
@@ -1131,8 +1151,11 @@ export default function NewInvoiceScreen() {
 
               const vaLine = item.value_added_charges.find((c) => c.name === VA_CHARGE);
               const stoneLine = item.value_added_charges.find((c) => c.name === STONE_CHARGE);
+              const diamondLines = item.value_added_charges.filter(
+                (c) => isDiamondCharge(c.name) && c.amount > 0
+              );
               const otherLines = item.value_added_charges.filter(
-                (c) => c.name !== VA_CHARGE && c.name !== STONE_CHARGE
+                (c) => c.name !== VA_CHARGE && c.name !== STONE_CHARGE && !isDiamondCharge(c.name)
               );
 
               const itemCgst = item.cgst_percentage > 0 ? round2((item.taxable_amount * item.cgst_percentage) / 100) : 0;
@@ -1141,6 +1164,8 @@ export default function NewInvoiceScreen() {
                 item.cgst_percentage === 0 && item.sgst_percentage === 0 && item.igst_percentage > 0
                   ? round2((item.taxable_amount * item.igst_percentage) / 100)
                   : 0;
+
+              const itemHasTax = itemCgst > 0 || itemSgst > 0 || itemIgst > 0 || item.tax_amount > 0;
 
               return (
                 <View key={item.id}>
@@ -1173,10 +1198,27 @@ export default function NewInvoiceScreen() {
                   {stoneLine && (
                     <SlipRow label="Stone Charges" value={plain(stoneLine.amount * item.quantity)} />
                   )}
+
+                  {/* Diamond weight (e.g. 0.25 ct) + amount */}
+                  {diamondLines.map((c) => (
+                    <View key={c.id}>
+                      <SlipRow label="Diamond Wt" value={`${diamondWeightText(c.name)} ct`} />
+                      <SlipRow label="Diamond Amt" value={plain(c.amount * item.quantity)} />
+                    </View>
+                  ))}
+
                   {otherLines.map((c) => (
                     <SlipRow key={c.id} label={c.name} value={plain(c.amount * item.quantity)} />
                   ))}
                   <View style={styles.dividerThin} />
+
+                  {/* Total BEFORE GST */}
+                  {itemHasTax && (
+                    <>
+                      <SlipRow label="Total" value={money(item.taxable_amount)} bold />
+                      <View style={styles.dividerThin} />
+                    </>
+                  )}
 
                   {itemCgst > 0 && (
                     <SlipRow label={withRate('CGST', item.cgst_percentage)} value={money(itemCgst)} />
@@ -1232,6 +1274,15 @@ export default function NewInvoiceScreen() {
             )}
 
             <View style={styles.divider} />
+
+            {/* Discount (only when one is given) — shown before the final amount */}
+            {totals.discount > 0 && (
+              <>
+                <SlipRow label="Discount" value={`-${money(totals.discount)}`} bold />
+                <View style={styles.divider} />
+              </>
+            )}
+
             <SlipRow label="Nett RS" value={money(netFinalAmount)} bold />
             <View style={styles.divider} />
             <SlipRow

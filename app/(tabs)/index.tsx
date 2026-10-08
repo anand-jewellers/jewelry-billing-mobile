@@ -1,6 +1,6 @@
 // app/(tabs)/index.tsx
 import { useCallback, useState, useEffect } from 'react';
-import { View, Text, ScrollView, StyleSheet, useWindowDimensions } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, Pressable, useWindowDimensions } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Card, Button } from '../../src/components/ui';
@@ -13,6 +13,13 @@ import { downloadSalesReportPdf } from '../../src/lib/pdfReport';
 import type { Metal, Purity, CurrentMetalRate } from '../../src/types/settings';
 import { PaymentBreakdownChart } from '../../src/components/ui/PaymentBreakdownChart';
 import { PageGuard } from '../../src/components/PageGuard';
+
+// ---- Navigation targets (change these if your routes are named differently) ----
+const ROUTE_INVOICES = '/invoices';
+const ROUTE_CUSTOMERS = '/customers';
+const ROUTE_PRODUCTS = '/products';
+const ROUTE_NEW_INVOICE = '/invoices/new'; // new invoice screen (opens scanner when scan=1)
+const ROUTE_ADD_PRODUCT = '/products/add'; // add product screen
 
 const RATE_ROWS: { label: string; metalMatch: string; purityMatch: string }[] = [
   { label: '24K Gold', metalMatch: 'gold', purityMatch: '24k' },
@@ -59,10 +66,12 @@ type StatCardProps = {
   label: string;
   value: string;
   compact?: boolean; // true on desktop/tablet -> shorter card
+  onPress?: () => void; // tap the card to open the matching screen
 };
 
 // Card whose number auto-shrinks as it gets longer (works on web + native).
-function StatCard({ icon, label, value, compact }: StatCardProps) {
+// Tapping the card navigates to its screen.
+function StatCard({ icon, label, value, compact, onPress }: StatCardProps) {
   const [valueWidth, setValueWidth] = useState(0);
 
   const maxSize = compact ? 22 : 26;
@@ -72,26 +81,63 @@ function StatCard({ icon, label, value, compact }: StatCardProps) {
   const fontSize = Math.max(minSize, Math.min(maxSize, fitted));
 
   return (
-    <Card style={[styles.statCard, compact && styles.statCardCompact]}>
-      <View style={styles.statHeader}>
-        <View style={styles.statIconWrap}>
-          <Ionicons name={icon} size={16} color={NAVY} />
+    <Pressable
+      onPress={onPress}
+      disabled={!onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${label}`}
+      style={({ pressed }) => [pressed && styles.cardPressed]}
+    >
+      <Card style={[styles.statCard, compact && styles.statCardCompact]}>
+        <View style={styles.statHeader}>
+          <View style={styles.statIconWrap}>
+            <Ionicons name={icon} size={16} color={NAVY} />
+          </View>
+          <Text style={styles.statLabel} numberOfLines={1}>
+            {label}
+          </Text>
+          {onPress && <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />}
         </View>
-        <Text style={styles.statLabel} numberOfLines={1}>
-          {label}
-        </Text>
-      </View>
-      <View style={styles.statValueWrap} onLayout={(e) => setValueWidth(e.nativeEvent.layout.width)}>
-        <Text
-          style={[styles.statValue, { fontSize }]}
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.6}
-        >
-          {value}
-        </Text>
-      </View>
-    </Card>
+        <View style={styles.statValueWrap} onLayout={(e) => setValueWidth(e.nativeEvent.layout.width)}>
+          <Text
+            style={[styles.statValue, { fontSize }]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.6}
+          >
+            {value}
+          </Text>
+        </View>
+      </Card>
+    </Pressable>
+  );
+}
+
+type QuickActionProps = {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  onPress: () => void;
+  variant?: 'solid' | 'outline';
+};
+
+function QuickAction({ icon, label, onPress, variant = 'solid' }: QuickActionProps) {
+  const solid = variant === 'solid';
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={({ pressed }) => [
+        styles.quickBtn,
+        solid ? styles.quickBtnSolid : styles.quickBtnOutline,
+        pressed && styles.cardPressed,
+      ]}
+    >
+      <Ionicons name={icon} size={20} color={solid ? '#fff' : colors.primary} />
+      <Text style={[styles.quickBtnText, { color: solid ? '#fff' : colors.primary }]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -208,37 +254,60 @@ function DashboardScreenInner() {
 
   const inr = (n: number) => `₹${n.toLocaleString('en-IN')}`;
 
+  const go = (route: string) => router.push(route as never);
+
+  // ---- Quick actions ----
+
+  // Opens the new invoice screen and tells it to launch the barcode scanner
+  // immediately. `ts` makes the params unique on every tap so the invoice
+  // screen reacts even if it is already mounted.
+  const openScanner = () =>
+    router.push({
+      pathname: ROUTE_NEW_INVOICE,
+      params: { scan: '1', ts: String(Date.now()) },
+    } as never);
+
+  // Opens the add product screen directly.
+  const openAddProduct = () => router.push(ROUTE_ADD_PRODUCT as never);
+
   // ---- Summary cards (rendered in a 2-column grid on every device) ----
+  // `route` is where the card takes the user when tapped.
   const summaryCards = [
     {
       icon: 'cash-outline',
       label: 'Sales',
       value: reportLoading ? '…' : inr(report?.totalSales ?? 0),
+      route: ROUTE_INVOICES,
     },
     {
       icon: 'receipt-outline',
       label: 'Invoices',
       value: reportLoading ? '…' : String(report?.totalInvoices ?? 0),
+      route: ROUTE_INVOICES,
     },
     {
       icon: 'people-outline',
       label: 'Customers',
       value: String(totalCustomers),
+      route: ROUTE_CUSTOMERS,
     },
     {
       icon: 'diamond-outline',
       label: 'Products',
       value: String(totalProducts),
+      route: ROUTE_PRODUCTS,
     },
     {
       icon: 'pricetag-outline',
       label: 'Discount',
       value: reportLoading ? '…' : inr(report?.totalDiscount ?? 0),
+      route: ROUTE_INVOICES,
     },
     {
       icon: 'checkmark-circle-outline',
       label: 'Collection',
       value: reportLoading ? '…' : inr(report?.totalCollected ?? 0),
+      route: ROUTE_INVOICES,
     },
   ];
 
@@ -249,6 +318,17 @@ function DashboardScreenInner() {
 
       {reportError && <Text style={styles.errorText}>{reportError}</Text>}
 
+      {/* Quick actions */}
+      <View style={styles.quickRow}>
+        <QuickAction icon="barcode-outline" label="Scan & Bill" onPress={openScanner} />
+        <QuickAction
+          icon="add-circle-outline"
+          label="Add Product"
+          variant="outline"
+          onPress={openAddProduct}
+        />
+      </View>
+
       {/* 2 cards per row on phones (left / right), 3 per row on tablets */}
       <View style={styles.grid}>
         {summaryCards.map((item) => (
@@ -258,6 +338,7 @@ function DashboardScreenInner() {
               label={item.label}
               value={item.value}
               compact={isSideBySide}
+              onPress={() => go(item.route)}
             />
           </View>
         ))}
@@ -327,6 +408,34 @@ function DashboardScreenInner() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
+
+  // Quick actions
+  quickRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    marginTop: spacing.lg,
+  },
+  quickBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  quickBtnSolid: { backgroundColor: colors.primary },
+  quickBtnOutline: {
+    backgroundColor: colors.surface,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+  },
+  quickBtnText: { fontSize: 15, fontWeight: '700' },
+
+  // Pressed feedback for tappable cards / buttons
+  cardPressed: { opacity: 0.7 },
+
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -365,7 +474,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#EEF1F8',
   },
   statLabel: {
-    flexShrink: 1,
+    flex: 1,
     fontSize: 13,
     color: colors.textSecondary,
   },

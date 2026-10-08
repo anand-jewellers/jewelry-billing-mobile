@@ -27,6 +27,8 @@ const BOLD_ON = `${ESC}E\x01`;
 const BOLD_OFF = `${ESC}E\x00`;
 const ALIGN_CENTER = `${ESC}a\x01`;
 const ALIGN_LEFT = `${ESC}a\x00`;
+const FONT_A = `${ESC}M\x00`; // normal font  (58mm: 32 chars, 80mm: 48 chars)
+const FONT_B = `${ESC}M\x01`; // smaller font (58mm: 42 chars, 80mm: 64 chars)
 const CUT_PAPER = `${GS}V\x00`;
 const LF = '\n';
 
@@ -78,6 +80,11 @@ function wrap(text: string, width = WIDTH): string[] {
 const center = (text: string) => wrap(text).map((l) => ALIGN_CENTER + l + LF).join('') + ALIGN_LEFT;
 const left = (text: string) => wrap(text).map((l) => l + LF).join('');
 
+// Footer note: printed on ONE line (no word-wrap) using the smaller Font B,
+// so a long note like "**valid only for 1hr, Prices May change**" (41 chars)
+// fits a 58mm slip (42 chars in Font B) instead of breaking onto a 2nd line.
+const footerLine = (text: string) => FONT_B + clean(text) + LF + FONT_A;
+
 // "Label           : value" — same look as the slip rows
 function row(label: string, value: string): string {
   const lbl = clean(label).slice(0, LABEL_W).padEnd(LABEL_W, ' ');
@@ -95,6 +102,10 @@ const isDiamondCharge = (name: unknown) => String(name ?? '').startsWith(DIAMOND
 // "Diamond 0.25 ct" -> "0.25 ct"  (the size/weight part of the charge name)
 const diamondWeightOf = (name: unknown) =>
   String(name ?? '').replace(new RegExp(`^${DIAMOND_PREFIX}\\s*`, 'i'), '').trim() || '-';
+
+// True only for the pre-save estimate print (see handlePrintEstimate in new.tsx)
+const isEstimateInvoice = (invoice: InvoiceDetail) =>
+  invoice.id === 'estimate' || invoice.invoice_number === 'ESTIMATE';
 
 const PAY_MODE_LABELS: Record<string, string> = {
   cash: 'CASH',
@@ -153,14 +164,19 @@ export async function printThermalReceiptDirect(
   const addr = [shop.address, shop.city, shop.state, shop.pincode].filter(Boolean).join(', ');
   if (addr) out += center(addr);
 
-  const contact = [shop.phone ? `Ph: ${shop.phone}` : '', shop.email ?? ''].filter(Boolean).join(' | ');
-  if (contact) out += center(contact);
+  // const contact = [shop.phone ? `Ph: ${shop.phone}` : '', shop.email ?? ''].filter(Boolean).join(' | ');
+  // if (contact) out += center(contact);
 
   // GSTIN is printed only when the bill actually has GST
   const reg = [gst && shop.gstin ? `GSTIN: ${shop.gstin}` : '', shop.pan ? `PAN: ${shop.pan}` : '']
     .filter(Boolean)
     .join(' | ');
   if (reg) out += center(reg);
+
+  // "ROUGH ESTIMATE" label directly under the GSTIN line (estimate prints only)
+  if (isEstimateInvoice(invoice)) {
+    out += ALIGN_CENTER + BOLD_ON + 'ROUGH ESTIMATE' + LF + BOLD_OFF + ALIGN_LEFT;
+  }
 
   out += dashed();
 
@@ -194,6 +210,12 @@ export async function printThermalReceiptDirect(
     const itemCgst = hasSplitGst ? round2((itemTaxable * cgstRate) / 100) : 0;
     const itemSgst = hasSplitGst ? round2((itemTaxable * sgstRate) / 100) : 0;
     const itemIgst = !hasSplitGst && igstTotal > 0 ? round2((itemTaxable * igstRate) / 100) : 0;
+
+    // Does this item have any tax line to print? (decides if "Total" shows)
+    const itemHasTax =
+      (hasSplitGst && (itemCgst > 0 || itemSgst > 0)) ||
+      itemIgst > 0 ||
+      num(item.tax_amount) > 0;
 
     // Title
     out += BOLD_ON;
@@ -229,15 +251,21 @@ export async function printThermalReceiptDirect(
       out += row('Stone Charges', plain(num(stoneLine.amount) * qty));
     }
 
-    // Diamonds: weight (size) + amount, one pair of rows per diamond
+    // Diamonds: weight (e.g. "0.25 ct") + amount, one pair of rows per diamond
     if (showVa) {
       for (const c of diamondLines) {
-        out += row('Diamond Wt', diamondWeightOf(c.charge_name));
+        out += row('Diamond Wt', diamondWeightOf(c.charge_name) + ' ct');
         out += row('Diamond Amt', plain(num(c.amount) * qty));
       }
       for (const c of otherLines) out += row(c.charge_name, plain(num(c.amount) * qty));
     }
     out += tightDash();
+
+    // Total BEFORE GST (only when this item has tax)
+    if (itemHasTax) {
+      out += boldRow('Total', fixed2(itemTaxable));
+      out += tightDash();
+    }
 
     // Tax (only exists when GST was applied)
     if (hasSplitGst) {
@@ -290,6 +318,11 @@ export async function printThermalReceiptDirect(
   // -------------------------------------------------------
   // Net amount + payments
   // -------------------------------------------------------
+  // Discount (only when one is given) — printed before the final amount
+  if (f.discount > 0) {
+    out += dashed();
+    out += boldRow('Discount', `-${fixed2(f.discount)}`);
+  }
   out += dashed();
   out += boldRow('Nett RS', fixed2(f.netBillAmount));
   out += dashed();
@@ -308,11 +341,11 @@ export async function printThermalReceiptDirect(
   // Footer
   // -------------------------------------------------------
   out += LF + dashed();
-  out += left(shop.phone ? `CONTACT :${shop.phone}` : 'CONTACT :9963780483,7010788696');
-  out += left('**valid only for 1hr, Prices May change**');
-  out += left('Join Our Monthly Savings Scheme !!');
+  out += footerLine(shop.phone ? `CONTACT :${shop.phone}` : '');
+  out += footerLine('**valid only for 1hr, Prices May change**');
+  out += footerLine('Join Our Monthly Savings Scheme !!');
   out += LF;
-  out += left('GST Bill will be issued on Confirmation');
+  out += footerLine('GST Bill will be issued on Confirmation');
 
   out += LF + LF + LF + LF;
   out += CUT_PAPER;

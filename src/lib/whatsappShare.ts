@@ -623,7 +623,8 @@ export async function shareOrderReadyOnWhatsApp(params: {
 // Fallback if your company settings don't have a review link column.
 // Paste your Google review link here (Google Business Profile →
 // "Ask for reviews" → copy link, e.g. https://g.page/r/XXXX/review).
-export const DEFAULT_GOOGLE_REVIEW_URL = 'https://g.page/r/CStZEpxYDNSqECE/review';
+// export const DEFAULT_GOOGLE_REVIEW_URL = 'https://g.page/r/CStZEpxYDNSqECE/review';
+export const DEFAULT_GOOGLE_REVIEW_URL = 'https://g.page/r/CSNGRroWAfTyEBM/review';
 
 export function reviewUrlFromCompany(company: any): string | null {
   const raw =

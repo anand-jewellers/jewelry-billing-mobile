@@ -1,13 +1,15 @@
 // src/lib/barcodeLabelHtml.ts
-// Print HTML: one 100mm x 15mm label per page, drawn from the shared layout.
 import { LabelData, buildLabelLayout, LABEL_W_MM, LABEL_H_MM } from './labelLayout';
 
 export type { LabelData };
 
-// How many CSS px the print engine uses per mm. Standard CSS = 96 / 25.4 = 3.78.
-// CALIBRATE with a ruler: print on plain paper, measure the full label width in mm (M),
-// then set  PRINT_PX_PER_MM = (current value) * 100 / M
-const PRINT_PX_PER_MM = 96 / 25.4;
+// Nudge the whole drawing if the printer feeds slightly off (mm).
+// Positive Y moves the print DOWN, positive X moves it RIGHT.
+const OFFSET_X_MM = 0;
+const OFFSET_Y_MM = 0;
+
+// Keep the box a hair smaller than the page so rounding can never overflow to a new page.
+const SAFE_H_MM = LABEL_H_MM - 0.2;
 
 function esc(s: string) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -15,36 +17,33 @@ function esc(s: string) {
 
 function labelSvgMarkup(l: LabelData): string {
   const { barsPath, texts } = buildLabelLayout(l);
-  const w = (LABEL_W_MM * PRINT_PX_PER_MM).toFixed(2);
-  const h = (LABEL_H_MM * PRINT_PX_PER_MM).toFixed(2);
   const textEls = texts
     .map(
       (t) =>
         `<text x="${t.x.toFixed(3)}" y="${t.y.toFixed(3)}" font-size="${t.size}" text-anchor="${t.anchor}">${esc(t.text)}</text>`
     )
     .join('');
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${LABEL_W_MM} ${LABEL_H_MM}">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${LABEL_W_MM}mm" height="${SAFE_H_MM}mm" viewBox="${-OFFSET_X_MM} ${-OFFSET_Y_MM} ${LABEL_W_MM} ${SAFE_H_MM}" preserveAspectRatio="xMinYMin meet">
     <path d="${barsPath}" fill="#000" shape-rendering="crispEdges"/>
     <g font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#000">${textEls}</g>
   </svg>`;
 }
 
-/** One label per page — each page is one sticker on the roll. */
 export function buildLabelsHtml(labels: LabelData[]): string {
-  const w = (LABEL_W_MM * PRINT_PX_PER_MM).toFixed(2);
-  const h = (LABEL_H_MM * PRINT_PX_PER_MM).toFixed(2);
   const pages = labels
     .map(
       (l, i) =>
-        `<div class="label"${i < labels.length - 1 ? ' style="page-break-after: always;"' : ''}>${labelSvgMarkup(l)}</div>`
+        `<div class="label${i < labels.length - 1 ? ' brk' : ''}">${labelSvgMarkup(l)}</div>`
     )
     .join('');
   return `<html>
     <head>
+      <meta name="viewport" content="width=${LABEL_W_MM}mm, initial-scale=1.0" />
       <style>
-        @page { size: ${w}px ${h}px; margin: 0; }
-        html, body { margin: 0; padding: 0; }
-        .label { width: ${w}px; height: ${h}px; overflow: hidden; }
+        @page { size: ${LABEL_W_MM}mm ${LABEL_H_MM}mm; margin: 0; }
+        html, body { margin: 0; padding: 0; width: ${LABEL_W_MM}mm; }
+        .label { width: ${LABEL_W_MM}mm; height: ${SAFE_H_MM}mm; overflow: hidden; page-break-inside: avoid; break-inside: avoid; }
+        .brk { page-break-after: always; break-after: page; }
         .label svg { display: block; }
       </style>
     </head>
