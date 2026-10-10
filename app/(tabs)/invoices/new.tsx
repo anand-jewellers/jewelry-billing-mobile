@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, router } from 'expo-router';
-import { Plus, Barcode, X } from 'lucide-react-native';
+import { Plus, Barcode, X, Check } from 'lucide-react-native';
 import { Button, Card, ErrorModal } from '../../../src/components/ui';
 import { SelectField } from '../../../src/components/master';
 import { colors, spacing, radius } from '../../../src/theme';
@@ -217,7 +217,8 @@ export default function NewInvoiceScreen() {
   // ---------------------------------------------------------
 
   const [discountAmount, setDiscountAmount] = useState('0');
-  // const [gstEnabled, setGstEnabled] = useState(true);
+  // Bill-wide "Apply GST" switch (shown in the Receipt Preview header).
+  const [gstEnabled, setGstEnabled] = useState(true);
   const [paymentSplits, setPaymentSplits] = useState<PaymentSplitRow[]>([]);
   const [paymentSplitsTouched, setPaymentSplitsTouched] = useState(false);
 
@@ -506,11 +507,9 @@ export default function NewInvoiceScreen() {
     0
   );
 
-  // When GST is unticked every item is stripped of tax, so all totals,
+  // When "Apply GST" is unticked every item is stripped of tax, so all totals,
   // the preview, the print and the saved invoice are GST-free.
-  // const billItems = gstEnabled ? items : items.map(withoutGst);
-  // GST is now decided per item inside the Edit Item sheet.
-  const billItems = items;
+  const billItems = gstEnabled ? items : items.map(withoutGst);
 
   const totals = invoiceTotals(
     billItems,
@@ -535,6 +534,24 @@ export default function NewInvoiceScreen() {
 
 
   // =========================================================
+  // Apply GST toggle (Receipt Preview header)
+  // Locked once the estimate is generated or the bill is already billed.
+  // =========================================================
+
+  const handleToggleGst = () => {
+    if (readOnly) return;
+    if (stage === 'estimate') {
+      Alert.alert('Editing locked', 'Go back to editing to change GST.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Go back', onPress: handleBackToEditing },
+      ]);
+      return;
+    }
+    setGstEnabled((v) => !v);
+  };
+
+
+  // =========================================================
   // Held estimates: hold / load
   //
   // The list itself lives on the Invoices page ("Held Bills").
@@ -555,7 +572,7 @@ export default function NewInvoiceScreen() {
     paymentSplits,
     paymentSplitsTouched,
     stage,
-    // gstEnabled,
+    gstEnabled,
   });
 
   const resetForm = () => {
@@ -573,7 +590,7 @@ export default function NewInvoiceScreen() {
     setActiveHeldId(null);
     setReadOnly(false);
     setBilledNumber(null);
-    // setGstEnabled(true);
+    setGstEnabled(true);
   };
 
   const handleHoldEstimate = async () => {
@@ -604,17 +621,15 @@ export default function NewInvoiceScreen() {
     setCustomerPhone(d.customerPhone);
     setRemark(d.remark);
     setResolvedCustomerId(d.resolvedCustomerId);
-    // Older held bills stored a bill-wide "GST off" flag instead of a per-item one.
-    // If it's set, strip the tax from the items when loading.
-    const legacyNoGst = (d as any).gstEnabled === false;
-    setItems(legacyNoGst ? d.items.map(withoutGst) : d.items);
+    setItems(d.items);
     setExchangeItems(d.exchangeItems);
     setExchangeTotal(d.exchangeTotal);
     setDiscountAmount(d.discountAmount);
     setPaymentSplits(d.paymentSplits);
     setPaymentSplitsTouched(d.paymentSplitsTouched);
     setStage(d.stage);
-    // setGstEnabled((d as any).gstEnabled !== false);
+    // Held bills saved before the GST switch existed have no flag -> GST on.
+    setGstEnabled((d as any).gstEnabled !== false);
     setActiveHeldId(h.id);
 
     // Already billed -> locked, print only.
@@ -652,22 +667,35 @@ export default function NewInvoiceScreen() {
   // Stage transitions
   // =========================================================
 
+  // const handleGenerateEstimate = () => {
+  //   if (items.length === 0) {
+  //     setErrorTitle('No items');
+  //     setErrorMessage('Add at least one item before generating an estimate.');
+  //     return;
+  //   }
+
+  //   if (!customerName.trim() || !customerPhone.trim()) {
+  //     setErrorTitle('Missing details');
+  //     setErrorMessage('Customer name and phone number are mandatory.');
+  //     return;
+  //   }
+
+  //   if (!remark.trim()) {
+  //     setErrorTitle('Missing details');
+  //     setErrorMessage('Remark is mandatory.');
+  //     return;
+  //   }
+
+  //   setStage('estimate');
+
+  //   if (!paymentSplitsTouched) {
+  //     setPaymentSplits([{ id: genRowId(), mode: '', amountText: String(netFinalAmount) }]);
+  //   }
+  // };
   const handleGenerateEstimate = () => {
     if (items.length === 0) {
       setErrorTitle('No items');
       setErrorMessage('Add at least one item before generating an estimate.');
-      return;
-    }
-
-    if (!customerName.trim() || !customerPhone.trim()) {
-      setErrorTitle('Missing details');
-      setErrorMessage('Customer name and phone number are mandatory.');
-      return;
-    }
-
-    if (!remark.trim()) {
-      setErrorTitle('Missing details');
-      setErrorMessage('Remark is mandatory.');
       return;
     }
 
@@ -834,11 +862,11 @@ export default function NewInvoiceScreen() {
       return;
     }
 
-    if (!customerName.trim() || !customerPhone.trim()) {
-      setErrorTitle('Missing details');
-      setErrorMessage('Customer name and phone number are mandatory.');
-      return;
-    }
+    // if (!customerName.trim() || !customerPhone.trim() || !remark.trim()) {
+    //   setErrorTitle('Customer details needed');
+    //   setErrorMessage('Please scroll up and enter the customer name, phone number and remark before saving the final invoice.');
+    //   return;
+    // }
 
     if (!remark.trim()) {
       setErrorTitle('Missing details');
@@ -876,7 +904,7 @@ export default function NewInvoiceScreen() {
       }
       const invoice = await createInvoice({
         customerId: resolvedCustomerId,
-        customerName: customerName.trim(),
+        customerName: customerName.trim() || 'Walk-in Customer',
         customerMobile: customerPhone.trim() || null,
         items: billItems,
         metals,
@@ -895,7 +923,8 @@ export default function NewInvoiceScreen() {
         paymentSplits: splitsToSave,
         exchangeItems,
         exchangeTotal,
-        remark: remark.trim(),
+        remark: remark.trim() || null,
+        
       });
 
       // Keep the estimate for its 4 hours, tagged as billed (read-only).
@@ -984,7 +1013,7 @@ export default function NewInvoiceScreen() {
 
         <TextInput
           style={styles.input}
-          placeholder="Customer Name *"
+          placeholder="Customer Name"
           placeholderTextColor={colors.textMuted}
           value={customerName}
           onChangeText={setCustomerName}
@@ -993,7 +1022,7 @@ export default function NewInvoiceScreen() {
 
         <TextInput
           style={styles.input}
-          placeholder="Phone Number *"
+          placeholder="Phone Number"
           placeholderTextColor={colors.textMuted}
           keyboardType="phone-pad"
           value={customerPhone}
@@ -1002,8 +1031,8 @@ export default function NewInvoiceScreen() {
         />
 
         <TextInput
-          style={[styles.input, styles.input]}
-          placeholder="Remark *"
+          style={styles.input}
+          placeholder="Remark"
           placeholderTextColor={colors.textMuted}
           value={remark}
           onChangeText={setRemark}
@@ -1013,26 +1042,6 @@ export default function NewInvoiceScreen() {
         />
 
         <View style={styles.divider} />
-
-        {/* <Pressable
-          style={styles.gstRow}
-          onPress={() => {
-            if (readOnly) return;
-            if (stage === 'estimate') {
-              Alert.alert('Editing locked', 'Go back to editing to change GST.', [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Go back', onPress: handleBackToEditing },
-              ]);
-              return;
-            }
-            setGstEnabled((v) => !v);
-          }}
-        >
-          <View style={[styles.checkbox, gstEnabled && styles.checkboxOn]}>
-            {gstEnabled && <Check size={14} color="#fff" strokeWidth={3} />}
-          </View>
-          <Text style={styles.gstLabel}>Apply GST</Text>
-        </Pressable> */}
 
 
         {/* =================================================
@@ -1140,9 +1149,23 @@ export default function NewInvoiceScreen() {
 
         {items.length > 0 && (
           <Card style={{ marginTop: spacing.md }}>
-            <Text style={styles.totalsHeader}>
-              {stage === 'estimate' ? 'Payment Details' : 'Receipt Preview'}
-            </Text>
+            {/* Header row: title on the left, Apply GST checkbox on the right */}
+            <View style={styles.previewHeader}>
+              <Text style={[styles.totalsHeader, { marginBottom: 0 }]}>
+                {stage === 'estimate' ? 'Payment Details' : 'Receipt Preview'}
+              </Text>
+
+              <Pressable
+                style={[styles.gstToggle, (readOnly || stage === 'estimate') && styles.gstToggleLocked]}
+                onPress={handleToggleGst}
+                hitSlop={8}
+              >
+                <View style={[styles.checkbox, gstEnabled && styles.checkboxOn]}>
+                  {gstEnabled && <Check size={14} color="#fff" strokeWidth={3} />}
+                </View>
+                <Text style={styles.gstLabel}>Apply GST</Text>
+              </Pressable>
+            </View>
 
             {billItems.map((item, idx) => {
               const itemGrossWeight = item.gross_weight * item.quantity;
@@ -1195,6 +1218,10 @@ export default function NewInvoiceScreen() {
                   {item.making_charge_amount > 0 && (
                     <SlipRow label="MC" value={plain(item.making_charge_amount)} />
                   )}
+
+                  {/* Stone name picked in the item sheet (if any) */}
+                  {item.stone_name ? <SlipRow label="Stone Name" value={item.stone_name} /> : null}
+
                   {stoneLine && (
                     <SlipRow label="Stone Charges" value={plain(stoneLine.amount * item.quantity)} />
                   )}
@@ -1586,8 +1613,12 @@ const styles = StyleSheet.create({
   billedBanner: { backgroundColor: '#E6F4EA', borderWidth: 1, borderColor: '#CEEAD6', borderRadius: radius?.md ?? 10, padding: spacing.md, marginBottom: spacing.md },
   billedBannerTitle: { fontSize: 14, fontWeight: '800', color: '#137333' },
   billedBannerText: { fontSize: 12, color: '#137333', marginTop: 4 },
-  gstRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: spacing.md },
+
+  // Receipt Preview header + Apply GST checkbox
+  previewHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
+  gstToggle: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  gstToggleLocked: { opacity: 0.55 },
   checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
   checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
-  gstLabel: { fontSize: 15, fontWeight: '600', color: colors.textPrimary },
+  gstLabel: { fontSize: 14, fontWeight: '600', color: colors.textPrimary },
 });

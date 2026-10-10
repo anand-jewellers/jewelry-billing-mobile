@@ -147,6 +147,7 @@ export async function printThermalReceiptDirect(
 ) {
   const f = slipFigures(invoice);
   const gst = isGstInvoice(invoice);
+  const isEstimate = isEstimateInvoice(invoice);
 
   const showWeight = display.show_weight !== false;
   const showMaking = display.show_making_charges !== false;
@@ -161,20 +162,36 @@ export async function printThermalReceiptDirect(
   out += wrap(shop.name.toUpperCase()).map((l) => l + LF).join('');
   out += BOLD_OFF + ALIGN_LEFT;
 
-  const addr = [shop.address, shop.city, shop.state, shop.pincode].filter(Boolean).join(', ');
-  if (addr) out += center(addr);
+  // ORIGINAL (address on every bill):
+  // const addr = [shop.address, shop.city, shop.state, shop.pincode].filter(Boolean).join(', ');
+  // if (addr) out += center(addr);
 
+  // Address hidden on estimate
+  if (!isEstimate) {
+    const addr = [shop.address, shop.city, shop.state, shop.pincode].filter(Boolean).join(', ');
+    if (addr) out += center(addr);
+  }
+
+  // Phone / email line at the top (hidden on all bills)
   // const contact = [shop.phone ? `Ph: ${shop.phone}` : '', shop.email ?? ''].filter(Boolean).join(' | ');
   // if (contact) out += center(contact);
 
-  // GSTIN is printed only when the bill actually has GST
-  const reg = [gst && shop.gstin ? `GSTIN: ${shop.gstin}` : '', shop.pan ? `PAN: ${shop.pan}` : '']
-    .filter(Boolean)
-    .join(' | ');
-  if (reg) out += center(reg);
+  // ORIGINAL (GSTIN + PAN on every bill):
+  // const reg = [gst && shop.gstin ? `GSTIN: ${shop.gstin}` : '', shop.pan ? `PAN: ${shop.pan}` : '']
+  //   .filter(Boolean)
+  //   .join(' | ');
+  // if (reg) out += center(reg);
 
-  // "ROUGH ESTIMATE" label directly under the GSTIN line (estimate prints only)
-  if (isEstimateInvoice(invoice)) {
+  // GSTIN + PAN hidden on estimate
+  if (!isEstimate) {
+    const reg = [gst && shop.gstin ? `GSTIN: ${shop.gstin}` : '', shop.pan ? `PAN: ${shop.pan}` : '']
+      .filter(Boolean)
+      .join(' | ');
+    if (reg) out += center(reg);
+  }
+
+  // "ROUGH ESTIMATE" label (estimate prints only)
+  if (isEstimate) {
     out += ALIGN_CENTER + BOLD_ON + 'ROUGH ESTIMATE' + LF + BOLD_OFF + ALIGN_LEFT;
   }
 
@@ -341,12 +358,21 @@ export async function printThermalReceiptDirect(
   // Footer
   // -------------------------------------------------------
   out += LF + dashed();
+
+  // Phone number shown in footer on every bill (estimate + final)
   out += footerLine(shop.phone ? `CONTACT :${shop.phone}` : '');
+
+  // Phone number hidden on estimate (uncomment to use again):
+  // if (!isEstimate) {
+  //   out += footerLine(shop.phone ? `CONTACT :${shop.phone}` : '');
+  // }
+
   out += footerLine('**valid only for 1hr, Prices May change**');
   out += footerLine('Join Our Monthly Savings Scheme !!');
   out += LF;
   out += footerLine('GST Bill will be issued on Confirmation');
 
+  // Feed paper past the tear bar, then cut
   out += LF + LF + LF + LF;
   out += CUT_PAPER;
 

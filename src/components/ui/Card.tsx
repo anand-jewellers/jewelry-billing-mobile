@@ -1,3 +1,5 @@
+// src\components\ui\Card.tsx
+
 import { Children } from 'react';
 import { View, StyleSheet, type ViewProps } from 'react-native';
 import { colors, radius, spacing, shadow } from '../../theme';

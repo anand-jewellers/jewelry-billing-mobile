@@ -1,8 +1,10 @@
+// app\(tabs)\settings\stone-names.tsx  (use your existing file name)
 import { useCallback, useState } from 'react';
 import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Card, Button, Input } from '../../../src/components/ui';
-import { MasterListItem, FormSheet } from '../../../src/components/master';
+import { FormSheet } from '../../../src/components/master';
+import { ManageListItem } from '../../../src/components/master/ManageListItem';
 import { colors, spacing } from '../../../src/theme';
 import { listStoneNames, createStoneName, updateStoneName, deleteStoneName } from '../../../src/lib/api/settings';
 import type { StoneName } from '../../../src/types/settings';
@@ -20,7 +22,10 @@ export default function StoneNamesScreen() {
   const load = useCallback(() => {
     setLoading(true);
     listStoneNames()
-      .then(setStones)
+      .then((list) => {
+        setStones(list);
+        setError(null);
+      })
       .catch(() => setError('Could not load stone names.'))
       .finally(() => setLoading(false));
   }, []);
@@ -30,39 +35,45 @@ export default function StoneNamesScreen() {
   const openAdd = () => {
     setEditing(null);
     setName('');
+    setError(null);
     setSheetOpen(true);
   };
 
   const openEdit = (stone: StoneName) => {
     setEditing(stone);
     setName(stone.name);
+    setError(null);
     setSheetOpen(true);
   };
 
   const handleSave = async () => {
     if (!name.trim()) return;
     setSaving(true);
+    setError(null);
     try {
       if (editing) {
         await updateStoneName(editing.id, { name: name.trim() });
       } else {
+        // If a deleted stone with the same name exists, it is brought back.
         await createStoneName({ name: name.trim() });
       }
       setSheetOpen(false);
       load();
-    } catch {
-      setError('Could not save. That stone name may already exist.');
+    } catch (e: any) {
+      setError(e?.message || 'Could not save. That stone name may already exist.');
     } finally {
       setSaving(false);
     }
   };
 
+  // Soft delete: hides the stone in the app, keeps it in the database.
   const handleDelete = async (id: string) => {
+    setError(null);
     try {
       await deleteStoneName(id);
       load();
-    } catch {
-      setError('Could not delete — it may be in use by products.');
+    } catch (e: any) {
+      setError(e?.message || 'Could not delete.');
     }
   };
 
@@ -73,18 +84,18 @@ export default function StoneNamesScreen() {
       {loading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
       ) : (
-        <Card padded={false} style={{ margin: spacing.lg }}>
+        <Card padded={false} style={{ flex: 1, margin: spacing.sm, overflow: 'hidden' }}>
           <FlatList
             data={stones}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-              <MasterListItem
+              <ManageListItem
                 title={item.name}
-                isActive={item.is_active}
-                onPress={() => openEdit(item)}
+                onEdit={() => openEdit(item)}
                 onDelete={() => handleDelete(item.id)}
               />
             )}
+            contentContainerStyle={stones.length === 0 ? { flexGrow: 1 } : undefined}
             ListEmptyComponent={<Text style={styles.emptyText}>No stone names yet.</Text>}
           />
         </Card>
@@ -101,6 +112,7 @@ export default function StoneNamesScreen() {
         onSave={handleSave}
         saving={saving}
       >
+        {error ? <Text style={styles.sheetError}>{error}</Text> : null}
         <Input label="Name" value={name} onChangeText={setName} placeholder="e.g. Ruby" />
       </FormSheet>
     </View>
@@ -110,6 +122,7 @@ export default function StoneNamesScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   error: { fontSize: 13, color: colors.error, textAlign: 'center', marginTop: spacing.md },
+  sheetError: { fontSize: 13, color: colors.error, marginBottom: spacing.sm },
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', padding: spacing.lg },
-  addButton: { padding: spacing.lg },
+  addButton: { padding: spacing.sm },
 });

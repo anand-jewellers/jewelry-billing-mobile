@@ -3,7 +3,8 @@ import { useCallback, useState } from 'react';
 import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Card, Button, Input } from '../../../src/components/ui';
-import { MasterListItem, FormSheet, SelectField } from '../../../src/components/master';
+import { FormSheet, SelectField } from '../../../src/components/master';
+import { ManageListItem } from '../../../src/components/master/ManageListItem';
 import { colors, spacing } from '../../../src/theme';
 import { listMetals, createMetal, updateMetal, deleteMetal } from '../../../src/lib/api/settings';
 import type { Metal } from '../../../src/types/settings';
@@ -31,7 +32,10 @@ export default function MetalsScreen() {
   const load = useCallback(() => {
     setLoading(true);
     listMetals()
-      .then(setMetals)
+      .then((list) => {
+        setMetals(list);
+        setError(null);
+      })
       .catch(() => setError('Could not load metals.'))
       .finally(() => setLoading(false));
   }, []);
@@ -43,6 +47,7 @@ export default function MetalsScreen() {
     setName('');
     setCode('');
     setType(null);
+    setError(null);
     setSheetOpen(true);
   };
 
@@ -51,39 +56,48 @@ export default function MetalsScreen() {
     setName(metal.name);
     setCode(metal.code);
     setType(metal.type);
+    setError(null);
     setSheetOpen(true);
   };
 
   const handleSave = async () => {
     if (!name.trim() || !code.trim() || !type) return;
     setSaving(true);
+    setError(null);
     try {
+      const payload = {
+        name: name.trim(),
+        code: code.trim().toUpperCase(),
+        type: type as Metal['type'],
+      };
       if (editing) {
-        await updateMetal(editing.id, { name: name.trim(), code: code.trim().toUpperCase(), type: type as Metal['type'] });
+        await updateMetal(editing.id, payload);
       } else {
-        await createMetal({ name: name.trim(), code: code.trim().toUpperCase(), type: type as Metal['type'] });
+        // If a deleted metal with the same name/code exists, it is brought back.
+        await createMetal(payload);
       }
       setSheetOpen(false);
       load();
     } catch (e: any) {
       console.log('save metal failed:', JSON.stringify(e, null, 2));
-      const msg = e?.message ?? '';
-      const code = e?.code; // Postgres/Supabase error code
-      if (code === '23505') setError('That code is already in use.');
-      else if (code === '23514') setError('Invalid metal type.');
-      else if (code === '42501') setError('Permission denied (RLS policy).');
-      else setError(msg || 'Could not save.');
+      const errCode = e?.code; // Postgres/Supabase error code
+      if (errCode === '23505') setError('That code is already in use.');
+      else if (errCode === '23514') setError('Invalid metal type.');
+      else if (errCode === '42501') setError('Permission denied (RLS policy).');
+      else setError(e?.message || 'Could not save.');
     } finally {
       setSaving(false);
     }
   };
 
+  // Soft delete: hides the metal (and its purities) in the app, keeps it in the database.
   const handleDelete = async (id: string) => {
+    setError(null);
     try {
       await deleteMetal(id);
       load();
-    } catch {
-      setError('Could not delete — it may be in use by products or purities.');
+    } catch (e: any) {
+      setError(e?.message || 'Could not delete.');
     }
   };
 
@@ -99,11 +113,11 @@ export default function MetalsScreen() {
             data={metals}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-              <MasterListItem
+              <ManageListItem
                 title={item.name}
                 subtitle={`${item.code} · ${item.type}`}
-                isActive={item.is_active}
-                onPress={() => openEdit(item)}
+                confirmNote="Its purities will also be hidden."
+                onEdit={() => openEdit(item)}
                 onDelete={() => handleDelete(item.id)}
               />
             )}
@@ -123,6 +137,7 @@ export default function MetalsScreen() {
         onSave={handleSave}
         saving={saving}
       >
+        {error ? <Text style={styles.sheetError}>{error}</Text> : null}
         <Input label="Name" value={name} onChangeText={setName} placeholder="e.g. Gold" />
         <Input label="Code" value={code} onChangeText={setCode} placeholder="e.g. GOLD" autoCapitalize="characters" />
         <SelectField label="Type" value={type} options={METAL_TYPES} onChange={setType} />
@@ -134,6 +149,7 @@ export default function MetalsScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   error: { fontSize: 13, color: colors.error, textAlign: 'center', marginTop: spacing.md },
+  sheetError: { fontSize: 13, color: colors.error, marginBottom: spacing.sm },
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', padding: spacing.lg },
   addButton: { padding: spacing.lg },
 });

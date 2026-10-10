@@ -3,7 +3,8 @@ import { useCallback, useState } from 'react';
 import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Card, Button, Input } from '../../../src/components/ui';
-import { MasterListItem, FormSheet } from '../../../src/components/master';
+import { FormSheet } from '../../../src/components/master';
+import { ManageListItem } from '../../../src/components/master/ManageListItem';
 import { colors, spacing } from '../../../src/theme';
 import { listCategories, createCategory, updateCategory, deleteCategory } from '../../../src/lib/api/settings';
 import type { Category } from '../../../src/types/settings';
@@ -21,7 +22,10 @@ export default function CategoriesScreen() {
   const load = useCallback(() => {
     setLoading(true);
     listCategories()
-      .then(setCategories)
+      .then((list) => {
+        setCategories(list);
+        setError(null);
+      })
       .catch(() => setError('Could not load categories.'))
       .finally(() => setLoading(false));
   }, []);
@@ -31,39 +35,45 @@ export default function CategoriesScreen() {
   const openAdd = () => {
     setEditing(null);
     setName('');
+    setError(null);
     setSheetOpen(true);
   };
 
   const openEdit = (category: Category) => {
     setEditing(category);
     setName(category.name);
+    setError(null);
     setSheetOpen(true);
   };
 
   const handleSave = async () => {
     if (!name.trim()) return;
     setSaving(true);
+    setError(null);
     try {
       if (editing) {
         await updateCategory(editing.id, { name: name.trim() });
       } else {
+        // If a deleted category with the same name exists, it is brought back.
         await createCategory({ name: name.trim() });
       }
       setSheetOpen(false);
       load();
-    } catch {
-      setError('Could not save. That category may already exist.');
+    } catch (e: any) {
+      setError(e?.message || 'Could not save. That category may already exist.');
     } finally {
       setSaving(false);
     }
   };
 
+  // Soft delete: hides the category (and its subcategories) in the app, keeps it in the database.
   const handleDelete = async (id: string) => {
+    setError(null);
     try {
       await deleteCategory(id);
       load();
-    } catch {
-      setError('Could not delete — it may be in use by products.');
+    } catch (e: any) {
+      setError(e?.message || 'Could not delete.');
     }
   };
 
@@ -74,18 +84,19 @@ export default function CategoriesScreen() {
       {loading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
       ) : (
-        <Card padded={false} style={{ margin: spacing.lg }}>
+        <Card padded={false} style={{ flex: 1, margin: spacing.sm, overflow: 'hidden' }}>
           <FlatList
             data={categories}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-              <MasterListItem
+              <ManageListItem
                 title={item.name}
-                isActive={item.is_active}
-                onPress={() => openEdit(item)}
+                confirmNote="Its subcategories will also be hidden."
+                onEdit={() => openEdit(item)}
                 onDelete={() => handleDelete(item.id)}
               />
             )}
+            contentContainerStyle={categories.length === 0 ? { flexGrow: 1 } : undefined}
             ListEmptyComponent={<Text style={styles.emptyText}>No categories yet.</Text>}
           />
         </Card>
@@ -102,6 +113,7 @@ export default function CategoriesScreen() {
         onSave={handleSave}
         saving={saving}
       >
+        {error ? <Text style={styles.sheetError}>{error}</Text> : null}
         <Input label="Name" value={name} onChangeText={setName} placeholder="e.g. Ring" />
       </FormSheet>
     </View>
@@ -111,6 +123,7 @@ export default function CategoriesScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   error: { fontSize: 13, color: colors.error, textAlign: 'center', marginTop: spacing.md },
+  sheetError: { fontSize: 13, color: colors.error, marginBottom: spacing.sm },
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', padding: spacing.lg },
-  addButton: { padding: spacing.lg },
+  addButton: { padding: spacing.sm },
 });

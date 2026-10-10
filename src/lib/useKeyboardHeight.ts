@@ -1,3 +1,5 @@
+// src/lib/useKeyboardHeight.ts
+
 import { useEffect, useState } from 'react';
 import { Keyboard, Platform } from 'react-native';
 
@@ -8,7 +10,7 @@ export function useKeyboardHeight() {
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
 
-    const show = Keyboard.addListener(showEvt, (e) => setHeight(e.endCoordinates.height));
+    const show = Keyboard.addListener(showEvt, (e) => setHeight(e.endCoordinates?.height ?? 0));
     const hide = Keyboard.addListener(hideEvt, () => setHeight(0));
 
     return () => {

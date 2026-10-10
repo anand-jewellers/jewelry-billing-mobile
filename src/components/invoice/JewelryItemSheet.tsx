@@ -7,24 +7,26 @@ import {
   TextInput,
   Pressable,
   StyleSheet,
-  Platform,
   ScrollView,
   Modal,
   Keyboard,
   useWindowDimensions,
+  type LayoutChangeEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Check, Plus, X } from 'lucide-react-native';
+import { Plus, X } from 'lucide-react-native';
 import { SelectField, SelectOption } from '../ui/SelectField';
+import { MultiSelectField } from '../ui/MultiSelectField';
 import { colors, spacing } from '../../theme';
+import { useKeyboardHeight } from '../../lib/useKeyboardHeight';
 import {
-  searchProducts,
   getProductByCode,
   getCurrentRate,
   getDefaultTaxSetting,
   getMakingChargeRule,
 } from '../../lib/api/invoices';
-import { createCategory, createPurity } from '../../lib/api/settings';
+import { getStoneNames } from '../../lib/products';
+import { createCategory, createPurity, createStoneName } from '../../lib/api/settings';
 import {
   recalcItem,
   recalcVaLineAmount,
@@ -100,19 +102,37 @@ function blankState() {
     diamonds: [] as DiamondRow[],
     itemDiscount: '0',
     taxSettingId: null as string | null,
-    gstEnabled: true,
     huid: '',
+    stoneIds: [] as string[], // multi-select stones
+    stoneAmounts: {} as Record<string, string>, // ₹ per stone id (used when 2+ stones)
+    stoneName: null as string | null, // only used to restore multi-stone names on edit
     extraCharges: [] as ValueAddedChargeLine[], // other lines the sheet has no input for
   };
 }
 
 type SheetState = ReturnType<typeof blankState>;
 
+// Stone charge:
+// 2+ stones with typed per-stone amounts -> sum of those amounts.
+// Otherwise (0/1 stone, or an old saved item with no per-stone amounts)
+// -> the single Stone (₹) value.
+function stoneChargeOf(s: SheetState): number {
+  if (s.stoneIds.length >= 2) {
+    const entered = s.stoneIds.some((id) => (s.stoneAmounts[id] ?? '').trim() !== '');
+    if (entered) {
+      return s.stoneIds.reduce((sum, id) => sum + (parseFloat(s.stoneAmounts[id]) || 0), 0);
+    }
+  }
+  return parseFloat(s.stoneChargeFixed) || 0;
+}
+
 // Populate the sheet from an existing item (edit mode, or the draft
 // item seeded from a customer order).
 function stateFromItem(item: InvoiceItem): SheetState {
   const va = item.value_added_charges?.find((c) => c.name === VA_CHARGE);
   const stone = item.value_added_charges?.find((c) => c.name === STONE_CHARGE);
+  const savedStoneName = item.stone_name ?? '';
+  const hasMultiNames = savedStoneName.includes(',');
   return {
     name: item.name ?? '',
     metalId: item.metal_id ?? null,
@@ -130,8 +150,10 @@ function stateFromItem(item: InvoiceItem): SheetState {
     diamonds: diamondRowsFromLines(item.value_added_charges ?? []),
     itemDiscount: String(item.item_discount ?? 0),
     taxSettingId: item.tax_setting_id ?? null,
-    gstEnabled: item.gst_enabled !== false,
     huid: item.huid ?? '',
+    stoneIds: item.stone_id && !hasMultiNames ? [item.stone_id] : [],
+    stoneAmounts: {},
+    stoneName: hasMultiNames ? savedStoneName : null,
     extraCharges: otherExtraLines(item.value_added_charges ?? []),
   };
 }
@@ -182,10 +204,10 @@ export function JewelryItemSheet({
   const [state, setState] = useState<SheetState>(blankState());
   const [saving, setSaving] = useState(false);
 
-  const [productQuery, setProductQuery] = useState('');
-  const [productResults, setProductResults] = useState<Product[]>([]);
-  const [showResults, setShowResults] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Optional Product ID lookup (the Product Name itself is plain text input).
+  const [productCode, setProductCode] = useState('');
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [lookupMsg, setLookupMsg] = useState<string | null>(null);
 
   const linkedProductRef = useRef<Product | null>(null);
 
@@ -196,33 +218,79 @@ export function JewelryItemSheet({
 
   // ---------------------------------------------------------
   // Keyboard handling.
-  // The sheet is lifted by the keyboard height (so inputs and the
-  // header buttons are never hidden behind it) and its max height
-  // shrinks so it can never grow past the top of the screen.
+  //
+  // On Android the window may ALREADY shrink when the keyboard opens
+  // (adjustResize). Lifting the sheet by the full keyboard height on top
+  // of that lifts it twice and squashes it (the gap in the screenshot).
+  //
+  // So we measure the overlay: `baseH` is its tallest height (keyboard
+  // closed), `overlayH` its current height. The difference is what the
+  // window already gave up. We only lift by what is still covered.
   // ---------------------------------------------------------
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
-  const [kbHeight, setKbHeight] = useState(0);
+  const kbHeight = useKeyboardHeight();
 
-  useEffect(() => {
-    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+  const [overlayH, setOverlayH] = useState(0);
+  const [baseH, setBaseH] = useState(0);
 
-    const showSub = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates?.height ?? 0));
-    const hideSub = Keyboard.addListener(hideEvt, () => setKbHeight(0));
-
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
+  const handleOverlayLayout = (e: LayoutChangeEvent) => {
+    const h = Math.round(e.nativeEvent.layout.height);
+    setOverlayH(h);
+    setBaseH((prev) => Math.max(prev, h));
+  };
 
   // Reset when the sheet closes so it never re-opens "lifted".
   useEffect(() => {
-    if (!visible) setKbHeight(0);
+    if (!visible) {
+      setOverlayH(0);
+      setBaseH(0);
+    }
   }, [visible]);
 
-  const sheetMaxHeight = Math.max(320, windowHeight - kbHeight - insets.top - spacing.md);
+  // How much the window already shrank for the keyboard (0 if it didn't).
+  const shrink = baseH > 0 && overlayH > 0 ? baseH - overlayH : 0;
+  // Only lift by what is still uncovered. Small leftovers are rounding / nav-bar noise.
+  const rawLift = visible && kbHeight > 0 ? Math.max(0, kbHeight - shrink) : 0;
+  const lift = rawLift < 24 ? 0 : rawLift;
+
+  const availableH = overlayH > 0 ? overlayH : windowHeight;
+  const sheetMaxHeight = Math.max(320, availableH - lift - insets.top - spacing.md);
+
+  // ---------------------------------------------------------
+  // Stone names for the Stones dropdown (loaded when the sheet opens).
+  // ---------------------------------------------------------
+  const [stoneOptions, setStoneOptions] = useState<SelectOption[]>([]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    getStoneNames()
+      .then((list: any[]) => {
+        if (cancelled) return;
+        setStoneOptions((list ?? []).map((x: any) => ({ id: x.id, label: x.name })));
+      })
+      .catch((e: any) => console.warn('[JewelryItemSheet] Failed to load stone names:', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
+
+  // Edit mode: a saved item has "Ruby, Emerald" as a name string -> map back to ids.
+  useEffect(() => {
+    if (!visible || stoneOptions.length === 0) return;
+    setState((s) => {
+      if (s.stoneIds.length > 0 || !s.stoneName) return s;
+      const names = s.stoneName
+        .split(',')
+        .map((n) => n.trim().toLowerCase())
+        .filter(Boolean);
+      const ids = stoneOptions
+        .filter((o) => names.includes(o.label.toLowerCase()))
+        .map((o) => o.id);
+      return ids.length ? { ...s, stoneIds: ids } : s;
+    });
+  }, [visible, stoneOptions, state.stoneName]);
 
   // ---------------------------------------------------------
   // Reset / populate every time the sheet opens.
@@ -233,16 +301,15 @@ export function JewelryItemSheet({
 
     rateEditedRef.current = false;
     makingEditedRef.current = false;
-    setShowResults(false);
-    setProductResults([]);
+    setLookupMsg(null);
 
     if (initial) {
       setState(stateFromItem(initial));
-      setProductQuery(initial.name ?? '');
+      setProductCode(initial.product_code ?? '');
       linkedProductRef.current = initial.product_id ? ({ id: initial.product_id } as Product) : null;
     } else {
       setState(blankState());
-      setProductQuery('');
+      setProductCode('');
       linkedProductRef.current = null;
     }
   }, [visible, initial]);
@@ -309,36 +376,36 @@ export function JewelryItemSheet({
   }, [visible, initial, state.metalId, state.purityId, state.categoryId]);
 
   // ---------------------------------------------------------
-  // Product search
+  // Fetch a product by its Product ID (exact code), then fill the form.
+  // The Product Name is plain text input and is never searched.
   // ---------------------------------------------------------
-  const handleProductQuery = (text: string) => {
-    setProductQuery(text);
-    setState((s) => ({ ...s, name: text }));
-    setShowResults(true);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      if (text.trim().length >= 1) {
-        searchProducts(text)
-          .then((results) => setProductResults(Array.isArray(results) ? results : []))
-          .catch(() => setProductResults([]));
-      } else {
-        setProductResults([]);
+  const handleFetchByCode = async () => {
+    const code = productCode.trim();
+    if (!code) return;
+    Keyboard.dismiss();
+    setLookupBusy(true);
+    setLookupMsg(null);
+    try {
+      const found = await getProductByCode(code);
+      if (!found) {
+        setLookupMsg(`No product found for "${code}". You can type the item details manually.`);
+        return;
       }
-    }, 250);
+      await applyProduct(found as Product);
+      setLookupMsg('Product details filled.');
+    } catch (e: any) {
+      setLookupMsg(e?.message ?? 'Could not fetch product.');
+    } finally {
+      setLookupBusy(false);
+    }
   };
 
-  // ---------------------------------------------------------
-  // Picking a product from the dropdown.
-  // ---------------------------------------------------------
-  const applyProduct = async (p: Product) => {
-    if (!p) return;
-    setProductQuery(p.product_name ?? '');
-    setShowResults(false);
-    setProductResults([]);
-    linkedProductRef.current = p; // set immediately so auto-fill never fires
+  const applyProduct = async (found: Product) => {
+    if (!found) return;
+    linkedProductRef.current = found; // set immediately so auto-fill never fires
 
     try {
-      const full = ((await getProductByCode(p.product_code ?? p.id)) ?? p) as any;
+      const full = found as any;
       linkedProductRef.current = full;
 
       const [rate, makingRule, taxSetting] = await Promise.all([
@@ -354,6 +421,12 @@ export function JewelryItemSheet({
       const item = buildInvoiceItemFromProduct(full, rate, makingRule, taxSetting);
       const va = item.value_added_charges.find((c) => c.name === VA_CHARGE);
       const stone = item.value_added_charges.find((c) => c.name === STONE_CHARGE);
+
+      // Prefill stones if the product fetch returns them (harmless if it doesn't).
+      const productStones: any[] = Array.isArray(full.stones) ? full.stones : [];
+      const productStoneIds: string[] = productStones
+        .map((x: any) => x.stone_id ?? x.id)
+        .filter(Boolean);
 
       setState((s) => ({
         ...s,
@@ -373,6 +446,14 @@ export function JewelryItemSheet({
         itemDiscount: String(item.item_discount ?? 0),
         taxSettingId: item.tax_setting_id ?? s.taxSettingId,
         huid: item.huid ?? '',
+        stoneIds: productStoneIds,
+        stoneAmounts:
+          productStones.length >= 2
+            ? Object.fromEntries(
+                productStones.map((x: any) => [x.stone_id ?? x.id, String(x.amount ?? 0)])
+              )
+            : {},
+        stoneName: null,
         extraCharges: otherExtraLines(item.value_added_charges),
       }));
     } catch (err) {
@@ -381,7 +462,7 @@ export function JewelryItemSheet({
   };
 
   // ---------------------------------------------------------
-  // Inline "Add New" for Category / Purity
+  // Inline "Add New" for Category / Purity / Stone
   // ---------------------------------------------------------
   const handleAddCategory = async (name: string): Promise<SelectOption> => {
     const created = await createCategory({ name });
@@ -398,6 +479,13 @@ export function JewelryItemSheet({
     });
     onPurityAdded?.(created as Purity);
     return { id: created.id, label: created.name };
+  };
+
+  const handleAddStone = async (name: string): Promise<SelectOption> => {
+    const created = await createStoneName({ name });
+    const opt: SelectOption = { id: created.id, label: created.name };
+    setStoneOptions((prev) => [...prev, opt].sort((a, b) => a.label.localeCompare(b.label)));
+    return opt;
   };
 
   // ---------------------------------------------------------
@@ -435,14 +523,13 @@ export function JewelryItemSheet({
     const makingValue = parseFloat(state.makingChargeFixed) || 0;
     const itemDiscount = parseFloat(state.itemDiscount) || 0;
 
-    // GST unticked -> no tax setting is passed, so every tax figure is 0.
-    const taxSetting = state.gstEnabled
-      ? taxSettings.find((t) => t.id === state.taxSettingId) ?? null
-      : null;
+    // "Apply GST" now lives on the invoice screen (bill-wide), so the item
+    // always carries its own tax setting; the invoice strips it if GST is off.
+    const taxSetting = taxSettings.find((t) => t.id === state.taxSettingId) ?? null;
 
     const synthesizedVaLines: ValueAddedChargeLine[] = [];
     const vacValue = parseFloat(state.vacPercent) || 0;
-    const stoneValue = parseFloat(state.stoneChargeFixed) || 0;
+    const stoneValue = stoneChargeOf(state);
 
     if (vacValue > 0) {
       synthesizedVaLines.push({
@@ -507,6 +594,10 @@ export function JewelryItemSheet({
     setSaving(true);
     Keyboard.dismiss();
 
+    const stoneLabels = state.stoneIds
+      .map((id) => stoneOptions.find((o) => o.id === id)?.label)
+      .filter(Boolean) as string[];
+
     onSave({
       id: initial?.id ?? `local-${Date.now()}`,
       product_id: initial?.product_id ?? linkedProductRef.current?.id ?? null,
@@ -526,8 +617,11 @@ export function JewelryItemSheet({
       value_added_charges: derived.vaLinesWithAmount,
       item_discount: parseFloat(state.itemDiscount) || 0,
       tax_setting_id: state.taxSettingId,
-      gst_enabled: state.gstEnabled,
+      gst_enabled: true, // bill-wide GST toggle on the invoice screen decides at billing time
       huid: state.huid || null,
+      // With several stones: first id + all names joined by comma.
+      stone_id: state.stoneIds[0] ?? null,
+      stone_name: stoneLabels.length ? stoneLabels.join(', ') : state.stoneName ?? null,
       metal_value: derived.metal_value,
       making_charge_amount: derived.making_charge_amount,
       taxable_amount: derived.taxable_amount,
@@ -553,6 +647,8 @@ export function JewelryItemSheet({
     else onClose();
   };
 
+  const multiStone = state.stoneIds.length >= 2;
+
   return (
     <Modal
       visible={visible}
@@ -561,10 +657,10 @@ export function JewelryItemSheet({
       statusBarTranslucent
       onRequestClose={handleCancel}
     >
-      <View style={styles.overlay}>
+      <View style={styles.overlay} onLayout={handleOverlayLayout}>
         <Pressable style={StyleSheet.absoluteFill} onPress={handleBackdropPress} />
 
-        <View style={[styles.sheet, { maxHeight: sheetMaxHeight, marginBottom: kbHeight }]}>
+        <View style={[styles.sheet, { maxHeight: sheetMaxHeight, marginBottom: lift }]}>
           {/* Grab handle */}
           <View style={styles.handleWrap}>
             <View style={styles.handle} />
@@ -599,46 +695,45 @@ export function JewelryItemSheet({
               paddingBottom: (kbHeight > 0 ? 0 : insets.bottom) + spacing.xl,
             }}
           >
-            {/* ---------------- Product search ---------------- */}
-            <Section title="Product" hint="Search to auto-fill" style={styles.searchCard}>
-              <View style={styles.searchWrapper}>
-                <Text style={styles.label}>Product ID / Name</Text>
+            {/* ---------------- Product ---------------- */}
+            <Section title="Product" hint="Product ID is optional">
+              <Text style={styles.label}>Product ID (optional)</Text>
+              <View style={styles.lookupRow}>
                 <TextInput
-                  style={styles.input}
-                  placeholder="Type to search product..."
+                  style={[styles.input, { flex: 1 }]}
+                  placeholder="e.g. JWL-000001"
                   placeholderTextColor={colors.textMuted}
-                  value={productQuery}
-                  onChangeText={handleProductQuery}
-                  onFocus={() => setShowResults(true)}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  returnKeyType="search"
+                  value={productCode}
+                  onChangeText={(t) => {
+                    setProductCode(t);
+                    setLookupMsg(null);
+                  }}
+                  onSubmitEditing={handleFetchByCode}
                 />
-                {showResults && productResults.length > 0 && (
-                  <View style={styles.dropdown}>
-                    <ScrollView
-                      keyboardShouldPersistTaps="handled"
-                      nestedScrollEnabled={true}
-                      style={styles.dropdownScroll}
-                    >
-                      {productResults.map((p, idx) => {
-                        const itemKey = p?.id ?? p?.product_code ?? `prod-key-${idx}`;
-                        return (
-                          <Pressable
-                            key={itemKey}
-                            style={styles.dropdownRow}
-                            onPress={() => applyProduct(p)}
-                          >
-                            <Text style={styles.dropdownName} numberOfLines={1}>
-                              {p?.product_name ?? 'Unnamed Product'}
-                            </Text>
-                            {p?.product_code ? (
-                              <Text style={styles.dropdownCode}>{p.product_code}</Text>
-                            ) : null}
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                  </View>
-                )}
+                <Pressable
+                  style={[
+                    styles.fetchBtn,
+                    (lookupBusy || !productCode.trim()) && styles.btnDisabled,
+                  ]}
+                  onPress={handleFetchByCode}
+                  disabled={lookupBusy || !productCode.trim()}
+                >
+                  <Text style={styles.fetchBtnText}>{lookupBusy ? '…' : 'Fetch'}</Text>
+                </Pressable>
               </View>
+              {lookupMsg ? <Text style={styles.computedHint}>{lookupMsg}</Text> : null}
+
+              <Text style={styles.label}>Product Name *</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g. Gold Chain"
+                placeholderTextColor={colors.textMuted}
+                value={state.name}
+                onChangeText={(v) => setState((s) => ({ ...s, name: v }))}
+              />
             </Section>
 
             {/* ---------------- Classification ---------------- */}
@@ -740,7 +835,39 @@ export function JewelryItemSheet({
 
             {/* ---------------- Charges ---------------- */}
             <Section title="Charges">
-              <View style={styles.row}>
+              <Text style={styles.label}>Stones</Text>
+              <MultiSelectField
+                options={stoneOptions}
+                values={state.stoneIds}
+                onChange={(ids: string[]) =>
+                  setState((s) => ({ ...s, stoneIds: ids, stoneName: null }))
+                }
+                placeholder="Select stones (optional)"
+                onAddNew={handleAddStone}
+              />
+
+              {/* One amount per stone, only when 2+ are selected */}
+              {multiStone &&
+                state.stoneIds.map((id) => {
+                  const label = stoneOptions.find((o) => o.id === id)?.label ?? 'Stone';
+                  return (
+                    <View key={id}>
+                      <Text style={styles.label}>{label} amount (₹)</Text>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="0"
+                        placeholderTextColor={colors.textMuted}
+                        keyboardType="decimal-pad"
+                        value={state.stoneAmounts[id] ?? ''}
+                        onChangeText={(v) =>
+                          setState((s) => ({ ...s, stoneAmounts: { ...s.stoneAmounts, [id]: v } }))
+                        }
+                      />
+                    </View>
+                  );
+                })}
+
+              <View style={[styles.row, { marginTop: spacing.xs }]}>
                 <View style={styles.col}>
                   <Text style={styles.label}>{makingLabel(state.makingType)}</Text>
                   <TextInput
@@ -756,15 +883,21 @@ export function JewelryItemSheet({
                   />
                 </View>
                 <View style={styles.col}>
-                  <Text style={styles.label}>Stone (₹)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
-                    value={state.stoneChargeFixed}
-                    onChangeText={(v) => setState((s) => ({ ...s, stoneChargeFixed: v }))}
-                  />
+                  <Text style={styles.label}>{multiStone ? 'Stone total (₹)' : 'Stone (₹)'}</Text>
+                  {multiStone ? (
+                    <View style={[styles.input, styles.inputLocked]}>
+                      <Text style={styles.lockedText}>{stoneChargeOf(state).toFixed(2)}</Text>
+                    </View>
+                  ) : (
+                    <TextInput
+                      style={styles.input}
+                      placeholder="0"
+                      placeholderTextColor={colors.textMuted}
+                      keyboardType="decimal-pad"
+                      value={state.stoneChargeFixed}
+                      onChangeText={(v) => setState((s) => ({ ...s, stoneChargeFixed: v }))}
+                    />
+                  )}
                 </View>
                 <View style={styles.col}>
                   <Text style={styles.label}>VA (%)</Text>
@@ -844,45 +977,23 @@ export function JewelryItemSheet({
 
             {/* ---------------- Tax & Discounts ---------------- */}
             <Section title="Tax & Discount">
-              {/* GST dropdown with the Apply GST checkbox right next to it */}
-              <View style={styles.gstRow}>
-                <View
-                  style={[styles.gstSelect, !state.gstEnabled && styles.gstSelectDisabled]}
-                  pointerEvents={state.gstEnabled ? 'auto' : 'none'}
-                >
-                  <SelectField
-                    label="GST Setting"
-                    value={state.taxSettingId}
-                    options={(taxSettings ?? []).map((t) => ({
-                      id: t.id,
-                      label: `${t.tax_name} (${t.tax_percentage}%)`,
-                    }))}
-                    onChange={(id) => setState((s) => ({ ...s, taxSettingId: id }))}
-                  />
-                </View>
+              <SelectField
+                label="GST Setting"
+                value={state.taxSettingId}
+                options={(taxSettings ?? []).map((t) => ({
+                  id: t.id,
+                  label: `${t.tax_name} (${t.tax_percentage}%)`,
+                }))}
+                onChange={(id) => setState((s) => ({ ...s, taxSettingId: id }))}
+              />
 
-                <Pressable
-                  style={styles.gstCheckWrap}
-                  onPress={() => setState((s) => ({ ...s, gstEnabled: !s.gstEnabled }))}
-                  hitSlop={8}
-                >
-                  <View style={[styles.checkbox, state.gstEnabled && styles.checkboxOn]}>
-                    {state.gstEnabled && <Check size={14} color="#fff" strokeWidth={3} />}
-                  </View>
-                  <Text style={styles.gstCheckLabel}>Apply GST</Text>
-                </Pressable>
-              </View>
-
-              {state.gstEnabled && derived.tax_percentage > 0 && (
+              {derived.tax_percentage > 0 && (
                 <Text style={styles.computedHint}>
                   {derived.cgst_percentage > 0 || derived.sgst_percentage > 0
                     ? `CGST ${derived.cgst_percentage}% + SGST ${derived.sgst_percentage}%`
                     : `IGST ${derived.igst_percentage}%`}
                   {' · '}Tax: ₹{derived.tax_amount.toLocaleString('en-IN')}
                 </Text>
-              )}
-              {!state.gstEnabled && (
-                <Text style={styles.computedHint}>GST is not applied to this item.</Text>
               )}
 
               <View style={[styles.row, { marginTop: spacing.xs }]}>
@@ -996,11 +1107,6 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginTop: spacing.md,
   },
-  // The search card must sit above the cards below it so the dropdown overlaps them.
-  searchCard: {
-    zIndex: 9999,
-    elevation: Platform.OS === 'android' ? 50 : undefined,
-  },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'baseline',
@@ -1016,11 +1122,6 @@ const styles = StyleSheet.create({
   },
   cardHint: { fontSize: 11.5, color: colors.textMuted },
 
-  searchWrapper: {
-    position: 'relative',
-    zIndex: 9999,
-    elevation: Platform.OS === 'android' ? 50 : undefined,
-  },
   label: {
     fontSize: 12,
     fontWeight: '600',
@@ -1038,48 +1139,18 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     backgroundColor: '#fff',
   },
-  dropdown: {
-    position: 'absolute',
-    top: '100%',
-    left: 0,
-    right: 0,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: colors.border,
+  inputLocked: { justifyContent: 'center', opacity: 0.8 },
+  lockedText: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
+
+  // Product ID lookup
+  lookupRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  fetchBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 11,
     borderRadius: 10,
-    marginTop: 4,
-    zIndex: 10000,
-    elevation: 60,
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 10,
-    overflow: 'hidden',
+    backgroundColor: colors.primary,
   },
-  dropdownScroll: {
-    maxHeight: 180,
-  },
-  dropdownRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-    backgroundColor: '#FFFFFF',
-  },
-  dropdownName: {
-    fontSize: 13,
-    color: colors.textPrimary,
-    fontWeight: '600',
-    flex: 1,
-    marginRight: spacing.sm,
-  },
-  dropdownCode: {
-    fontSize: 12,
-    color: colors.textMuted,
-  },
+  fetchBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
 
   row: {
     flexDirection: 'row',
@@ -1103,34 +1174,6 @@ const styles = StyleSheet.create({
   },
   addRowBtnText: { color: colors.primary, fontWeight: '700', fontSize: 14 },
   emptyHint: { fontSize: 12, color: colors.textMuted, fontStyle: 'italic', marginBottom: 4 },
-
-  // GST dropdown + checkbox on one line
-  gstRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 12,
-  },
-  gstSelect: { flex: 1 },
-  gstSelectDisabled: { opacity: 0.45 },
-  gstCheckWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    height: 48,
-    marginBottom: 12,
-  },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
-  gstCheckLabel: { fontSize: 13, fontWeight: '600', color: colors.textPrimary },
 
   weightBadge: {
     flexDirection: 'row',

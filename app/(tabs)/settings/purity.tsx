@@ -1,10 +1,11 @@
 // app\(tabs)\settings\purity.tsx
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Card, Button, Input } from '../../../src/components/ui';
-import { MasterListItem, FormSheet, SelectField } from '../../../src/components/master';
+import { FormSheet, SelectField } from '../../../src/components/master';
+import { ManageListItem } from '../../../src/components/master/ManageListItem';
 import { colors, spacing } from '../../../src/theme';
 import { listMetals, listPurities, createPurity, updatePurity, deletePurity } from '../../../src/lib/api/settings';
 import type { Metal, Purity } from '../../../src/types/settings';
@@ -28,6 +29,7 @@ export default function PurityScreen() {
       .then(([m, p]) => {
         setMetals(m);
         setPurities(p);
+        setError(null);
       })
       .catch(() => setError('Could not load purities.'))
       .finally(() => setLoading(false));
@@ -43,6 +45,7 @@ export default function PurityScreen() {
     setMetalId(null);
     setName('');
     setPercentage('');
+    setError(null);
     setSheetOpen(true);
   };
 
@@ -60,12 +63,14 @@ export default function PurityScreen() {
     setMetalId(purity.metal_id);
     setName(purity.name);
     setPercentage(purity.purity_percentage?.toString() ?? '');
+    setError(null);
     setSheetOpen(true);
   };
 
   const handleSave = async () => {
     if (!metalId || !name.trim()) return;
     setSaving(true);
+    setError(null);
     try {
       const input = {
         metal_id: metalId,
@@ -75,23 +80,26 @@ export default function PurityScreen() {
       if (editing) {
         await updatePurity(editing.id, input);
       } else {
+        // If a deleted purity with the same name for this metal exists, it is brought back.
         await createPurity(input);
       }
       setSheetOpen(false);
       load();
-    } catch {
-      setError('Could not save. That purity may already exist for this metal.');
+    } catch (e: any) {
+      setError(e?.message || 'Could not save. That purity may already exist for this metal.');
     } finally {
       setSaving(false);
     }
   };
 
+  // Soft delete: hides the purity in the app, keeps it in the database.
   const handleDelete = async (id: string) => {
+    setError(null);
     try {
       await deletePurity(id);
       load();
-    } catch {
-      setError('Could not delete — it may be in use by products or rates.');
+    } catch (e: any) {
+      setError(e?.message || 'Could not delete.');
     }
   };
 
@@ -107,11 +115,10 @@ export default function PurityScreen() {
             data={purities}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-              <MasterListItem
+              <ManageListItem
                 title={item.name}
                 subtitle={formatPuritySubtitle(item, metalName(item.metal_id))}
-                isActive={item.is_active}
-                onPress={() => openEdit(item)}
+                onEdit={() => openEdit(item)}
                 onDelete={() => handleDelete(item.id)}
               />
             )}
@@ -132,6 +139,7 @@ export default function PurityScreen() {
         onSave={handleSave}
         saving={saving}
       >
+        {error ? <Text style={styles.sheetError}>{error}</Text> : null}
         <SelectField label="Metal" value={metalId} options={metalOptions} onChange={setMetalId} />
         <Input label="Name" value={name} onChangeText={setName} placeholder="e.g. 22K" />
         <Input
@@ -149,6 +157,7 @@ export default function PurityScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   error: { fontSize: 13, color: colors.error, textAlign: 'center', marginTop: spacing.md },
+  sheetError: { fontSize: 13, color: colors.error, marginBottom: spacing.sm },
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', padding: spacing.lg },
   addButton: { padding: spacing.lg },
 });

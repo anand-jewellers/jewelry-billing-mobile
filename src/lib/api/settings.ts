@@ -16,6 +16,100 @@ import type {
   CalculationType,
 } from '../../types/settings';
 
+// ---------- Soft delete + reuse helpers ----------
+// "Delete" in the app never removes a row from the database. It sets
+// is_active = false, so old invoices / products keep their references.
+// Creating the same name again finds that hidden row and turns it back on
+// (instead of inserting a duplicate).
+
+const escapeLike = (s: string) => s.replace(/[\\%_]/g, (m) => `\\${m}`);
+
+/** Hide a row (is_active = false). Fails loudly if nothing was updated (RLS / wrong id). */
+async function softDelete(table: string, id: string) {
+  const { data, error } = await supabase
+    .from(table)
+    .update({ is_active: false })
+    .eq('id', id)
+    .select('id');
+  if (error) throw error;
+  if (!data || data.length === 0) {
+    throw new Error('Could not delete (item not found or not allowed).');
+  }
+}
+
+/** Case-insensitive lookup of one row (active OR hidden) by a text column. */
+async function findExisting(
+  table: string,
+  column: string,
+  value: string,
+  scope: Record<string, string> = {},
+  excludeId?: string
+): Promise<any | null> {
+  let query = supabase.from(table).select('*').ilike(column, escapeLike(value.trim()));
+  for (const [col, val] of Object.entries(scope)) query = query.eq(col, val);
+  if (excludeId) query = query.neq('id', excludeId);
+  const { data, error } = await query.limit(1).maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+/**
+ * If a matching row exists and is hidden -> turn it back on (and apply `revive`).
+ * If it exists and is already active   -> throw a friendly "already exists".
+ * If it does not exist                 -> insert `insertRow`.
+ */
+async function reuseOrInsert(
+  table: string,
+  existing: any | null,
+  insertRow: Record<string, unknown>,
+  revive: Record<string, unknown>,
+  label: string,
+  name: string
+): Promise<any> {
+  if (existing) {
+    if (existing.is_active) {
+      throw new Error(`${label} "${name}" already exists.`);
+    }
+    const { data, error } = await supabase
+      .from(table)
+      .update({ is_active: true, ...revive })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const { data, error } = await supabase.from(table).insert(insertRow).select().single();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Call before UPDATING a row's name/code.
+ * - Another VISIBLE row already has that name -> friendly "already exists" error.
+ * - A DELETED (hidden) row holds that name   -> give the hidden row a tombstone
+ *   name so the unique constraint no longer blocks the edit.
+ */
+async function freeNameForRename(
+  table: string,
+  id: string,
+  column: string,
+  value: string,
+  label: string,
+  scope: Record<string, string> = {}
+) {
+  const clash = await findExisting(table, column, value, scope, id);
+  if (!clash) return;
+  if (clash.is_active) {
+    throw new Error(`${label} "${value.trim()}" already exists.`);
+  }
+  const { error } = await supabase
+    .from(table)
+    .update({ [column]: `${clash[column]} (deleted ${Date.now().toString(36)})` })
+    .eq('id', clash.id);
+  if (error) throw error;
+}
+
 // ---------- Single-row tables: helpers ----------
 // company_settings and invoice_settings each hold exactly one row (id = 1).
 // On a brand-new database that row doesn't exist yet, and a plain
@@ -98,50 +192,98 @@ export async function updateCompanySettings(patch: Partial<CompanySettings>) {
 }
 
 // ---------- Metals ----------
-export async function listMetals(): Promise<Metal[]> {
-  const { data, error } = await supabase.from('metals').select('*').order('name');
+// By default only ACTIVE (not deleted) metals are returned. Pass
+// includeInactive = true when you only need to look up the NAME of an old record.
+export async function listMetals(includeInactive = false): Promise<Metal[]> {
+  let query = supabase.from('metals').select('*').order('name');
+  if (!includeInactive) query = query.eq('is_active', true);
+  const { data, error } = await query;
   if (error) throw error;
   return data as Metal[];
 }
 
-export async function createMetal(input: { name: string; code: string; type: Metal['type'] }) {
-  const { error } = await supabase.from('metals').insert(input);
-  if (error) throw error;
+export async function createMetal(input: {
+  name: string;
+  code: string;
+  type: Metal['type'];
+}): Promise<Metal> {
+  // Same name OR same code counts as the same metal.
+  const existing =
+    (await findExisting('metals', 'name', input.name)) ??
+    (await findExisting('metals', 'code', input.code));
+  return (await reuseOrInsert(
+    'metals',
+    existing,
+    input,
+    { name: input.name, code: input.code, type: input.type },
+    'Metal',
+    input.name
+  )) as Metal;
 }
 
 export async function updateMetal(id: string, patch: Partial<Metal>) {
+  if (patch.name) await freeNameForRename('metals', id, 'name', patch.name, 'Metal');
+  if (patch.code) await freeNameForRename('metals', id, 'code', patch.code, 'Metal code');
   const { error } = await supabase.from('metals').update(patch).eq('id', id);
   if (error) throw error;
 }
 
+/** Hides the metal and its purities. Nothing is removed from the database. */
 export async function deleteMetal(id: string) {
-  const { error } = await supabase.from('metals').delete().eq('id', id);
+  await softDelete('metals', id);
+  const { error } = await supabase.from('purities').update({ is_active: false }).eq('metal_id', id);
   if (error) throw error;
 }
 
 // ---------- Purities ----------
-export async function listPurities(metalId?: string): Promise<Purity[]> {
+export async function listPurities(metalId?: string, includeInactive = false): Promise<Purity[]> {
   let query = supabase.from('purities').select('*').order('name');
   if (metalId) query = query.eq('metal_id', metalId);
+  if (!includeInactive) query = query.eq('is_active', true);
   const { data, error } = await query;
   if (error) throw error;
   return data as Purity[];
 }
 
-export async function createPurity(input: { metal_id: string; name: string; purity_percentage: number | null }): Promise<Purity> {
-  const { data, error } = await supabase.from('purities').insert(input).select().single();
-  if (error) throw error;
-  return data as Purity;
+export async function createPurity(input: {
+  metal_id: string;
+  name: string;
+  purity_percentage: number | null;
+}): Promise<Purity> {
+  const existing = await findExisting('purities', 'name', input.name, { metal_id: input.metal_id });
+  return (await reuseOrInsert(
+    'purities',
+    existing,
+    input,
+    { name: input.name, purity_percentage: input.purity_percentage },
+    'Purity',
+    input.name
+  )) as Purity;
 }
 
 export async function updatePurity(id: string, patch: Partial<Purity>) {
+  if (patch.name !== undefined || patch.metal_id !== undefined) {
+    const { data: current, error: curErr } = await supabase
+      .from('purities')
+      .select('name, metal_id')
+      .eq('id', id)
+      .single();
+    if (curErr) throw curErr;
+    await freeNameForRename(
+      'purities',
+      id,
+      'name',
+      patch.name ?? current.name,
+      'Purity',
+      { metal_id: patch.metal_id ?? current.metal_id }
+    );
+  }
   const { error } = await supabase.from('purities').update(patch).eq('id', id);
   if (error) throw error;
 }
 
 export async function deletePurity(id: string) {
-  const { error } = await supabase.from('purities').delete().eq('id', id);
-  if (error) throw error;
+  await softDelete('purities', id);
 }
 
 // ---------- Gold / Metal Rates ----------
@@ -168,78 +310,127 @@ export async function addMetalRate(input: {
 }
 
 // ---------- Categories ----------
-export async function listCategories(): Promise<Category[]> {
-  const { data, error } = await supabase.from('categories').select('*').order('name');
+export async function listCategories(includeInactive = false): Promise<Category[]> {
+  let query = supabase.from('categories').select('*').order('name');
+  if (!includeInactive) query = query.eq('is_active', true);
+  const { data, error } = await query;
   if (error) throw error;
   return data as Category[];
 }
 
 export async function createCategory(input: { name: string }): Promise<Category> {
-  const { data, error } = await supabase.from('categories').insert(input).select().single();
-  if (error) throw error;
-  return data as Category;
+  const existing = await findExisting('categories', 'name', input.name);
+  return (await reuseOrInsert(
+    'categories',
+    existing,
+    input,
+    { name: input.name },
+    'Category',
+    input.name
+  )) as Category;
 }
 
 export async function updateCategory(id: string, patch: Partial<Category>) {
+  if (patch.name) await freeNameForRename('categories', id, 'name', patch.name, 'Category');
   const { error } = await supabase.from('categories').update(patch).eq('id', id);
   if (error) throw error;
 }
 
+/** Hides the category and its subcategories. Nothing is removed from the database. */
 export async function deleteCategory(id: string) {
-  const { error } = await supabase.from('categories').delete().eq('id', id);
+  await softDelete('categories', id);
+  const { error } = await supabase
+    .from('subcategories')
+    .update({ is_active: false })
+    .eq('category_id', id);
   if (error) throw error;
 }
 
 // ---------- Subcategories ----------
-// Settings-screen version: lists ALL subcategories (with parent category name
-// joined in), unlike products.ts's getSubcategories() which filters to one
+// Settings-screen version: lists ALL active subcategories (with parent category
+// name joined in), unlike products.ts's getSubcategories() which filters to one
 // active category_id for the product form dropdown.
-export async function listSubcategories(): Promise<(Subcategory & { categories?: { name: string } })[]> {
-  const { data, error } = await supabase
-    .from('subcategories')
-    .select('*, categories(name)')
-    .order('name');
+export async function listSubcategories(
+  includeInactive = false
+): Promise<(Subcategory & { categories?: { name: string } })[]> {
+  let query = supabase.from('subcategories').select('*, categories(name)').order('name');
+  if (!includeInactive) query = query.eq('is_active', true);
+  const { data, error } = await query;
   if (error) throw error;
   return data as (Subcategory & { categories?: { name: string } })[];
 }
 
-export async function createSubcategory(input: { category_id: string; name: string }): Promise<Subcategory> {
-  const { data, error } = await supabase.from('subcategories').insert(input).select().single();
-  if (error) throw error;
-  return data as Subcategory;
+export async function createSubcategory(input: {
+  category_id: string;
+  name: string;
+}): Promise<Subcategory> {
+  const existing = await findExisting('subcategories', 'name', input.name, {
+    category_id: input.category_id,
+  });
+  return (await reuseOrInsert(
+    'subcategories',
+    existing,
+    input,
+    { name: input.name },
+    'Subcategory',
+    input.name
+  )) as Subcategory;
 }
 
 export async function updateSubcategory(id: string, patch: Partial<Subcategory>) {
+  if (patch.name !== undefined || patch.category_id !== undefined) {
+    const { data: current, error: curErr } = await supabase
+      .from('subcategories')
+      .select('name, category_id')
+      .eq('id', id)
+      .single();
+    if (curErr) throw curErr;
+    await freeNameForRename(
+      'subcategories',
+      id,
+      'name',
+      patch.name ?? current.name,
+      'Subcategory',
+      { category_id: patch.category_id ?? current.category_id }
+    );
+  }
   const { error } = await supabase.from('subcategories').update(patch).eq('id', id);
   if (error) throw error;
 }
 
 export async function deleteSubcategory(id: string) {
-  const { error } = await supabase.from('subcategories').delete().eq('id', id);
-  if (error) throw error;
+  await softDelete('subcategories', id);
 }
 
 // ---------- Stone Names ----------
-export async function listStoneNames(): Promise<StoneName[]> {
-  const { data, error } = await supabase.from('stones').select('*').order('name');
+export async function listStoneNames(includeInactive = false): Promise<StoneName[]> {
+  let query = supabase.from('stones').select('*').order('name');
+  if (!includeInactive) query = query.eq('is_active', true);
+  const { data, error } = await query;
   if (error) throw error;
   return data as StoneName[];
 }
 
 export async function createStoneName(input: { name: string }): Promise<StoneName> {
-  const { data, error } = await supabase.from('stones').insert(input).select().single();
-  if (error) throw error;
-  return data as StoneName;
+  const existing = await findExisting('stones', 'name', input.name);
+  return (await reuseOrInsert(
+    'stones',
+    existing,
+    input,
+    { name: input.name },
+    'Stone',
+    input.name
+  )) as StoneName;
 }
 
 export async function updateStoneName(id: string, patch: Partial<StoneName>) {
+  if (patch.name) await freeNameForRename('stones', id, 'name', patch.name, 'Stone');
   const { error } = await supabase.from('stones').update(patch).eq('id', id);
   if (error) throw error;
 }
 
 export async function deleteStoneName(id: string) {
-  const { error } = await supabase.from('stones').delete().eq('id', id);
-  if (error) throw error;
+  await softDelete('stones', id);
 }
 
 // ---------- Making Charge Rules ----------
@@ -352,4 +543,18 @@ export async function getPrimaryTaxSetting(): Promise<TaxSetting | null> {
     .maybeSingle();
   if (error) throw error;
   return data as TaxSetting | null;
+}
+
+// ---------- Delete a rate from the Gold Rates list (soft delete) ----------
+// NOTE: written against the assumption that rates are logged in a table named
+// `metal_rates` (via log_metal_rate_rpc) that has an `is_active` column, and
+// that the `current_metal_rates` view only returns rows where is_active = true.
+// Adjust the table / column names if your schema differs.
+export async function deleteMetalRate(metalId: string, purityId: string) {
+  const { error } = await supabase
+    .from('metal_rates')
+    .update({ is_active: false })
+    .eq('metal_id', metalId)
+    .eq('purity_id', purityId);
+  if (error) throw error;
 }

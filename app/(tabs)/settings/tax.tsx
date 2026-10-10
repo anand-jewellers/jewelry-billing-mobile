@@ -1,8 +1,11 @@
+// app/(tabs)/settings/tax.tsx
+
 import { useCallback, useState } from 'react';
 import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Card, Button, Input } from '../../../src/components/ui';
-import { MasterListItem, FormSheet } from '../../../src/components/master';
+import { FormSheet } from '../../../src/components/master';
+import { ManageListItem } from '../../../src/components/master/ManageListItem';
 import { colors, spacing } from '../../../src/theme';
 import { listTaxSettings, createTaxSetting, updateTaxSetting, deleteTaxSetting } from '../../../src/lib/api/settings';
 import type { TaxSetting } from '../../../src/types/settings';
@@ -24,7 +27,10 @@ export default function TaxSettingsScreen() {
   const load = useCallback(() => {
     setLoading(true);
     listTaxSettings()
-      .then(setItems)
+      .then((data) => {
+        setItems(data);
+        setError(null);
+      })
       .catch(() => setError('Could not load tax settings.'))
       .finally(() => setLoading(false));
   }, []);
@@ -38,6 +44,7 @@ export default function TaxSettingsScreen() {
     setCgst('');
     setSgst('');
     setIgst('');
+    setError(null);
     setSheetOpen(true);
   };
 
@@ -48,12 +55,14 @@ export default function TaxSettingsScreen() {
     setCgst(item.cgst.toString());
     setSgst(item.sgst.toString());
     setIgst(item.igst.toString());
+    setError(null);
     setSheetOpen(true);
   };
 
   const handleSave = async () => {
     if (!taxName.trim()) return;
     setSaving(true);
+    setError(null);
     try {
       const input = {
         tax_name: taxName.trim(),
@@ -69,25 +78,27 @@ export default function TaxSettingsScreen() {
       }
       setSheetOpen(false);
       load();
-    } catch {
-      setError('Could not save the tax setting.');
+    } catch (e: any) {
+      setError(e?.message || 'Could not save the tax setting.');
     } finally {
       setSaving(false);
     }
   };
 
+  // Soft delete: hides the tax in the app, keeps it in the database.
   const handleDelete = async (id: string) => {
+    setError(null);
     try {
       await deleteTaxSetting(id);
       load();
-    } catch {
-      setError('Could not delete the tax setting.');
+    } catch (e: any) {
+      setError(e?.message || 'Could not delete the tax setting.');
     }
   };
 
   return (
     <View style={styles.screen}>
-      {error && <Text style={styles.error}>{error}</Text>}
+      {error && !sheetOpen && <Text style={styles.error}>{error}</Text>}
 
       {loading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
@@ -97,14 +108,14 @@ export default function TaxSettingsScreen() {
             data={items}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-              <MasterListItem
+              <ManageListItem
                 title={item.tax_name}
-                subtitle={`${item.tax_percentage}% total · CGST ${item.cgst}% · SGST ${item.sgst}% · IGST ${item.igst}%`}
-                isActive={item.is_active}
-                onPress={() => openEdit(item)}
+                subtitle={`${item.tax_percentage}% · CGST ${item.cgst}% · SGST ${item.sgst}% · IGST ${item.igst}%`}
+                onEdit={() => openEdit(item)}
                 onDelete={() => handleDelete(item.id)}
               />
             )}
+            contentContainerStyle={items.length === 0 ? { flexGrow: 1 } : undefined}
             ListEmptyComponent={<Text style={styles.emptyText}>No tax settings yet.</Text>}
           />
         </Card>
@@ -121,6 +132,7 @@ export default function TaxSettingsScreen() {
         onSave={handleSave}
         saving={saving}
       >
+        {error ? <Text style={styles.sheetError}>{error}</Text> : null}
         <Input label="Tax Name" value={taxName} onChangeText={setTaxName} placeholder="e.g. GST 3%" />
         <Input label="Total Tax %" value={percentage} onChangeText={setPercentage} keyboardType="decimal-pad" />
         <Input label="CGST %" value={cgst} onChangeText={setCgst} keyboardType="decimal-pad" />
@@ -134,6 +146,7 @@ export default function TaxSettingsScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   error: { fontSize: 13, color: colors.error, textAlign: 'center', marginTop: spacing.md },
+  sheetError: { fontSize: 13, color: colors.error, marginBottom: spacing.sm },
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', padding: spacing.lg },
   addButton: { padding: spacing.lg },
 });

@@ -14,6 +14,8 @@ import type { Metal, Purity, CurrentMetalRate } from '../../src/types/settings';
 import { PaymentBreakdownChart } from '../../src/components/ui/PaymentBreakdownChart';
 import { PageGuard } from '../../src/components/PageGuard';
 
+
+// a76644344bc74e9f884d854d9dcd40b9
 // ---- Navigation targets (change these if your routes are named differently) ----
 const ROUTE_INVOICES = '/invoices';
 const ROUTE_CUSTOMERS = '/customers';
@@ -22,10 +24,10 @@ const ROUTE_NEW_INVOICE = '/invoices/new'; // new invoice screen (opens scanner 
 const ROUTE_ADD_PRODUCT = '/products/add'; // add product screen
 
 const RATE_ROWS: { label: string; metalMatch: string; purityMatch: string }[] = [
-  { label: '24K Gold', metalMatch: 'gold', purityMatch: '24k' },
+  // { label: '24K Gold', metalMatch: 'gold', purityMatch: '24k' },
   { label: '22K Gold', metalMatch: 'gold', purityMatch: '22k' },
   { label: '18K Gold', metalMatch: 'gold', purityMatch: '18k' },
-  { label: '925 Silver', metalMatch: 'silver', purityMatch: '925' },
+  { label: 'Silver', metalMatch: 'silver', purityMatch: 'silver' },
 ];
 
 function getIndianDateTimeLabel(): { date: string; time: string } {
