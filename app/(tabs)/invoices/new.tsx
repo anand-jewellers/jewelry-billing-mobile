@@ -39,7 +39,8 @@ import { getCustomerById } from '../../../src/lib/api/customers';
 import { completeCustomerOrderWithInvoice } from '../../../src/lib/api/customerOrders';
 
 import { buildInvoiceItemFromProduct, invoiceTotals, recalcItem, withoutGst } from '../../../src/lib/invoiceCalc';
-import { buildThermalReceiptHtml, companyToShopDetails, printHtml } from '../../../src/lib/invoicePdf';
+import { companyToShopDetails, printHtml } from '../../../src/lib/invoicePdf';
+import { buildEstimateSlip, type SlipLine } from '../../../src/lib/estimateSlip';
 
 import { BarcodeScannerModal } from '../../../src/components/invoice/BarcodeScannerModal';
 import { InvoiceItemRow } from '../../../src/components/invoice/InvoiceItemRow';
@@ -74,6 +75,9 @@ import { displayNetWeight } from '../../../src/lib/exchangeGold';
 // import RNBluetoothClassic from 'react-native-bluetooth-classic';
 import { ensureBluetoothPermissions } from '../../../src/lib/thermalPrint/bluetoothPermissions';
 
+// NEW: share the estimate on WhatsApp as a thermal-style PDF
+import { shareEstimateOnWhatsApp } from '../../../src/lib/whatsappShare';
+
 // ===========================================================
 // Constants
 // ===========================================================
@@ -84,6 +88,7 @@ const PAYMENT_MODES = [
   { id: 'upi', label: 'UPI' },
   { id: 'bank_transfer', label: 'Bank Transfer' },
   { id: 'cheque', label: 'Cheque' },
+  { id: 'credit', label: 'Credit' },
 ];
 
 // Charge names as saved on the product / invoice item lines.
@@ -258,6 +263,12 @@ export default function NewInvoiceScreen() {
   // ---------------------------------------------------------
 
   const [printingEstimate, setPrintingEstimate] = useState(false);
+
+  // ---------------------------------------------------------
+  // Share estimate on WhatsApp (thermal-style PDF)
+  // ---------------------------------------------------------
+
+  const [sharingEstimate, setSharingEstimate] = useState(false);
 
   // ---------------------------------------------------------
   // Inline validation error
@@ -502,9 +513,16 @@ export default function NewInvoiceScreen() {
   // Totals
   // =========================================================
 
-  const totalReceived = paymentSplits.reduce(
-    (sum, row) => sum + (parseFloat(row.amountText) || 0),
-    0
+  const amountOf = (row: PaymentSplitRow) => parseFloat(row.amountText) || 0;
+
+  // Money actually received (credit rows are NOT received)
+  const totalReceived = paymentSplits
+    .filter((r) => r.mode !== 'credit')
+    .reduce((sum, r) => sum + amountOf(r), 0);
+
+  // Amount the customer will pay later
+  const creditAmount = round2(
+    paymentSplits.filter((r) => r.mode === 'credit').reduce((sum, r) => sum + amountOf(r), 0)
   );
 
   // When "Apply GST" is unticked every item is stripped of tax, so all totals,
@@ -520,7 +538,7 @@ export default function NewInvoiceScreen() {
 
   const netFinalAmount = round2(Math.max(0, totals.grandTotal - exchangeTotal));
   const netBalanceDue = round2(Math.max(0, netFinalAmount - totalReceived));
-  const splitMismatch = round2(netFinalAmount - totalReceived);
+  const splitMismatch = round2(netFinalAmount - totalReceived - creditAmount);
 
   const vaAmount = totals.vaBreakdown[VA_CHARGE] ?? 0;
   const vaRate = totals.vaRates[VA_CHARGE];
@@ -667,31 +685,6 @@ export default function NewInvoiceScreen() {
   // Stage transitions
   // =========================================================
 
-  // const handleGenerateEstimate = () => {
-  //   if (items.length === 0) {
-  //     setErrorTitle('No items');
-  //     setErrorMessage('Add at least one item before generating an estimate.');
-  //     return;
-  //   }
-
-  //   if (!customerName.trim() || !customerPhone.trim()) {
-  //     setErrorTitle('Missing details');
-  //     setErrorMessage('Customer name and phone number are mandatory.');
-  //     return;
-  //   }
-
-  //   if (!remark.trim()) {
-  //     setErrorTitle('Missing details');
-  //     setErrorMessage('Remark is mandatory.');
-  //     return;
-  //   }
-
-  //   setStage('estimate');
-
-  //   if (!paymentSplitsTouched) {
-  //     setPaymentSplits([{ id: genRowId(), mode: '', amountText: String(netFinalAmount) }]);
-  //   }
-  // };
   const handleGenerateEstimate = () => {
     if (items.length === 0) {
       setErrorTitle('No items');
@@ -712,11 +705,115 @@ export default function NewInvoiceScreen() {
 
 
   // =========================================================
-  // Print estimate
+  // Estimate: build once, use for both Print and WhatsApp share
   // =========================================================
 
   const metalNameFor = (id: string | null) => metals.find((m) => m.id === id)?.name ?? 'Unknown';
   const purityNameFor = (id: string | null) => purities.find((p) => p.id === id)?.name ?? 'Unknown';
+
+  const prepareEstimate = async () => {
+    const [companySettings, invoiceSettings] = await Promise.all([
+      getCompanySettings(),
+      getInvoiceSettings().catch(() => null),
+    ]);
+    const shop = companyToShopDetails(companySettings);
+    const display = invoiceSettings
+      ? {
+        show_logo: invoiceSettings.show_logo,
+        show_huid: invoiceSettings.show_huid,
+        show_weight: invoiceSettings.show_weight,
+        show_making_charges: invoiceSettings.show_making_charges,
+        show_value_added_charges: invoiceSettings.show_value_added_charges,
+        invoice_footer: invoiceSettings.invoice_footer,
+        terms_and_conditions: invoiceSettings.terms_and_conditions,
+      }
+      : {};
+
+    const charges: InvoiceCharge[] = [
+      totals.makingTotal > 0 && { id: 'est-making', charge_name: 'Making Charges', amount: totals.makingTotal },
+      totals.vaTotal > 0 && { id: 'est-va', charge_name: 'Value Added Charges', amount: totals.vaTotal },
+      totals.cgstTotal > 0 && { id: 'est-cgst', charge_name: 'CGST', amount: totals.cgstTotal },
+      totals.sgstTotal > 0 && { id: 'est-sgst', charge_name: 'SGST', amount: totals.sgstTotal },
+      totals.igstTotal > 0 && { id: 'est-igst', charge_name: 'IGST', amount: totals.igstTotal },
+    ].filter(Boolean) as InvoiceCharge[];
+
+    const detailItems: InvoiceItemDetail[] = billItems.map((item) => ({
+      id: item.id,
+      product_id: item.product_id,
+      product_name: item.name,
+      product_code: item.product_code ?? 'MANUAL',
+      metal_name: metalNameFor(item.metal_id),
+      purity_name: purityNameFor(item.purity_id),
+      quantity: item.quantity,
+      gross_weight: item.gross_weight,
+      stone_weight: item.stone_weight,
+      net_weight: item.net_weight,
+      metal_rate: item.metal_rate,
+      metal_value: item.metal_value,
+      making_charge_type: item.making_charge_type,
+      making_charge_value: item.making_charge_value,
+      making_charge_amount: item.making_charge_amount,
+      value_added_total: item.value_added_charges.reduce((s, c) => s + c.amount, 0),
+      discount: item.item_discount,
+      tax_amount: item.tax_amount,
+      total: item.total_amount,
+      value_added_charges: item.value_added_charges.map((c) => ({
+        id: c.id,
+        charge_name: c.name,
+        calculation_type: c.calculation_type,
+        value: c.value,
+        amount: c.amount,
+      })),
+    }));
+
+    const detailExchangeItems: ExchangeItemDetail[] = exchangeItems.map((e) => ({
+      ...e,
+      invoice_id: 'estimate',
+      created_at: new Date().toISOString(),
+    }));
+
+    const splitsForPrint: PaymentSplitEntry[] = paymentSplits
+      .filter((row) => (parseFloat(row.amountText) || 0) > 0 && row.mode)
+      .map((row) => ({
+        id: row.id,
+        mode: row.mode as PaymentMode,
+        amount: round2(parseFloat(row.amountText) || 0),
+      }));
+
+    const estimateInvoice: InvoiceDetail = {
+      id: 'estimate',
+      invoice_number: 'ESTIMATE',
+      invoice_date: new Date().toISOString(),
+      customer_id: '',
+      customer_name: customerName.trim() || 'Walk-in Customer',
+      customer_mobile: customerPhone.trim() || null,
+      customer_address: null,
+      customer_gstin: null,
+      subtotal: totals.taxableTotal,
+      invoice_discount: totals.discount,
+      tax_amount: totals.taxTotal,
+      grand_total: totals.grandTotal,
+      paid_amount: stage === 'estimate' ? totalReceived : 0,
+      balance_amount: stage === 'estimate' ? netBalanceDue : netFinalAmount,
+      payment_status: 'unpaid',
+      payment_mode: splitsForPrint.length > 1 ? 'split' : (splitsForPrint[0]?.mode ?? 'cash'),
+      status: 'unpaid',
+      items: detailItems,
+      charges,
+      created_at: new Date().toISOString(),
+      exchange_total: exchangeTotal,
+      exchange_items: detailExchangeItems,
+      payment_splits: splitsForPrint,
+      remark: remark.trim() || null,
+    };
+
+    return { estimateInvoice, shop, display };
+  };
+
+
+  // =========================================================
+  // Print estimate (thermal printer)
+  // =========================================================
 
   const handlePrintEstimate = async () => {
     if (items.length === 0) {
@@ -728,103 +825,7 @@ export default function NewInvoiceScreen() {
     setPrintingEstimate(true);
 
     try {
-      const [companySettings, invoiceSettings] = await Promise.all([
-        getCompanySettings(),
-        getInvoiceSettings().catch(() => null),
-      ]);
-      const shop = companyToShopDetails(companySettings);
-      const display = invoiceSettings
-        ? {
-          show_logo: invoiceSettings.show_logo,
-          show_huid: invoiceSettings.show_huid,
-          show_weight: invoiceSettings.show_weight,
-          show_making_charges: invoiceSettings.show_making_charges,
-          show_value_added_charges: invoiceSettings.show_value_added_charges,
-          invoice_footer: invoiceSettings.invoice_footer,
-          terms_and_conditions: invoiceSettings.terms_and_conditions,
-        }
-        : {};
-
-      const charges: InvoiceCharge[] = [
-        totals.makingTotal > 0 && { id: 'est-making', charge_name: 'Making Charges', amount: totals.makingTotal },
-        totals.vaTotal > 0 && { id: 'est-va', charge_name: 'Value Added Charges', amount: totals.vaTotal },
-        totals.cgstTotal > 0 && { id: 'est-cgst', charge_name: 'CGST', amount: totals.cgstTotal },
-        totals.sgstTotal > 0 && { id: 'est-sgst', charge_name: 'SGST', amount: totals.sgstTotal },
-        totals.igstTotal > 0 && { id: 'est-igst', charge_name: 'IGST', amount: totals.igstTotal },
-      ].filter(Boolean) as InvoiceCharge[];
-
-      const detailItems: InvoiceItemDetail[] = billItems.map((item) => ({
-        id: item.id,
-        product_id: item.product_id,
-        product_name: item.name,
-        product_code: item.product_code ?? 'MANUAL',
-        metal_name: metalNameFor(item.metal_id),
-        purity_name: purityNameFor(item.purity_id),
-        quantity: item.quantity,
-        gross_weight: item.gross_weight,
-        stone_weight: item.stone_weight,
-        net_weight: item.net_weight,
-        metal_rate: item.metal_rate,
-        metal_value: item.metal_value,
-        making_charge_type: item.making_charge_type,
-        making_charge_value: item.making_charge_value,
-        making_charge_amount: item.making_charge_amount,
-        value_added_total: item.value_added_charges.reduce((s, c) => s + c.amount, 0),
-        discount: item.item_discount,
-        tax_amount: item.tax_amount,
-        total: item.total_amount,
-        value_added_charges: item.value_added_charges.map((c) => ({
-          id: c.id,
-          charge_name: c.name,
-          calculation_type: c.calculation_type,
-          value: c.value,
-          amount: c.amount,
-        })),
-      }));
-
-      const detailExchangeItems: ExchangeItemDetail[] = exchangeItems.map((e) => ({
-        ...e,
-        invoice_id: 'estimate',
-        created_at: new Date().toISOString(),
-      }));
-
-      const splitsForPrint: PaymentSplitEntry[] = paymentSplits
-        .filter((row) => (parseFloat(row.amountText) || 0) > 0 && row.mode)
-        .map((row) => ({
-          id: row.id,
-          mode: row.mode as PaymentMode,
-          amount: round2(parseFloat(row.amountText) || 0),
-        }));
-
-      const estimateInvoice: InvoiceDetail = {
-        id: 'estimate',
-        invoice_number: 'ESTIMATE',
-        invoice_date: new Date().toISOString(),
-        customer_id: '',
-        customer_name: customerName.trim() || 'Walk-in Customer',
-        customer_mobile: customerPhone.trim() || null,
-        customer_address: null,
-        customer_gstin: null,
-        subtotal: totals.taxableTotal,
-        invoice_discount: totals.discount,
-        tax_amount: totals.taxTotal,
-        grand_total: totals.grandTotal,
-        paid_amount: stage === 'estimate' ? totalReceived : 0,
-        balance_amount: stage === 'estimate' ? netBalanceDue : netFinalAmount,
-        payment_status: 'unpaid',
-        payment_mode: splitsForPrint.length > 1 ? 'split' : (splitsForPrint[0]?.mode ?? 'cash'),
-        status: 'unpaid',
-        items: detailItems,
-        charges,
-        created_at: new Date().toISOString(),
-        exchange_total: exchangeTotal,
-        exchange_items: detailExchangeItems,
-        payment_splits: splitsForPrint,
-        remark: remark.trim() || null,
-      };
-
-      const html = buildThermalReceiptHtml(estimateInvoice, shop, display, { showHeaderFooter: true });
-      void html; // kept only so buildThermalReceiptHtml's shape stays validated; not used for direct print
+      const { estimateInvoice, shop, display } = await prepareEstimate();
 
       const printer = await getConnectedPrinter();
       try {
@@ -832,12 +833,161 @@ export default function NewInvoiceScreen() {
       } finally {
         await disconnectActive();
       }
-
     } catch (e: any) {
       setErrorTitle('Could not print estimate');
       setErrorMessage(e?.message ?? 'Unknown error');
     } finally {
       setPrintingEstimate(false);
+    }
+  };
+
+
+  // =========================================================
+  // Share estimate on WhatsApp (thermal-style PDF)
+  // =========================================================
+
+  // Same rows as the on-screen Receipt Preview, as plain lines for the slip.
+  const buildEstimateSlipLines = (): SlipLine[] => {
+    const L: SlipLine[] = [];
+    const row = (label: string, value: string, bold = false) =>
+      L.push({ type: 'row', label, value, bold });
+    const full = () => L.push({ type: 'divider' });
+    const thin = () => L.push({ type: 'divider', thin: true });
+
+    billItems.forEach((item, idx) => {
+      const gross = item.gross_weight * item.quantity;
+      const less = (item.stone_weight + item.other_weight) * item.quantity;
+      const net = item.net_weight * item.quantity;
+
+      const vaLine = item.value_added_charges.find((c) => c.name === VA_CHARGE);
+      const stoneLine = item.value_added_charges.find((c) => c.name === STONE_CHARGE);
+      const diamondLines = item.value_added_charges.filter(
+        (c) => isDiamondCharge(c.name) && c.amount > 0
+      );
+      const otherLines = item.value_added_charges.filter(
+        (c) => c.name !== VA_CHARGE && c.name !== STONE_CHARGE && !isDiamondCharge(c.name)
+      );
+
+      const cgst = item.cgst_percentage > 0 ? round2((item.taxable_amount * item.cgst_percentage) / 100) : 0;
+      const sgst = item.sgst_percentage > 0 ? round2((item.taxable_amount * item.sgst_percentage) / 100) : 0;
+      const igst =
+        item.cgst_percentage === 0 && item.sgst_percentage === 0 && item.igst_percentage > 0
+          ? round2((item.taxable_amount * item.igst_percentage) / 100)
+          : 0;
+      const hasTax = cgst > 0 || sgst > 0 || igst > 0 || item.tax_amount > 0;
+
+      if (idx > 0) full();
+      L.push({
+        type: 'heading',
+        text: `ITEM ${idx + 1}: ${item.name}${item.quantity > 1 ? ` x${item.quantity}` : ''}`,
+      });
+      thin();
+
+      row('Weight', `${gross.toFixed(3)} gms`);
+      row('Stone/Less(wt)', less.toFixed(3));
+      row('Nett Weight', net.toFixed(3));
+      row('Rate/gm', plain(item.metal_rate));
+      if (vaLine) {
+        row(
+          'V.ADNV',
+          vaLine.calculation_type === 'percentage'
+            ? `${vaLine.value.toFixed(1)} %`
+            : plain(vaLine.amount * item.quantity)
+        );
+      }
+      thin();
+
+      if (item.making_charge_amount > 0) row('MC', plain(item.making_charge_amount));
+      if (item.stone_name) row('Stone Name', String(item.stone_name));
+      if (stoneLine) row('Stone Charges', plain(stoneLine.amount * item.quantity));
+      diamondLines.forEach((c) => {
+        row('Diamond Wt', `${diamondWeightText(c.name)} ct`);
+        row('Diamond Amt', plain(c.amount * item.quantity));
+      });
+      otherLines.forEach((c) => row(c.name, plain(c.amount * item.quantity)));
+      thin();
+
+      if (hasTax) {
+        row('Total', money(item.taxable_amount), true);
+        thin();
+      }
+      if (cgst > 0) row(withRate('CGST', item.cgst_percentage), money(cgst));
+      if (sgst > 0) row(withRate('SGST', item.sgst_percentage), money(sgst));
+      if (igst > 0) row(withRate('GST', item.igst_percentage), money(igst));
+      if (cgst === 0 && sgst === 0 && igst === 0 && item.tax_amount > 0) {
+        row('Tax', money(item.tax_amount));
+      }
+      row('Gross', money(item.total_amount), true);
+    });
+
+    if (exchangeItems.length > 0) {
+      full();
+      exchangeItems.forEach((e, idx) => {
+        L.push({ type: 'heading', text: `OLD ITEM ${idx + 1}: ${e.description}` });
+        thin();
+        row('Weight', e.gross_weight.toFixed(3));
+        if (e.stone_weight > 0) {
+          row('Dust/Stone', e.stone_weight.toFixed(3));
+          row('Gross Weight', displayNetWeight(e).toFixed(3));
+        }
+        row('Old Percentage', `* ${e.old_percent.toFixed(2)}%`);
+        row('Old Rate/Gm', `* ${plain(e.rate_per_gram)}`);
+        thin();
+        row('Gross', money(e.amount), true);
+        if (idx < exchangeItems.length - 1) thin();
+      });
+      thin();
+      row('OLD TOTAL', money(exchangeTotal), true);
+    }
+
+    full();
+    if (totals.discount > 0) {
+      row('Discount', `-${money(totals.discount)}`, true);
+      full();
+    }
+    row('Nett RS', money(netFinalAmount), true);
+
+    // Only when the payment has actually been entered
+    if (stage === 'estimate' && totalReceived > 0) {
+      full();
+      row('FINAL AMOUNT', money(totalReceived), true);
+    }
+
+    return L;
+  };
+
+  const handleShareEstimate = async () => {
+    if (items.length === 0) {
+      setErrorTitle('No items');
+      setErrorMessage('Add at least one item before sharing an estimate.');
+      return;
+    }
+
+    setSharingEstimate(true);
+
+    try {
+      const company = await getCompanySettings();
+      const shop = companyToShopDetails(company);
+
+      // "ROUGH ESTIMATE" slip: shop name only in the header, no footer.
+      const { html, heightPt } = buildEstimateSlip(buildEstimateSlipLines(), {
+        shopName: (shop as any)?.name ?? null,
+        title: 'ROUGH ESTIMATE',
+      });
+
+      await shareEstimateOnWhatsApp({
+        html,
+        customerName: customerName.trim() || null,
+        customerPhone: customerPhone.trim() || null,
+        shopName: (shop as any)?.name ?? null,
+        amount: netFinalAmount,
+        heightPt,
+      });
+    } catch (e: any) {
+      setErrorTitle('Could not share estimate');
+      setErrorMessage(e?.message ?? 'Unknown error');
+    } finally {
+      setSharingEstimate(false);
     }
   };
 
@@ -862,11 +1012,17 @@ export default function NewInvoiceScreen() {
       return;
     }
 
-    // if (!customerName.trim() || !customerPhone.trim() || !remark.trim()) {
-    //   setErrorTitle('Customer details needed');
-    //   setErrorMessage('Please scroll up and enter the customer name, phone number and remark before saving the final invoice.');
-    //   return;
-    // }
+    if (round2(totalReceived + creditAmount - netFinalAmount) > 0.01) {
+      setErrorTitle('Overpayment');
+      setErrorMessage('Received + credit is more than the bill amount.');
+      return;
+    }
+
+    if (creditAmount > 0 && (!customerName.trim() || customerPhone.trim().length < 10)) {
+      setErrorTitle('Customer required for credit');
+      setErrorMessage('Enter the customer name and a valid phone number for a credit sale.');
+      return;
+    }
 
     if (!remark.trim()) {
       setErrorTitle('Missing details');
@@ -901,6 +1057,7 @@ export default function NewInvoiceScreen() {
           setErrorMessage(`This estimate was already billed as ${latest.billedInvoiceNumber} on another device.`);
           return;
         }
+
       }
       const invoice = await createInvoice({
         customerId: resolvedCustomerId,
@@ -924,7 +1081,7 @@ export default function NewInvoiceScreen() {
         exchangeItems,
         exchangeTotal,
         remark: remark.trim() || null,
-        
+
       });
 
       // Keep the estimate for its 4 hours, tagged as billed (read-only).
@@ -945,8 +1102,9 @@ export default function NewInvoiceScreen() {
       try {
         await notify(
           'invoice',
-          'New invoice billed',
-          `Invoice for ${customerName.trim()} — ₹${totals.grandTotal.toLocaleString('en-IN')}`
+          creditAmount > 0 ? 'Credit invoice billed' : 'New invoice billed',
+          `Invoice for ${customerName.trim() || 'Walk-in'} — ₹${totals.grandTotal.toLocaleString('en-IN')}` +
+          (netBalanceDue > 0 ? ` (credit ₹${netBalanceDue.toLocaleString('en-IN')})` : '')
         );
       } catch (notifyError) {
         console.warn('Failed to send invoice notification', notifyError);
@@ -983,6 +1141,23 @@ export default function NewInvoiceScreen() {
   }
 
 
+  // Reusable "Share Estimate on WhatsApp" button
+  const shareEstimateButton = (
+    <Pressable
+      style={[
+        styles.printEstimateBtn,
+        (sharingEstimate || items.length === 0) && styles.footerBtnDisabled,
+      ]}
+      onPress={handleShareEstimate}
+      disabled={sharingEstimate || items.length === 0}
+    >
+      <Text style={styles.printEstimateBtnText}>
+        {sharingEstimate ? 'Preparing…' : 'Share Estimate on WhatsApp'}
+      </Text>
+    </Pressable>
+  );
+
+
   // =========================================================
   // Screen
   // =========================================================
@@ -1001,9 +1176,6 @@ export default function NewInvoiceScreen() {
             <Text style={styles.billedBannerTitle}>
               ✓ Already billed{billedNumber ? ` · ${billedNumber}` : ''}
             </Text>
-            {/* <Text style={styles.billedBannerText}>
-              This estimate is locked. It can only be printed, not edited or billed again.
-            </Text> */}
           </View>
         )}
 
@@ -1370,7 +1542,7 @@ export default function NewInvoiceScreen() {
                   </Text>
                 ) : null}
 
-                {!readOnly && paymentSplits.length > 1 && Math.abs(splitMismatch) > 0.01 && (
+                {!readOnly && (paymentSplits.length > 1 || creditAmount > 0) && Math.abs(splitMismatch) > 0.01 && (
                   <Text style={styles.warningText}>
                     {splitMismatch > 0
                       ? `⚠ Splits are short by ₹${splitMismatch.toLocaleString('en-IN')} of the total due.`
@@ -1380,6 +1552,7 @@ export default function NewInvoiceScreen() {
 
                 <View style={{ marginTop: spacing.sm }}>
                   {paymentSplits.length > 1 && <Row label="Total Received" value={totalReceived} />}
+                  {creditAmount > 0 && <Row label="On Credit" value={creditAmount} bold />}
                   <Row label="Balance Due" value={netBalanceDue} bold={netBalanceDue > 0} />
                 </View>
               </View>
@@ -1389,48 +1562,65 @@ export default function NewInvoiceScreen() {
 
         {/* =================================================
             Bottom buttons
-            readOnly (billed)  -> Print Estimate only
-            building           -> Generate / Print / Hold
-            estimate           -> banner + discount + Hold
+            readOnly (billed)  -> Print Estimate + Share
+            building           -> Generate / Print / Share / Hold
+            estimate           -> banner + discount + Share + Hold
         ================================================= */}
 
         {readOnly ? (
-          <Pressable
-            style={[styles.estimateBtn, printingEstimate && styles.footerBtnDisabled]}
-            onPress={handlePrintEstimate}
-            disabled={printingEstimate}
-          >
-            <Text style={styles.estimateBtnText}>
-              {printingEstimate ? 'Preparing…' : 'Print Estimate'}
-            </Text>
-          </Pressable>
-        ) : stage === 'building' ? (
           <>
-            <Pressable style={styles.estimateBtn} onPress={handleGenerateEstimate}>
-              <Text style={styles.estimateBtnText}>Generate Estimate</Text>
-            </Pressable>
-
             <Pressable
-              style={[
-                styles.printEstimateBtn,
-                (printingEstimate || items.length === 0) && styles.footerBtnDisabled,
-              ]}
+              style={[styles.estimateBtn, printingEstimate && styles.footerBtnDisabled]}
               onPress={handlePrintEstimate}
-              disabled={printingEstimate || items.length === 0}
+              disabled={printingEstimate}
             >
-              <Text style={styles.printEstimateBtnText}>
+              <Text style={styles.estimateBtnText}>
                 {printingEstimate ? 'Preparing…' : 'Print Estimate'}
               </Text>
             </Pressable>
 
-            <Pressable
-              style={[styles.printEstimateBtn, items.length === 0 && styles.footerBtnDisabled]}
-              onPress={handleHoldEstimate}
-              disabled={items.length === 0}
-            >
-              <Text style={styles.printEstimateBtnText}>Hold Estimate (4 hrs)</Text>
-            </Pressable>
+            {shareEstimateButton}
           </>
+        ) : stage === 'building' ? (
+          <View style={styles.gridWrap}>
+            {/* Row 1: Generate | Print */}
+            <View style={styles.gridRow}>
+              <Pressable style={[styles.gridBtn, styles.gridBtnPrimary]} onPress={handleGenerateEstimate}>
+                <Text style={[styles.gridBtnText, styles.gridBtnTextPrimary]}>Generate</Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.gridBtn, (printingEstimate || items.length === 0) && styles.footerBtnDisabled]}
+                onPress={handlePrintEstimate}
+                disabled={printingEstimate || items.length === 0}
+              >
+                <Text style={styles.gridBtnText}>
+                  {printingEstimate ? 'Preparing…' : 'Print'}
+                </Text>
+              </Pressable>
+            </View>
+
+            {/* Row 2: Share | Hold */}
+            <View style={styles.gridRow}>
+              <Pressable
+                style={[styles.gridBtn, (sharingEstimate || items.length === 0) && styles.footerBtnDisabled]}
+                onPress={handleShareEstimate}
+                disabled={sharingEstimate || items.length === 0}
+              >
+                <Text style={styles.gridBtnText}>
+                  {sharingEstimate ? 'Preparing…' : 'Share'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.gridBtn, items.length === 0 && styles.footerBtnDisabled]}
+                onPress={handleHoldEstimate}
+                disabled={items.length === 0}
+              >
+                <Text style={styles.gridBtnText}>Hold</Text>
+              </Pressable>
+            </View>
+          </View>
         ) : (
           <>
             <View style={styles.estimateBanner}>
@@ -1447,6 +1637,8 @@ export default function NewInvoiceScreen() {
               value={discountAmount}
               onChangeText={setDiscountAmount}
             />
+
+            {shareEstimateButton}
 
             <Pressable
               style={[styles.printEstimateBtn, { marginTop: spacing.sm }]}
@@ -1621,4 +1813,21 @@ const styles = StyleSheet.create({
   checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
   checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
   gstLabel: { fontSize: 14, fontWeight: '600', color: colors.textPrimary },
+  gridWrap: { marginTop: spacing.xxl, gap: spacing.sm },
+  gridRow: { flexDirection: 'row', gap: spacing.sm },
+  gridBtn: {
+    flex: 1,
+    minHeight: 52,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    borderRadius: radius?.md ?? 10,
+  },
+  gridBtnPrimary: { backgroundColor: colors.primary },
+  gridBtnText: { color: colors.primary, fontWeight: '700', fontSize: 14, textAlign: 'center' },
+  gridBtnTextPrimary: { color: '#fff' },
 });

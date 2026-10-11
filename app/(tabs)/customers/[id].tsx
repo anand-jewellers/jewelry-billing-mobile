@@ -1,12 +1,34 @@
 // app\(tabs)\customers\[id].tsx
 
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, FlatList, ActivityIndicator, StyleSheet, TouchableOpacity, Pressable } from 'react-native';
+import {
+  View,
+  Text,
+  // FlatList,          // invoice history disabled - page is now a ScrollView
+  ScrollView,
+  ActivityIndicator,
+  StyleSheet,
+  // TouchableOpacity,  // only used by the invoice cards (disabled)
+  Pressable,
+} from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
-import { Phone, Mail, MapPin, ChevronRight, Plus, FileText, Gem } from 'lucide-react-native';
-import { Card, SummaryCard } from '../../../src/components/ui';
+import {
+  Phone,
+  Mail,
+  MapPin,
+  ChevronRight,
+  Plus,
+  // FileText,          // only used by the "No invoices yet" empty state (disabled)
+  Gem,
+} from 'lucide-react-native';
+import { Card /*, SummaryCard */ } from '../../../src/components/ui'; // SummaryCard only used by the invoice summary (disabled)
 import { colors, spacing } from '../../../src/theme';
-import { getCustomerById, getCustomerInvoices, CustomerListItem, CustomerInvoiceRow } from '../../../src/lib/api/customers';
+import {
+  getCustomerById,
+  // getCustomerInvoices,   // invoice history disabled
+  CustomerListItem,
+  // CustomerInvoiceRow,    // invoice history disabled
+} from '../../../src/lib/api/customers';
 import {
   listCustomerOrders,
   subscribeToCustomerOrders,
@@ -26,13 +48,14 @@ const ORDER_STATUS_COLOR: Record<OrderStatus, string> = {
   completed: '#16A34A',
 };
 
-const PAYMENT_COLOR: Record<string, string> = {
-  paid: '#16A34A',
-  partial: '#D97706',
-  unpaid: '#DC2626',
-};
+// Used by the invoice history cards (disabled)
+// const PAYMENT_COLOR: Record<string, string> = {
+//   paid: '#16A34A',
+//   partial: '#D97706',
+//   unpaid: '#DC2626',
+// };
 
-// Small tinted pill used for order + payment status
+// Small tinted pill used for order status
 function StatusPill({ label, color }: { label: string; color: string }) {
   return (
     <View style={[styles.pill, { backgroundColor: `${color}1A` }]}>
@@ -76,7 +99,7 @@ export default function CustomerDetailsScreen() {
   const { id, orderFailed } = useLocalSearchParams<{ id: string; orderFailed?: string }>();
   const router = useRouter();
   const [customer, setCustomer] = useState<CustomerListItem | null>(null);
-  const [invoices, setInvoices] = useState<CustomerInvoiceRow[]>([]);
+  // const [invoices, setInvoices] = useState<CustomerInvoiceRow[]>([]);   // invoice history disabled
   const [orders, setOrders] = useState<CustomerOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,10 +107,16 @@ export default function CustomerDetailsScreen() {
   const load = useCallback(() => {
     if (!id) return;
     setLoading(true);
-    Promise.all([getCustomerById(id), getCustomerInvoices(id), listCustomerOrders(id)])
-      .then(([c, inv, ord]) => {
+    // Invoices are no longer fetched on this screen.
+    // Promise.all([getCustomerById(id), getCustomerInvoices(id), listCustomerOrders(id)])
+    //   .then(([c, inv, ord]) => {
+    //     setCustomer(c);
+    //     setInvoices(inv);
+    //     setOrders(ord);
+    //   })
+    Promise.all([getCustomerById(id), listCustomerOrders(id)])
+      .then(([c, ord]) => {
         setCustomer(c);
-        setInvoices(inv);
         setOrders(ord);
       })
       .catch(() => setError('Could not load customer details.'))
@@ -125,142 +154,140 @@ export default function CustomerDetailsScreen() {
     );
   }
 
-  const totalSpent = invoices.reduce((s, i) => s + i.grand_total, 0);
+  // const totalSpent = invoices.reduce((s, i) => s + i.grand_total, 0);   // invoice summary disabled
   const initial = (customer.name?.trim()?.[0] ?? '?').toUpperCase();
 
   return (
     <View style={styles.screen}>
-      <FlatList
-        data={invoices}
-        keyExtractor={(i) => i.id}
-        ListHeaderComponent={
-          <>
-            {/* ---------------- Customer card ---------------- */}
-            <Card style={styles.customerCard}>
-              <View style={styles.customerTop}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{initial}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.name} numberOfLines={1}>{customer.name}</Text>
-                  {customer.gstin ? <Text style={styles.gstin}>GSTIN: {customer.gstin}</Text> : null}
-                </View>
-              </View>
-
-              {(customer.phone || customer.email || customer.address) && <View style={styles.hairline} />}
-
-              {customer.phone ? (
-                <View style={styles.detailRow}>
-                  <Phone size={15} color={colors.textMuted} />
-                  <Text style={styles.detail}>{customer.phone}</Text>
-                </View>
-              ) : null}
-              {customer.email ? (
-                <View style={styles.detailRow}>
-                  <Mail size={15} color={colors.textMuted} />
-                  <Text style={styles.detail}>{customer.email}</Text>
-                </View>
-              ) : null}
-              {customer.address ? (
-                <View style={styles.detailRow}>
-                  <MapPin size={15} color={colors.textMuted} />
-                  <Text style={styles.detail}>{customer.address}</Text>
-                </View>
-              ) : null}
-            </Card>
-
-            {/* ---------------- Summary ---------------- */}
-            <View style={styles.summaryRow}>
-              <View style={{ flex: 1 }}>
-                <SummaryCard label="Total Invoices" value={String(invoices.length)} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <SummaryCard label="Total Spent" value={`₹${totalSpent.toLocaleString('en-IN')}`} tone="primary" />
-              </View>
+      <ScrollView contentContainerStyle={{ paddingBottom: spacing.xxl }}>
+        {/* ---------------- Customer card ---------------- */}
+        <Card style={styles.customerCard}>
+          <View style={styles.customerTop}>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{initial}</Text>
             </View>
-
-            {/* ---------------- Jewel orders ---------------- */}
-            <SectionHeader
-              title="Jewel Orders"
-              count={orders.length}
-              actionLabel="New Order"
-              onAction={() => router.push(`/customers/orders/new?customerId=${id}`)}
-            />
-
-            {orderFailed === '1' && (
-              <View style={styles.warningBox}>
-                <Text style={styles.warningText}>
-                  Customer saved, but the jewel order could not be created. Tap "New Order" to try again.
-                </Text>
-              </View>
-            )}
-
-            <Card padded={false} style={styles.listCard}>
-              {orders.length === 0 ? (
-                <View style={styles.emptyState}>
-                  <Gem size={22} color={colors.textMuted} />
-                  <Text style={styles.emptyText}>No jewel orders yet</Text>
-                </View>
-              ) : (
-                orders.map((o, index) => (
-                  <View key={o.id}>
-                    <Pressable
-                      style={({ pressed }) => [styles.orderRow, pressed && styles.rowPressed]}
-                      onPress={() => router.push(`/customers/orders/${o.id}`)}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.rowTitle} numberOfLines={1}>
-                          {o.category} · {o.metal} · {o.purity}
-                        </Text>
-                        <Text style={styles.rowSub} numberOfLines={1}>
-                          {o.order_number} · {o.weight_min}g – {o.weight_max}g
-                        </Text>
-                        {o.stone_name ? (
-                          <Text style={styles.rowSub} numberOfLines={1}>
-                            Stone: {o.stone_name}
-                          </Text>
-                        ) : null}
-                      </View>
-                      <StatusPill label={ORDER_STATUS_LABEL[o.status]} color={ORDER_STATUS_COLOR[o.status]} />
-                      <ChevronRight size={18} color={colors.textMuted} style={{ marginLeft: 6 }} />
-                    </Pressable>
-                    {index < orders.length - 1 && <View style={styles.separator} />}
-                  </View>
-                ))
-              )}
-            </Card>
-
-            {/* ---------------- Invoice history header ---------------- */}
-            <SectionHeader title="Invoice History" count={invoices.length} />
-          </>
-        }
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.invoiceCard}
-            activeOpacity={0.7}
-            onPress={() => router.push(`/invoices/${item.id}`)}
-          >
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>{item.invoice_number}</Text>
-              <Text style={styles.rowSub}>{item.invoice_date}</Text>
+              <Text style={styles.name} numberOfLines={1}>{customer.name}</Text>
+              {customer.gstin ? <Text style={styles.gstin}>GSTIN: {customer.gstin}</Text> : null}
             </View>
-            <View style={{ alignItems: 'flex-end', gap: 6 }}>
-              <Text style={styles.invoiceTotal}>₹{item.grand_total.toLocaleString('en-IN')}</Text>
-              <StatusPill
-                label={item.payment_status.charAt(0).toUpperCase() + item.payment_status.slice(1)}
-                color={PAYMENT_COLOR[item.payment_status] ?? colors.textMuted}
-              />
+          </View>
+
+          {(customer.phone || customer.email || customer.address) && <View style={styles.hairline} />}
+
+          {customer.phone ? (
+            <View style={styles.detailRow}>
+              <Phone size={15} color={colors.textMuted} />
+              <Text style={styles.detail}>{customer.phone}</Text>
             </View>
-          </TouchableOpacity>
+          ) : null}
+          {customer.email ? (
+            <View style={styles.detailRow}>
+              <Mail size={15} color={colors.textMuted} />
+              <Text style={styles.detail}>{customer.email}</Text>
+            </View>
+          ) : null}
+          {customer.address ? (
+            <View style={styles.detailRow}>
+              <MapPin size={15} color={colors.textMuted} />
+              <Text style={styles.detail}>{customer.address}</Text>
+            </View>
+          ) : null}
+        </Card>
+
+        {/* Invoice summary (Total Invoices / Total Spent) - DISABLED
+        <View style={styles.summaryRow}>
+          <View style={{ flex: 1 }}>
+            <SummaryCard label="Total Invoices" value={String(invoices.length)} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <SummaryCard label="Total Spent" value={`₹${totalSpent.toLocaleString('en-IN')}`} tone="primary" />
+          </View>
+        </View>
+        */}
+
+        {/* ---------------- Jewel orders ---------------- */}
+        <SectionHeader
+          title="Jewel Orders"
+          count={orders.length}
+          actionLabel="New Order"
+          onAction={() => router.push(`/customers/orders/new?customerId=${id}`)}
+        />
+
+        {orderFailed === '1' && (
+          <View style={styles.warningBox}>
+            <Text style={styles.warningText}>
+              Customer saved, but the jewel order could not be created. Tap "New Order" to try again.
+            </Text>
+          </View>
         )}
-        ListEmptyComponent={
+
+        <Card padded={false} style={styles.listCard}>
+          {orders.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Gem size={22} color={colors.textMuted} />
+              <Text style={styles.emptyText}>No jewel orders yet</Text>
+            </View>
+          ) : (
+            orders.map((o, index) => (
+              <View key={o.id}>
+                <Pressable
+                  style={({ pressed }) => [styles.orderRow, pressed && styles.rowPressed]}
+                  onPress={() => router.push(`/customers/orders/${o.id}`)}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowTitle} numberOfLines={1}>
+                      {o.category} · {o.metal} · {o.purity}
+                    </Text>
+                    <Text style={styles.rowSub} numberOfLines={1}>
+                      {o.order_number} · {o.weight_min}g – {o.weight_max}g
+                    </Text>
+                    {o.stone_name ? (
+                      <Text style={styles.rowSub} numberOfLines={1}>
+                        Stone: {o.stone_name}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <StatusPill label={ORDER_STATUS_LABEL[o.status]} color={ORDER_STATUS_COLOR[o.status]} />
+                  <ChevronRight size={18} color={colors.textMuted} style={{ marginLeft: 6 }} />
+                </Pressable>
+                {index < orders.length - 1 && <View style={styles.separator} />}
+              </View>
+            ))
+          )}
+        </Card>
+
+        {/* Invoice History - DISABLED (previous invoices are no longer shown here)
+        <SectionHeader title="Invoice History" count={invoices.length} />
+
+        {invoices.length === 0 ? (
           <View style={[styles.emptyState, styles.emptyInvoices]}>
             <FileText size={22} color={colors.textMuted} />
             <Text style={styles.emptyText}>No invoices yet</Text>
           </View>
-        }
-        contentContainerStyle={{ paddingBottom: spacing.xxl }}
-      />
+        ) : (
+          invoices.map((item) => (
+            <TouchableOpacity
+              key={item.id}
+              style={styles.invoiceCard}
+              activeOpacity={0.7}
+              onPress={() => router.push(`/invoices/${item.id}`)}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle}>{item.invoice_number}</Text>
+                <Text style={styles.rowSub}>{item.invoice_date}</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                <Text style={styles.invoiceTotal}>₹{item.grand_total.toLocaleString('en-IN')}</Text>
+                <StatusPill
+                  label={item.payment_status.charAt(0).toUpperCase() + item.payment_status.slice(1)}
+                  color={PAYMENT_COLOR[item.payment_status] ?? colors.textMuted}
+                />
+              </View>
+            </TouchableOpacity>
+          ))
+        )}
+        */}
+      </ScrollView>
     </View>
   );
 }
@@ -288,7 +315,7 @@ const styles = StyleSheet.create({
   detailRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
   detail: { flex: 1, fontSize: 14, color: colors.textSecondary },
 
-  // Summary
+  // Summary (kept for when the invoice summary is turned back on)
   summaryRow: { flexDirection: 'row', gap: spacing.md, paddingHorizontal: spacing.lg, marginBottom: spacing.lg },
 
   // Section headers
@@ -349,7 +376,7 @@ const styles = StyleSheet.create({
   rowSub: { fontSize: 12, color: colors.textMuted, marginTop: 3 },
   separator: { height: 1, backgroundColor: colors.border },
 
-  // Invoice cards
+  // Invoice cards (kept for when invoice history is turned back on)
   invoiceCard: {
     flexDirection: 'row',
     alignItems: 'center',

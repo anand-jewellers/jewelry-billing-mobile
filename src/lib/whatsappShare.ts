@@ -1,6 +1,6 @@
 // src/lib/whatsappShare.ts
 
-import { Alert, AppState, Linking, Platform, ToastAndroid } from 'react-native';
+import { Alert, AppState, Image as RNImage, Linking, Platform, ToastAndroid } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as Print from 'expo-print';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -8,6 +8,7 @@ import type { CustomerOrder } from './api/customerOrders';
 import type { InvoiceDetail } from '../types/invoices';
 import { getCompanySettings } from './api/settings';
 import { formatDisplayDate } from './dateUtils';
+import { cacheDirectory, moveAsync } from 'expo-file-system/legacy';
 // import type { ShareableProduct } from '...'; // <- keep your existing import for ShareableProduct
 
 // react-native-share is a native module: it does not exist in Expo Go.
@@ -22,6 +23,15 @@ try {
 } catch {
   RNShare = null;
   RNSocial = null;
+}
+// react-native-image-marker is also a native module: load it lazily so Expo Go
+// still starts (photos are then sent without numbers).
+let MarkerMod: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  MarkerMod = require('react-native-image-marker');
+} catch {
+  MarkerMod = null;
 }
 
 export interface ShopShareInfo {
@@ -391,6 +401,137 @@ async function shareOneProduct(
   return 'shared';
 }
 
+function getImageSize(uri: string): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    RNImage.getSize(
+      uri,
+      (width, height) => resolve({ width, height }),
+      () => resolve(null)
+    );
+  });
+}
+
+// v2 may return a string path or an object; extract the file path from either.
+function extractMarkerPath(res: any): string {
+  if (!res) return '';
+  if (typeof res === 'string') return res;
+  const p = res.uri ?? res.path ?? res.filePath ?? res.url ?? res.destPath ?? '';
+  return typeof p === 'string' ? p : '';
+}
+
+type StampResult = { uri: string; ok: boolean; note?: string };
+
+// Stamps a big number (top-left) on a local image using react-native-image-marker v2.
+// Tries the possible `position` shapes until one works. If all fail, returns the
+// original photo plus the real error text.
+async function stampNumberOnImage(uri: string, n: number): Promise<StampResult> {
+  const Marker = MarkerMod?.default ?? MarkerMod;
+  if (!Marker?.markText) {
+    return {
+      uri,
+      ok: false,
+      note: `image-marker not loaded (${MarkerMod ? Object.keys(MarkerMod).join(',') : 'null'})`,
+    };
+  }
+
+  const size = await Promise.race([getImageSize(uri), sleep(3000).then(() => null)]);
+  const base = Math.min(size?.width ?? 1000, size?.height ?? 1000);
+  const fontSize = Math.max(48, Math.round(base * 0.16));
+  const pad = Math.round(fontSize * 0.3);
+  const margin = Math.round(fontSize * 0.35);
+  const text = `${n}`;
+
+  const bgTypes = MarkerMod?.TextBackgroundType ?? Marker?.TextBackgroundType;
+  const bgType = bgTypes?.stretchX ?? 'stretchX';
+  const fmt = (MarkerMod?.ImageFormat ?? Marker?.ImageFormat)?.jpg;
+  const PositionEnum = MarkerMod?.Position ?? Marker?.Position;
+
+  const withFile = uri.startsWith('file://') ? uri : `file://${uri}`;
+  const noFile = uri.replace(/^file:\/\//, '');
+
+  // Possible shapes of `position` in v2 (first one that the library accepts wins)
+  const positions: any[] = [
+    { X: margin, Y: margin },
+    ...(PositionEnum?.topLeft ? [{ position: PositionEnum.topLeft }] : []),
+    { position: 'topLeft' },
+  ];
+
+  const sources: any[] = [{ uri: withFile }, noFile, withFile];
+
+  const make = (src: any, position: any, withBg: boolean) => ({
+    backgroundImage: { src, scale: 1 },
+    watermarkTexts: [
+      {
+        text,
+        position,
+        style: {
+          color: '#DC2626',
+          fontSize,
+          bold: true,
+          shadowStyle: { dx: 2, dy: 2, radius: 4, color: '#FFFFFF' },
+        },
+      },
+    ],
+    quality: 90,
+    ...(fmt ? { saveFormat: fmt } : {}),
+  });
+
+  let out = '';
+  const errs: string[] = [];
+  outer: for (const withBg of [false]) {
+    for (const position of positions) {
+      for (const src of sources) {
+        try {
+          const res = await Marker.markText(make(src, position, withBg));
+          out = extractMarkerPath(res);
+          if (out) break outer;
+          errs.push(`unexpected result: ${JSON.stringify(res)?.slice(0, 140)}`);
+        } catch (e: any) {
+          errs.push(String(e?.message ?? e).slice(0, 140));
+        }
+      }
+    }
+  }
+
+  if (!out) {
+    const unique = Array.from(new Set(errs));
+    return {
+      uri,
+      ok: false,
+      note: `Stamp failed.\n${unique.slice(0, 3).join('\n')}`,
+    };
+  }
+
+  const stampedUri = out.startsWith('file://') ? out : `file://${out}`;
+  return { uri: stampedUri, ok: true };
+}
+
+
+// Set to false to share the plain photos exactly like before (no numbers).
+// Use this to check whether the numbering is what is breaking the photo share.
+const ENABLE_NUMBER_STAMP = true;
+
+// Shares files via react-native-share and returns the real error text if it fails.
+async function tryShareFiles(
+  files: string[],
+  caption: string
+): Promise<{ outcome: 'launched' | 'cancelled' | 'error'; error?: string }> {
+  let error = '';
+  const call = RNShare.open({ urls: files, type: 'image/*', message: caption, failOnCancel: false }).catch(
+    (e: any) => {
+      error = String(e?.message ?? e);
+      throw e;
+    }
+  );
+  const outcome = await launchShare(call);
+  return { outcome, error };
+}
+
+function debugToast(msg: string) {
+  console.warn('[share]', msg);
+  if (Platform.OS === 'android') ToastAndroid.show(msg.slice(0, 120), ToastAndroid.LONG);
+}
+
 // Sends ALL selected products in ONE WhatsApp send: every photo attached
 // together, plus one caption listing the products in the same order as the
 // photos (1., 2., 3.). One tap, one Send.
@@ -403,7 +544,13 @@ async function shareProductsTogether(
     list.map((p) => ({ ...p, imageUrl: null })), // no image URLs in the text
     shop
   );
-  const urls = list.map((p) => p.imageUrl).filter((u): u is string => !!u);
+
+  // Each photo keeps its product's position in the list, so the badge number
+  // always matches the caption (1., 2., 3.) even if some products have no photo.
+  const withImages = list
+    .map((p, index) => ({ url: p.imageUrl, number: index + 1 }))
+    .filter((x): x is { url: string; number: number } => !!x.url);
+  const urls = withImages.map((x) => x.url);
 
   // ---- Web: browser share sheet with all photos ----
   if (Platform.OS === 'web') {
@@ -412,17 +559,49 @@ async function shareProductsTogether(
     return;
   }
 
-  // ---- Expo Go (no native module) or no photos ----
-  if (!RNShare || !urls.length) {
+  if (!RNShare) {
+    debugToast('Photo share module not available in this build');
+    await openWhatsApp(caption, phone);
+    return;
+  }
+  if (!urls.length) {
+    debugToast('No product photo found (imageUrl is empty)');
     await openWhatsApp(caption, phone);
     return;
   }
 
-  const downloaded = await Promise.all(urls.map((u, i) => downloadToCache(u, i)));
-  const files = downloaded.filter((d): d is { uri: string; mime: string } => !!d).map((d) => d.uri);
-  if (!files.length) {
+  // 1) Download the originals (same as the old working code)
+  const downloaded = await Promise.all(withImages.map((x, i) => downloadToCache(x.url, i)));
+  const plainFiles = downloaded.filter((d): d is { uri: string; mime: string } => !!d).map((d) => d.uri);
+  if (!plainFiles.length) {
+    debugToast('Could not download the photos (check internet / image URL)');
     await openWhatsApp(caption, phone);
     return;
+  }
+
+  // 2) Numbered copies (each one falls back to its original if stamping fails)
+  let numberedFiles: string[] = [];
+  if (ENABLE_NUMBER_STAMP) {
+    const results = await Promise.race([
+      (async () => {
+        const out: StampResult[] = [];
+        for (let i = 0; i < downloaded.length; i++) {
+          const d = downloaded[i];
+          if (!d) continue;
+          out.push(await stampNumberOnImage(d.uri, withImages[i].number));
+        }
+        return out;
+      })(),
+      sleep(20000).then(() => null), // never let stamping block the share
+    ]);
+
+    if (results && results.length === plainFiles.length) {
+      numberedFiles = results.map((r) => r.uri);
+      const failed = results.find((r) => !r.ok);
+      if (failed) Alert.alert('Numbering failed', failed.note ?? 'unknown error');
+    } else {
+      debugToast('Numbering took too long, sending photos without numbers');
+    }
   }
 
   // WhatsApp often drops the caption when several photos are attached
@@ -431,10 +610,20 @@ async function shareProductsTogether(
     ToastAndroid.show('Details copied. If the caption is empty, long-press and paste.', ToastAndroid.LONG);
   }
 
-  const outcome = await launchShare(
-    RNShare.open({ urls: files, type: 'image/*', message: caption, failOnCancel: false })
-  );
-  if (outcome === 'error') await openWhatsApp(caption, phone);
+  // 3) Try numbered photos first (only if they really differ from the originals)
+  if (numberedFiles.length && numberedFiles.some((f, i) => f !== plainFiles[i])) {
+    const r = await tryShareFiles(numberedFiles, caption);
+    if (r.outcome === 'launched' || r.outcome === 'cancelled') return;
+    debugToast(`Numbered photos failed: ${r.error || 'unknown error'}`);
+  }
+
+  // 4) Plain photos (the original behaviour)
+  const r2 = await tryShareFiles(plainFiles, caption);
+  if (r2.outcome === 'launched' || r2.outcome === 'cancelled') return;
+
+  // 5) Last resort: details only, but now we show WHY
+  debugToast(`Photo share failed: ${r2.error || 'unknown error'}`);
+  await openWhatsApp(caption, phone);
 }
 
 /**
@@ -920,7 +1109,6 @@ export async function shareInvoiceOnWhatsApp(params: {
   }
 }
 
-
 // =========================================================
 // Discount broadcast: one customer at a time
 // =========================================================
@@ -961,4 +1149,98 @@ export async function shareDiscountToCustomer(params: {
   if (outcome === 'cancelled') return 'cancelled';
   if (outcome === 'error') await openWhatsApp(caption, phone);
   return 'shared';
+}
+
+
+
+// =========================================================
+// Estimate: thermal-style PDF + short note on WhatsApp
+// =========================================================
+
+export function buildEstimateShareMessage(
+  customerName: string | null,
+  shopName: string | null,
+  amount: number
+): string {
+  const name = customerName && customerName !== 'Walk-in Customer' ? customerName : 'there';
+  return [
+    `Hi ${name},`,
+    `Here is your estimate from *${shopName?.trim() || 'us'}*.`,
+    '',
+    `Estimated amount: ₹${Number(amount || 0).toLocaleString('en-IN')}`,
+    '',
+    'Thank you! 🙏',
+  ].join('\n');
+}
+
+/**
+ * Renders thermal receipt HTML to a narrow, tall PDF (looks like the paper slip).
+ * widthPt: 226 ≈ 80 mm paper, 164 ≈ 58 mm paper.
+ * Height cannot be measured by expo-print, so the caller passes an estimate.
+ */
+export async function createThermalPdfFile(
+  html: string,
+  fileBaseName: string,
+  opts: { widthPt?: number; heightPt: number }
+): Promise<string> {
+  const widthPt = opts.widthPt ?? 226;
+  const reset = '<style>@page{margin:0}html,body{margin:0;padding:0}</style>';
+  const fullHtml = html.includes('</head>') ? html.replace('</head>', `${reset}</head>`) : reset + html;
+
+  const { uri } = await Print.printToFileAsync({ html: fullHtml, width: widthPt, height: opts.heightPt });
+  const safe = fileBaseName.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const dest = `${FileSystem.cacheDirectory}${safe}.pdf`;
+  await FileSystem.deleteAsync(dest, { idempotent: true });
+  await FileSystem.moveAsync({ from: uri, to: dest });
+  return dest;
+}
+
+export async function shareEstimateOnWhatsApp(params: {
+  html: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  shopName: string | null;
+  amount: number;
+  heightPt: number;
+  widthPt?: number;
+}): Promise<void> {
+  const { html, customerName, customerPhone, shopName, amount, heightPt, widthPt } = params;
+
+  const message = buildEstimateShareMessage(customerName, shopName, amount);
+  const phone = normalizeWhatsAppPhone(customerPhone);
+
+  // ---- Web: A4 PDF through the browser share sheet ----
+  if (Platform.OS === 'web') {
+    await shareInvoiceOnWeb(() => createInvoicePdfBlobWeb(html), 'Estimate', message, phone);
+    return;
+  }
+
+  // ---- No native share module (Expo Go): text only ----
+  if (!RNShare) {
+    await openWhatsApp(message, phone);
+    return;
+  }
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  const pdfUri = await createThermalPdfFile(html, `Estimate_${stamp}`, { widthPt, heightPt });
+
+  await Clipboard.setStringAsync(message); // safety net if WhatsApp drops the caption
+  if (Platform.OS === 'android') {
+    ToastAndroid.show('Note copied. If the caption is empty, long-press and paste.', ToastAndroid.LONG);
+  }
+
+  const call =
+    Platform.OS === 'android' && RNShare.shareSingle && RNSocial?.Whatsapp
+      ? RNShare.shareSingle({
+          social: RNSocial.Whatsapp,
+          url: pdfUri,
+          type: 'application/pdf',
+          filename: 'Estimate',
+          message,
+          whatsAppNumber: phone ?? undefined,
+        })
+      : RNShare.open({ urls: [pdfUri], type: 'application/pdf', message, failOnCancel: false });
+
+  const outcome = await launchShare(call);
+  if (outcome === 'error') await openWhatsApp(message, phone); // last resort: text only
 }

@@ -6,6 +6,7 @@ import JsBarcode from 'jsbarcode';
 import { parseCarat, diamondChargeAmount } from './invoiceCalc';
 export interface LabelData {
   barcode: string;
+  productCode?: string | null;   // product_code, shown beside the category
   purity: string;
   huid?: string | null;
   category: string;
@@ -114,6 +115,7 @@ export function productToLabelData(p: any): LabelData | null {
 
   return {
     barcode: String(p.barcode),
+    productCode: p.product_code ?? null,
     purity: p.purities?.name ?? '',
     huid: p.huid ?? null,
     category: p.categories?.name ?? '',
@@ -180,9 +182,12 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
 
   // ---------- RIGHT BLOCK ----------
   const rows: Row[] = [];
-
-  const cat = String(l.category ?? '').trim().toUpperCase().slice(0, 24);
-  if (cat) rows.push({ left: cat });
+  const code2 = String(l.productCode ?? '').trim().toUpperCase();
+  // Keep the category short when a code sits beside it, so the font doesn't shrink
+  const cat = String(l.category ?? '').trim().toUpperCase().slice(0, code2 ? 10 : 24);
+  if (cat && code2) rows.push({ left: cat, right: code2 });
+  else if (cat) rows.push({ left: cat });
+  else if (code2) rows.push({ left: code2 });
 
   rows.push({ left: `GWT:${w3(l.grossWeight)}`, right: `NWT:${w3(l.netWeight)}` });
 

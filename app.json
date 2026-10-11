@@ -24,7 +24,8 @@
           "resizeMode": "cover",
           "backgroundColor": "#0B3D91"
         }
-      ]
+      ],
+      "react-native-image-marker"
     ],
     "newArchEnabled": false,
     "icon": "./assets/icon.png",
@@ -58,8 +59,12 @@
         "backgroundColor": "transparent"
       },
       "queries": [
-        { "package": "com.whatsapp" },
-        { "package": "com.whatsapp.w4b" }
+        {
+          "package": "com.whatsapp"
+        },
+        {
+          "package": "com.whatsapp.w4b"
+        }
       ]
     },
     "web": {

@@ -17,7 +17,7 @@ import { useFocusEffect, router } from 'expo-router';
 import { PageGuard } from '../../../src/components/PageGuard';
 import {
   Search,
-  Calendar,
+  // Calendar,            // date filter disabled - only today's invoices are shown
   X,
   CalendarDays,
   FileText,
@@ -29,10 +29,12 @@ import {
   Clock,
   Trash2,
 } from 'lucide-react-native';
-import { CalendarModal } from '../../../src/components/ui/DateFilter';
+// import { CalendarModal } from '../../../src/components/ui/DateFilter'; // date filter disabled
 import { colors, spacing } from '../../../src/theme';
+import { useStaff } from '../../../src/context/StaffContext';
 import {
   listInvoices,
+  deleteInvoices,
   type InvoiceListItem,
   type ListInvoicesResult,
 } from '../../../src/lib/api/invoices';
@@ -53,13 +55,25 @@ function money(n: number): string {
   return `₹${Number(n || 0).toLocaleString('en-IN')}`;
 }
 
-function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+// UTC based (kept for the date filter below, which is currently disabled)
+// function toISODate(d: Date): string {
+//   return d.toISOString().slice(0, 10);
+// }
+
+// Today's date in the DEVICE's local time zone (YYYY-MM-DD).
+// toISOString() is UTC, which would give "yesterday" between 12:00 AM and
+// 5:30 AM in India, so the local parts are used instead.
+function getTodayISO(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
-function shortDate(d: Date): string {
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-}
+// function shortDate(d: Date): string {
+//   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+// }
 
 function formatInvoiceDate(dateStr: string): string {
   if (!dateStr) return '—';
@@ -100,27 +114,39 @@ function getStatusBadgeStyle(status: string) {
 }
 
 export default function InvoiceListScreen() {
+  // Today's date. Refreshed whenever the screen gains focus, so if the app
+  // stays open past midnight the list rolls over to the new day.
+  const [todayISO, setTodayISO] = useState(getTodayISO());
+
   // Start from the cached first page (if any) so there's no spinner on revisit.
-  const initial = listCache.get('||' + '|' + 1);
+  // Key format must match cacheKey below: search | from | to | page
+  const initial = listCache.get(`|${todayISO}|${todayISO}|1`);
   const [invoices, setInvoices] = useState<InvoiceListItem[]>(initial?.rows ?? []);
   const [hasMore, setHasMore] = useState(initial?.hasMore ?? false);
   const [totalPages, setTotalPages] = useState(initial?.totalPages ?? 1);
   const [loading, setLoading] = useState(!initial);
   const [error, setError] = useState<string | null>(null);
 
+  // Admin + bulk delete (select mode)
+  const { currentStaff } = useStaff();
+  const isAdmin = currentStaff?.role === 'admin';
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
   // Search & Pagination
   const [searchText, setSearchText] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Date range filter states
-  const [rangeStart, setRangeStart] = useState<Date | null>(null);
-  const [rangeEnd, setRangeEnd] = useState<Date | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [tempStart, setTempStart] = useState<Date | undefined>(undefined);
-  const [tempEnd, setTempEnd] = useState<Date | undefined>(undefined);
+  // Date range filter states - DISABLED (only today's invoices are shown)
+  // const [rangeStart, setRangeStart] = useState<Date | null>(null);
+  // const [rangeEnd, setRangeEnd] = useState<Date | null>(null);
+  // const [pickerOpen, setPickerOpen] = useState(false);
+  // const [tempStart, setTempStart] = useState<Date | undefined>(undefined);
+  // const [tempEnd, setTempEnd] = useState<Date | undefined>(undefined);
 
-  // Held bills (4-hour temporary estimates stored on this device)
+  // Held bills (4-hour temporary estimates)
   const [heldList, setHeldList] = useState<HeldEstimate[]>([]);
   const [heldOpen, setHeldOpen] = useState(false);
 
@@ -136,9 +162,18 @@ export default function InvoiceListScreen() {
   // Ignore stale responses
   const reqId = useRef(0);
 
-  const fromISO = rangeStart ? toISODate(rangeStart) : '';
-  const toISO = rangeEnd ? toISODate(rangeEnd) : '';
+  // Always today -> today (replaces the date range filter)
+  const fromISO = todayISO;
+  const toISO = todayISO;
+  // const fromISO = rangeStart ? toISODate(rangeStart) : '';
+  // const toISO = rangeEnd ? toISODate(rangeEnd) : '';
   const cacheKey = `${debouncedSearch}|${fromISO}|${toISO}|${currentPage}`;
+
+  // Selection only makes sense for the page/filter currently on screen,
+  // so it resets whenever the page, search or date changes.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [cacheKey]);
 
   const fetchPage = useCallback(async () => {
     const id = ++reqId.current;
@@ -184,11 +219,13 @@ export default function InvoiceListScreen() {
 
   // Refresh when returning to this screen (e.g. after creating an invoice).
   // Cached rows show instantly, then the fresh copy replaces them.
+  // Also re-checks today's date so the list rolls over after midnight.
   const fetchRef = useRef(fetchPage);
   fetchRef.current = fetchPage;
   const firstFocus = useRef(true);
   useFocusEffect(
     useCallback(() => {
+      setTodayISO(getTodayISO()); // changes cacheKey (and refetches) only if the day changed
       if (firstFocus.current) {
         firstFocus.current = false;
         return;
@@ -197,7 +234,7 @@ export default function InvoiceListScreen() {
     }, [])
   );
 
-  // Held bills: refresh on focus + every minute (this also permanently
+  // Held bills: refresh on focus + every 30 seconds (this also permanently
   // deletes anything older than 4 hours).
   const refreshHeld = useCallback(async () => {
     try {
@@ -215,42 +252,47 @@ export default function InvoiceListScreen() {
     }, [refreshHeld])
   );
 
-  const openPicker = () => {
-    setTempStart(rangeStart ?? undefined);
-    setTempEnd(rangeEnd ?? undefined);
-    setPickerOpen(true);
-  };
+  // ---------------------------------------------------------
+  // Date range picker handlers - DISABLED (only today's invoices are shown)
+  // ---------------------------------------------------------
 
-  const handleDayPress = (day: Date) => {
-    if (!tempStart || (tempStart && tempEnd)) {
-      setTempStart(day);
-      setTempEnd(undefined);
-      return;
-    }
-    if (day.getTime() < tempStart.getTime()) {
-      setTempStart(day);
-      setTempEnd(undefined);
-      return;
-    }
-    setTempEnd(day);
-  };
+  // const openPicker = () => {
+  //   setTempStart(rangeStart ?? undefined);
+  //   setTempEnd(rangeEnd ?? undefined);
+  //   setPickerOpen(true);
+  // };
 
-  const applyRange = () => {
-    setRangeStart(tempStart ?? null);
-    setRangeEnd(tempEnd ?? tempStart ?? null);
-    setCurrentPage(1);
-    setPickerOpen(false);
-  };
+  // const handleDayPress = (day: Date) => {
+  //   if (!tempStart || (tempStart && tempEnd)) {
+  //     setTempStart(day);
+  //     setTempEnd(undefined);
+  //     return;
+  //   }
+  //   if (day.getTime() < tempStart.getTime()) {
+  //     setTempStart(day);
+  //     setTempEnd(undefined);
+  //     return;
+  //   }
+  //   setTempEnd(day);
+  // };
 
-  const clearRange = () => {
-    setRangeStart(null);
-    setRangeEnd(null);
-    setCurrentPage(1);
-    setPickerOpen(false);
-  };
+  // const applyRange = () => {
+  //   setRangeStart(tempStart ?? null);
+  //   setRangeEnd(tempEnd ?? tempStart ?? null);
+  //   setCurrentPage(1);
+  //   setPickerOpen(false);
+  // };
 
-  const hasRange = rangeStart !== null && rangeEnd !== null;
-  const hasFilters = debouncedSearch !== '' || hasRange;
+  // const clearRange = () => {
+  //   setRangeStart(null);
+  //   setRangeEnd(null);
+  //   setCurrentPage(1);
+  //   setPickerOpen(false);
+  // };
+
+  // const hasRange = rangeStart !== null && rangeEnd !== null;
+  // const hasFilters = debouncedSearch !== '' || hasRange;
+  const hasFilters = debouncedSearch !== '';
 
   const handlePrevPage = () => {
     if (currentPage > 1) setCurrentPage((p) => p - 1);
@@ -258,6 +300,67 @@ export default function InvoiceListScreen() {
 
   const handleNextPage = () => {
     if (hasMore) setCurrentPage((p) => p + 1);
+  };
+
+  // ---------------------------------------------------------
+  // Select mode / bulk delete (admin only)
+  // ---------------------------------------------------------
+
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allSelected = invoices.length > 0 && invoices.every((i) => selectedIds.has(i.id));
+
+  const toggleSelectAll = () => {
+    setSelectedIds(allSelected ? new Set() : new Set(invoices.map((i) => i.id)));
+  };
+
+  const handleDeleteSelected = () => {
+    if (!isAdmin || !currentStaff || selectedIds.size === 0) return;
+    const ids = Array.from(selectedIds);
+
+    Alert.alert(
+      `Delete ${ids.length} invoice${ids.length > 1 ? 's' : ''}?`,
+      'The billed products will be marked available again and all details of ' +
+        'these invoices (items, charges, payments, exchange) will be permanently ' +
+        'removed. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setBulkDeleting(true);
+            try {
+              await deleteInvoices(ids, currentStaff.id);
+              listCache.clear(); // cached pages still contain the deleted invoices
+              const wholePageGone = ids.length >= invoices.length;
+              exitSelectMode();
+              if (wholePageGone && currentPage > 1) {
+                setCurrentPage((p) => p - 1); // triggers its own fetch
+              } else {
+                await fetchRef.current();
+              }
+            } catch (e: any) {
+              Alert.alert('Could not delete', e?.message ?? 'Unknown error');
+            } finally {
+              setBulkDeleting(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   // ---------------------------------------------------------
@@ -316,8 +419,7 @@ export default function InvoiceListScreen() {
   return (
     <PageGuard pageKey="invoices">
       <View style={styles.screen}>
-
-        {/* Filter Toolbar: Search Bar + Calendar Button */}
+        {/* Search Bar (the calendar button next to it is disabled below) */}
         <View style={styles.toolbar}>
           <View style={styles.searchBar}>
             <Search size={18} color="#94A3B8" />
@@ -335,15 +437,17 @@ export default function InvoiceListScreen() {
             )}
           </View>
 
+          {/* Date filter button - DISABLED
           <Pressable
             style={[styles.calendarButton, hasRange && styles.calendarButtonActive]}
             onPress={openPicker}
           >
             <Calendar size={20} color={hasRange ? colors.primary : '#334155'} />
           </Pressable>
+          */}
         </View>
 
-        {/* Active Filter Pill */}
+        {/* Active date filter pill - DISABLED
         {hasRange && (
           <View style={styles.activeFilterRow}>
             <View style={styles.activeFilterPill}>
@@ -356,8 +460,9 @@ export default function InvoiceListScreen() {
             </View>
           </View>
         )}
+        */}
 
-        {/* Held Bills button */}
+        {/* Held Bills + Delete buttons */}
         <View style={styles.heldBtnRow}>
           <Pressable
             style={styles.heldBtn}
@@ -374,7 +479,47 @@ export default function InvoiceListScreen() {
               </View>
             )}
           </Pressable>
+
+          {isAdmin && !selectMode && (
+            <Pressable style={styles.deleteModeBtn} onPress={() => setSelectMode(true)}>
+              <Trash2 size={16} color="#C5221F" />
+              <Text style={styles.deleteModeText}>Delete</Text>
+            </Pressable>
+          )}
         </View>
+
+        {/* Selection bar (admin, in delete mode) */}
+        {isAdmin && selectMode && (
+          <View style={styles.selectBar}>
+            <Pressable style={styles.selectAllBtn} onPress={toggleSelectAll}>
+              <View style={[styles.checkbox, allSelected && styles.checkboxOn]}>
+                {allSelected && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
+              </View>
+              <Text style={styles.selectAllText}>Select All</Text>
+            </Pressable>
+
+            <View style={{ flex: 1 }} />
+
+            <Pressable style={styles.cancelBtn} onPress={exitSelectMode} disabled={bulkDeleting}>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </Pressable>
+
+            <Pressable
+              style={[styles.confirmDeleteBtn, selectedIds.size === 0 && { opacity: 0.4 }]}
+              onPress={handleDeleteSelected}
+              disabled={selectedIds.size === 0 || bulkDeleting}
+            >
+              {bulkDeleting ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Trash2 size={15} color="#FFFFFF" />
+                  <Text style={styles.confirmDeleteText}>Delete ({selectedIds.size})</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        )}
 
         {/* Held Bills list */}
         <Modal
@@ -437,7 +582,7 @@ export default function InvoiceListScreen() {
           </View>
         </Modal>
 
-        {/* Date Range Modal */}
+        {/* Date Range Modal - DISABLED
         <CalendarModal
           visible={pickerOpen}
           onClose={() => setPickerOpen(false)}
@@ -449,15 +594,17 @@ export default function InvoiceListScreen() {
           title="Select date range"
           maximumDate={new Date()}
         />
+        */}
 
         {error && <Text style={styles.errorText}>{error}</Text>}
 
-        {/* Invoice List */}
+        {/* Invoice List (today only) */}
         {loading ? (
           <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
         ) : (
           <FlatList
             data={invoices}
+            extraData={{ selectMode, selectedIds }}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
@@ -466,12 +613,31 @@ export default function InvoiceListScreen() {
               const badgeTheme = getBadgeColors(item.invoice_number || item.id);
               const isWalkIn = item.customer_name?.toLowerCase().includes('walk-in');
               const statusTheme = getStatusBadgeStyle(item.payment_status);
+              const isSelected = selectedIds.has(item.id);
 
               return (
                 <Pressable
-                  style={styles.invoiceCard}
-                  onPress={() => router.push(`/invoices/${item.id}`)}
+                  style={[
+                    styles.invoiceCard,
+                    selectMode && isSelected && styles.invoiceCardSelected,
+                  ]}
+                  onPress={() =>
+                    selectMode ? toggleSelect(item.id) : router.push(`/invoices/${item.id}`)
+                  }
                 >
+                  {/* Checkbox (select mode only) */}
+                  {selectMode && (
+                    <View
+                      style={[
+                        styles.checkbox,
+                        { marginRight: 12 },
+                        isSelected && styles.checkboxOn,
+                      ]}
+                    >
+                      {isSelected && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
+                    </View>
+                  )}
+
                   {/* Left Badge Icon */}
                   <View style={[styles.iconBox, { backgroundColor: badgeTheme.bg }]}>
                     {isWalkIn ? (
@@ -519,7 +685,9 @@ export default function InvoiceListScreen() {
                     </View>
                   </View>
 
-                  <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
+                  {!selectMode && (
+                    <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
+                  )}
                 </Pressable>
               );
             }}
@@ -569,22 +737,21 @@ export default function InvoiceListScreen() {
             }
             ListEmptyComponent={
               <Text style={styles.emptyText}>
-                {hasFilters ? 'No invoices match your search.' : 'No invoices yet.'}
+                {hasFilters ? 'No invoices match your search.' : 'No invoices today.'}
               </Text>
             }
           />
         )}
 
-        {/* Floating "+ New Invoice" Button */}
-        <View style={styles.fabWrapper}>
-          <Pressable
-            style={styles.fabButton}
-            onPress={() => router.push('/invoices/new')}
-          >
-            <Plus size={24} color="#FFFFFF" strokeWidth={2.5} />
-          </Pressable>
-          <Text style={styles.fabLabel}>New Invoice</Text>
-        </View>
+        {/* Floating "+ New Invoice" Button (hidden while selecting) */}
+        {!selectMode && (
+          <View style={styles.fabWrapper}>
+            <Pressable style={styles.fabButton} onPress={() => router.push('/invoices/new')}>
+              <Plus size={24} color="#FFFFFF" strokeWidth={2.5} />
+            </Pressable>
+            <Text style={styles.fabLabel}>New Invoice</Text>
+          </View>
+        )}
       </View>
     </PageGuard>
   );
@@ -625,6 +792,7 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     padding: 0,
   },
+  // Date filter styles - kept for when the date filter is turned back on
   calendarButton: {
     width: 48,
     height: 48,
@@ -664,9 +832,11 @@ const styles = StyleSheet.create({
     color: '#0F172A',
   },
 
-  // Held bills
+  // Held bills + delete mode row
   heldBtnRow: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
     paddingHorizontal: spacing.lg,
     marginTop: 10,
   },
@@ -692,6 +862,60 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
   },
   heldBadgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+
+  // Delete mode (admin)
+  deleteModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FCE8E6',
+    borderWidth: 1,
+    borderColor: '#FAD2CF',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  deleteModeText: { color: '#C5221F', fontWeight: '700', fontSize: 14 },
+  selectBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: spacing.lg,
+    marginTop: 10,
+  },
+  selectAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  selectAllText: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxOn: { backgroundColor: '#C5221F', borderColor: '#C5221F' },
+  cancelBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+  },
+  cancelBtnText: { fontSize: 13, fontWeight: '600', color: '#0F172A' },
+  confirmDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 12,
+    backgroundColor: '#C5221F',
+  },
+  confirmDeleteText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.45)',
@@ -765,6 +989,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowRadius: 8,
     elevation: 1,
+  },
+  invoiceCardSelected: {
+    borderColor: '#C5221F',
+    backgroundColor: '#FFF5F5',
   },
   iconBox: {
     width: 34,

@@ -1,7 +1,8 @@
 // src/components/invoice/BarcodeScannerModal.tsx
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Modal, View, Text, TextInput, StyleSheet, Pressable } from 'react-native';
+import { Modal, View, Text, TextInput, StyleSheet, Pressable, Platform } from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, Zap, ZapOff } from 'lucide-react-native';
 import { colors, spacing } from '../../theme';
 
@@ -11,11 +12,16 @@ interface Props {
   onScanned: (data: string) => void;
 }
 
-const SCAN_COOLDOWN_MS = 2500;   // long enough that a dialog doesn't trigger a re-scan
-const CONFIRM_WINDOW_MS = 900;   // the same value must be read twice within this window
+const SCAN_COOLDOWN_MS = 2500;     // long enough that a dialog doesn't trigger a re-scan
+const CONFIRM_WINDOW_MS = 900;     // the same value must be read twice within this window
 const CAMERA_START_DELAY_MS = 250; // let the Modal finish animating before the camera starts
+const USB_KEY_GAP_MS = 100;        // scanners type much faster than a human; a longer gap restarts the buffer
+const USB_MIN_LENGTH = 3;          // ignore very short bursts
+const MANUAL_BAR_LIFT = 56;        // extra space above the bottom inset (increase for more margin)
 
 export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
+  const isWeb = Platform.OS === 'web';
+  const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
   const [torch, setTorch] = useState(false);
   const [manualCode, setManualCode] = useState('');
@@ -35,12 +41,13 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
   };
 
   const startCamera = useCallback(() => {
+    if (isWeb) return; // desktop web uses the USB scanner, not the camera
     clearStartTimer();
     startTimerRef.current = setTimeout(() => {
       setCameraKey((k) => k + 1); // brand-new camera session every time
       setCameraOn(true);
     }, CAMERA_START_DELAY_MS);
-  }, []);
+  }, [isWeb]);
 
   // Reset everything each time the scanner opens or closes
   useEffect(() => {
@@ -57,6 +64,45 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
     }
     return clearStartTimer;
   }, [visible]);
+
+  // ---- USB physical scanner (web desktop) ----
+  useEffect(() => {
+    if (!isWeb || !visible) return;
+
+    let buffer = '';
+    let lastKeyAt = 0;
+
+    const finish = (e: KeyboardEvent) => {
+      const code = buffer.trim();
+      buffer = '';
+      if (code.length < USB_MIN_LENGTH || lockRef.current) return;
+      e.preventDefault();
+      e.stopPropagation(); // stops the TextInput's own Enter handler -> no double scan
+      lockRef.current = true;
+      setManualCode('');
+      console.log('[USB scanner] code:', code);
+      onScanned(code);
+      setTimeout(() => { lockRef.current = false; }, SCAN_COOLDOWN_MS);
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const now = Date.now();
+      if (now - lastKeyAt > 150) buffer = ''; // long gap = human typing, restart
+      lastKeyAt = now;
+
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        finish(e);
+        return;
+      }
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        buffer += e.key;
+      }
+    };
+
+    // capture = true so we see the keys before the text box does
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [isWeb, visible, onScanned]);
 
   const handleScan = useCallback(
     (result: BarcodeScanningResult) => {
@@ -104,7 +150,8 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
 
   if (!visible) return null;
 
-  if (!permission) {
+  // Camera permission screens only apply on native
+  if (!isWeb && !permission) {
     return (
       <Modal visible animationType="fade">
         <View style={styles.permissionScreen}>
@@ -114,7 +161,7 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
     );
   }
 
-  if (!permission.granted) {
+  if (!isWeb && !permission?.granted) {
     return (
       <Modal visible animationType="fade">
         <View style={styles.permissionScreen}>
@@ -139,7 +186,7 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
       onRequestClose={onClose}
     >
       <View style={styles.container}>
-        {cameraOn && (
+        {!isWeb && cameraOn && (
           <CameraView
             key={cameraKey}
             style={StyleSheet.absoluteFill}
@@ -154,21 +201,32 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
         )}
 
         <View style={styles.frame} pointerEvents="none">
-          <View style={styles.frameBox} />
-          <Text style={styles.hint}>Hold 10–15 cm away and keep the barcode flat and steady</Text>
+          {isWeb ? (
+            <Text style={styles.hint}>
+              Scan the label with your USB scanner{'\n'}or type the product code below
+            </Text>
+          ) : (
+            <>
+              <View style={styles.frameBox} />
+              <Text style={styles.hint}>Hold 10–15 cm away and keep the barcode flat and steady</Text>
+            </>
+          )}
         </View>
 
         <View style={styles.topBar}>
           <Pressable style={styles.iconBtn} onPress={onClose} hitSlop={8}>
             <X size={22} color="#fff" />
           </Pressable>
-          <Pressable style={styles.iconBtn} onPress={() => setTorch((t) => !t)} hitSlop={8}>
-            {torch ? <ZapOff size={22} color={colors.gold ?? '#D4AF37'} /> : <Zap size={22} color="#fff" />}
-          </Pressable>
+          {!isWeb && (
+            <Pressable style={styles.iconBtn} onPress={() => setTorch((t) => !t)} hitSlop={8}>
+              {torch ? <ZapOff size={22} color={colors.gold ?? '#D4AF37'} /> : <Zap size={22} color="#fff" />}
+            </Pressable>
+          )}
         </View>
 
-        {/* Fallback: type the code if the camera can't decode the printed label */}
-        <View style={styles.manualBar}>
+        {/* Fallback: type the code if the camera can't decode the printed label.
+            Lifted above the Android navigation bar using the safe-area inset. */}
+        <View style={[styles.manualBar, { bottom: insets.bottom + MANUAL_BAR_LIFT }]}>
           <TextInput
             style={styles.manualInput}
             placeholder="Or type the product code"
@@ -176,6 +234,7 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
             value={manualCode}
             onChangeText={setManualCode}
             autoCapitalize="characters"
+            autoFocus={isWeb}
             returnKeyType="done"
             onSubmitEditing={submitManual}
           />
@@ -195,7 +254,7 @@ const styles = StyleSheet.create({
   frame: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   frameBox: { width: 300, height: 110, borderWidth: 2, borderColor: colors.gold ?? '#D4AF37', borderRadius: 12 },
   hint: { color: '#fff', marginTop: spacing.md, fontSize: 13, textAlign: 'center', paddingHorizontal: spacing.lg },
-  manualBar: { position: 'absolute', bottom: 40, left: spacing.lg, right: spacing.lg, flexDirection: 'row', gap: 8 },
+  manualBar: { position: 'absolute', left: spacing.lg, right: spacing.lg, flexDirection: 'row', gap: 8 },
   manualInput: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 10, paddingHorizontal: spacing.md, paddingVertical: 12, color: '#fff', fontSize: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
   manualBtn: { backgroundColor: colors.gold ?? colors.primary, borderRadius: 10, paddingHorizontal: 18, alignItems: 'center', justifyContent: 'center' },
   manualBtnText: { color: '#fff', fontWeight: '700' },

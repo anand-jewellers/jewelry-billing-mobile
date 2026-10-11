@@ -15,7 +15,6 @@ import { PaymentBreakdownChart } from '../../src/components/ui/PaymentBreakdownC
 import { PageGuard } from '../../src/components/PageGuard';
 
 
-// a76644344bc74e9f884d854d9dcd40b9
 // ---- Navigation targets (change these if your routes are named differently) ----
 const ROUTE_INVOICES = '/invoices';
 const ROUTE_CUSTOMERS = '/customers';

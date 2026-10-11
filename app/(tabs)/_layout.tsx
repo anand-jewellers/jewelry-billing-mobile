@@ -9,6 +9,7 @@ import { colors } from '../../src/theme';
 import { AppHeader } from '../../src/components/AppHeader';
 import { useStaff } from '../../src/context/StaffContext';
 import type { PageKey } from '../../src/types/settings';
+import DailyRatePrompt from '../../src/components/DailyRatePrompt';
 
 const ACTIVE_COLOR = '#1E3A8A';
 const DESKTOP_BREAKPOINT = 768;
@@ -206,11 +207,13 @@ export default function TabsLayout() {
         <AppHeader />
         <View style={styles.tabsContainer}>
           <Tabs screenOptions={screenOptions}>{screens}</Tabs>
+          <DailyRatePrompt />
         </View>
       </View>
     </View>
   );
 }
+
 
 const styles = StyleSheet.create({
   rootContainer: {

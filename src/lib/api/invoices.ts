@@ -506,3 +506,14 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     todayCollection,
   };
 }
+
+
+export async function deleteInvoices(invoiceIds: string[], staffId: string): Promise<number> {
+  if (!invoiceIds.length) return 0;
+  const { data, error } = await supabase.rpc('delete_invoices_rpc', {
+    p_staff_id: staffId,
+    p_invoice_ids: invoiceIds,
+  });
+  if (error) throw error;
+  return (data as number) ?? 0;
+}

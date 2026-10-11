@@ -90,6 +90,7 @@ const PAY_MODE_LABELS: Record<string, string> = {
   upi: 'UPI',
   bank_transfer: 'BANK TRANSFER',
   cheque: 'CHEQUE',
+  credit: 'CREDIT',
 };
 
 // ===========================================================
@@ -287,6 +288,7 @@ const PAY_MODES = [
   { id: 'upi', label: 'UPI' },
   { id: 'bank_transfer', label: 'NEFT' },
   { id: 'cheque', label: 'CHEQUE' },
+  { id: 'credit', label: 'CREDIT' },
 ];
 
 export function buildInvoiceHtml(

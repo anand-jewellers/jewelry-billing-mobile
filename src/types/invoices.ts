@@ -8,7 +8,7 @@ export type ProductStatus = 'active' | 'inactive' | 'sold' | 'discontinued';
 // value stored on the invoice header when payment_splits.length > 1, so
 // anything still reading the single `payment_mode` field knows to look at
 // the breakdown instead of trusting one mode.
-export type PaymentMode = 'cash' | 'card' | 'upi' | 'bank_transfer' | 'cheque' | 'split';
+export type PaymentMode = 'cash' | 'card' | 'upi' | 'bank_transfer' | 'cheque' | 'credit' | 'split';
 
 export interface Product {
   id: string;
