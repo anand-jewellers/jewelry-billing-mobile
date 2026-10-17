@@ -13,6 +13,10 @@ export default function InvoicesLayout() {
       <Stack.Screen name="index" options={{ title: 'Invoices' }} />
       <Stack.Screen name="new" options={{ title: 'New Invoice' }} />
       <Stack.Screen name="[id]" options={{ title: 'Invoice Details' }} />
+      <Stack.Screen
+        name="repair"
+        // options={{ title: 'Repair / Service', headerShown: true }}
+      />
     </Stack>
   );
 }

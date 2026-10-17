@@ -1,3 +1,5 @@
+// src\components\invoice\ExchangeGoldSection.tsx
+
 import { useState } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { Plus, Trash2, Pencil } from 'lucide-react-native';

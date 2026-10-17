@@ -804,6 +804,95 @@ export async function shareOrderReadyOnWhatsApp(params: {
   await openWhatsApp(message, phone);
 }
 
+
+
+// =========================================================
+// Goldsmith: reference picture(s) + design details only
+// =========================================================
+export function buildSmithOrderMessage(order: CustomerOrder): string {
+  const lines: string[] = ['*New Jewel Order*', ''];
+  lines.push(`Category: ${order.category}`);
+  lines.push(`Metal: ${order.metal}`);
+  lines.push(`Purity: ${order.purity}`);
+  if (order.notes?.trim()) lines.push(`Remarks: ${order.notes.trim()}`);
+  return lines.join('\n');
+}
+
+export async function shareOrderWithGoldsmithOnWhatsApp(params: {
+  order: CustomerOrder;
+  imageUrls?: string[];     // public URLs (used from the order screen)
+  base64Images?: string[];  // pictures still on the phone (used right after creating the order)
+}): Promise<void> {
+  const { order } = params;
+  const message = buildSmithOrderMessage(order);
+  const phone = normalizeWhatsAppPhone(order.goldsmith_phone);
+  const urls = (params.imageUrls ?? []).slice(0, MAX_SHARE_IMAGES);
+  const b64s = (params.base64Images ?? []).slice(0, MAX_SHARE_IMAGES);
+
+  // Web
+  if (Platform.OS === 'web') {
+    if (urls.length && (await shareImagesOnWeb(urls, message))) return;
+    await openWhatsApp(message, phone);
+    return;
+  }
+
+  if (!RNShare) {
+    debugToast('Photo sharing needs the dev/production build (not Expo Go). Sending text only.');
+    await openWhatsApp(message, phone);
+    return;
+  }
+
+  if (!urls.length && !b64s.length) {
+    debugToast('No reference picture on this order. Sending text only.');
+    await openWhatsApp(message, phone);
+    return;
+  }
+
+  await cleanupOldShareFiles();
+
+  // Prefer local copies (no network needed); otherwise download from storage
+  const files: { uri: string; mime: string }[] = [];
+  if (b64s.length) {
+    for (let i = 0; i < b64s.length; i++) {
+      try {
+        const uri = `${FileSystem.cacheDirectory}${SHARE_FILE_PREFIX}smith_${Date.now()}_${i}.jpg`;
+        await FileSystem.writeAsStringAsync(uri, b64s[i], { encoding: FileSystem.EncodingType.Base64 });
+        files.push({ uri, mime: 'image/jpeg' });
+      } catch (e: any) {
+        console.warn('Could not write local image', e);
+      }
+    }
+  } else {
+    const downloaded = await Promise.all(urls.map((u, i) => downloadToCache(u, i)));
+    files.push(...downloaded.filter((d): d is { uri: string; mime: string } => !!d));
+  }
+
+  if (!files.length) {
+    debugToast('Could not prepare the picture (check internet / bucket is public). Sending text only.');
+    await openWhatsApp(message, phone);
+    return;
+  }
+
+  await Clipboard.setStringAsync(message); // safety net if WhatsApp drops the caption
+
+  const call =
+    files.length === 1 && Platform.OS === 'android' && RNShare.shareSingle && RNSocial?.Whatsapp
+      ? RNShare.shareSingle({
+        social: RNSocial.Whatsapp,
+        url: files[0].uri,
+        type: files[0].mime,
+        message,
+        whatsAppNumber: phone ?? undefined,
+      })
+      : RNShare.open({ urls: files.map((f) => f.uri), type: 'image/*', message, failOnCancel: false });
+
+  const outcome = await launchShare(call);
+  if (outcome === 'error') {
+    debugToast('WhatsApp photo share failed. Sending text only.');
+    await openWhatsApp(message, phone);
+  }
+}
+
 // =========================================================
 // Invoice: PDF + thank-you note + Google review link
 // in ONE WhatsApp message
@@ -1232,10 +1321,140 @@ export async function shareEstimateOnWhatsApp(params: {
   const call =
     Platform.OS === 'android' && RNShare.shareSingle && RNSocial?.Whatsapp
       ? RNShare.shareSingle({
+        social: RNSocial.Whatsapp,
+        url: pdfUri,
+        type: 'application/pdf',
+        filename: 'Estimate',
+        message,
+        whatsAppNumber: phone ?? undefined,
+      })
+      : RNShare.open({ urls: [pdfUri], type: 'application/pdf', message, failOnCancel: false });
+
+  const outcome = await launchShare(call);
+  if (outcome === 'error') await openWhatsApp(message, phone); // last resort: text only
+}
+
+// =========================================================
+// Repair / service receipt: PDF + short note on WhatsApp
+// =========================================================
+export function buildRepairShareMessage(
+  customerName: string,
+  shopName: string | null,
+  receiptNo: string,
+  charge: number,
+  advance: number
+): string {
+  const balance = Math.max(0, charge - advance);
+  const inr = (n: number) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+  return [
+    `Hi ${customerName || 'there'},`,
+    `Your repair receipt from *${shopName?.trim() || 'us'}* is attached.`,
+    '',
+    `Receipt No: ${receiptNo}`,
+    `Repair charge: ${inr(charge)}`,
+    `Advance paid: ${inr(advance)}`,
+    `Balance due: ${inr(balance)}`,
+    '',
+    'Thank you! 🙏',
+  ].join('\n');
+}
+
+export async function shareRepairReceiptOnWhatsApp(params: {
+  html: string;
+  receipt: {
+    receiptNo: string;
+    customerName: string;
+    phone: string;
+    charge: number;
+    advance: number;
+  };
+  shopName: string | null;
+  heightPt: number;
+  widthPt?: number;
+}): Promise<void> {
+  const { html, receipt, shopName, heightPt, widthPt } = params;
+
+  const message = buildRepairShareMessage(
+    receipt.customerName, shopName, receipt.receiptNo, receipt.charge, receipt.advance
+  );
+  const phone = normalizeWhatsAppPhone(receipt.phone);
+
+  if (Platform.OS === 'web') {
+    await shareInvoiceOnWeb(() => createInvoicePdfBlobWeb(html), receipt.receiptNo, message, phone);
+    return;
+  }
+
+  if (!RNShare) {
+    await openWhatsApp(message, phone);
+    return;
+  }
+
+  const pdfUri = await createThermalPdfFile(html, receipt.receiptNo, { widthPt, heightPt });
+
+  await Clipboard.setStringAsync(message);
+  if (Platform.OS === 'android') {
+    ToastAndroid.show('Note copied. If the caption is empty, long-press and paste.', ToastAndroid.LONG);
+  }
+
+  const call =
+    Platform.OS === 'android' && RNShare.shareSingle && RNSocial?.Whatsapp
+      ? RNShare.shareSingle({
           social: RNSocial.Whatsapp,
           url: pdfUri,
           type: 'application/pdf',
-          filename: 'Estimate',
+          filename: receipt.receiptNo,
+          message,
+          whatsAppNumber: phone ?? undefined,
+        })
+      : RNShare.open({ urls: [pdfUri], type: 'application/pdf', message, failOnCancel: false });
+
+  const outcome = await launchShare(call);
+  if (outcome === 'error') await openWhatsApp(message, phone);
+}
+
+
+// ===================================================================
+// PASTE THIS AT THE VERY BOTTOM OF src/lib/whatsappShare.ts
+// (generic "PDF + note on WhatsApp" - used by the cash purchase receipt)
+// ===================================================================
+
+export async function shareReceiptPdfOnWhatsApp(params: {
+  html: string;
+  fileName: string;
+  message: string;
+  phone: string | null;
+  heightPt: number;
+  widthPt?: number;
+}): Promise<void> {
+  const { html, fileName, message, heightPt, widthPt } = params;
+  const phone = normalizeWhatsAppPhone(params.phone);
+
+  // Web: browser share sheet with the PDF
+  if (Platform.OS === 'web') {
+    await shareInvoiceOnWeb(() => createInvoicePdfBlobWeb(html), fileName, message, phone);
+    return;
+  }
+
+  // No native share module (Expo Go): text only
+  if (!RNShare) {
+    await openWhatsApp(message, phone);
+    return;
+  }
+
+  const pdfUri = await createThermalPdfFile(html, fileName, { widthPt, heightPt });
+
+  await Clipboard.setStringAsync(message); // safety net if WhatsApp drops the caption
+  if (Platform.OS === 'android') {
+    ToastAndroid.show('Note copied. If the caption is empty, long-press and paste.', ToastAndroid.LONG);
+  }
+
+  const call =
+    Platform.OS === 'android' && RNShare.shareSingle && RNSocial?.Whatsapp
+      ? RNShare.shareSingle({
+          social: RNSocial.Whatsapp,
+          url: pdfUri,
+          type: 'application/pdf',
+          filename: fileName,
           message,
           whatsAppNumber: phone ?? undefined,
         })

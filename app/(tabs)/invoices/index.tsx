@@ -12,7 +12,9 @@ import {
   Modal,
   Alert,
   ScrollView,
+  Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, router } from 'expo-router';
 import { PageGuard } from '../../../src/components/PageGuard';
 import {
@@ -28,6 +30,8 @@ import {
   Plus,
   Clock,
   Trash2,
+  Wrench,
+  Coins,
 } from 'lucide-react-native';
 // import { CalendarModal } from '../../../src/components/ui/DateFilter'; // date filter disabled
 import { colors, spacing } from '../../../src/theme';
@@ -38,6 +42,13 @@ import {
   type InvoiceListItem,
   type ListInvoicesResult,
 } from '../../../src/lib/api/invoices';
+import { listRepairOrders, deleteRepairOrders, type RepairOrder } from '../../../src/lib/api/repairs';
+import {
+  listCashPurchases,
+  deleteCashPurchases,
+  type CashPurchase,
+} from '../../../src/lib/api/cashPurchases';
+import { purchaseModeLabel } from '../../../src/lib/purchaseReceipt';
 import {
   listHeldEstimates,
   deleteHeldEstimate,
@@ -118,6 +129,9 @@ export default function InvoiceListScreen() {
   // stays open past midnight the list rolls over to the new day.
   const [todayISO, setTodayISO] = useState(getTodayISO());
 
+  // Which list is shown: today's invoices, or saved repair / service bills
+  const [view, setView] = useState<'invoices' | 'repairs' | 'purchases'>('invoices');
+
   // Start from the cached first page (if any) so there's no spinner on revisit.
   // Key format must match cacheKey below: search | from | to | page
   const initial = listCache.get(`|${todayISO}|${todayISO}|1`);
@@ -126,6 +140,18 @@ export default function InvoiceListScreen() {
   const [totalPages, setTotalPages] = useState(initial?.totalPages ?? 1);
   const [loading, setLoading] = useState(!initial);
   const [error, setError] = useState<string | null>(null);
+
+  // Repair / service bills
+  const [repairs, setRepairs] = useState<RepairOrder[]>([]);
+  const [repairsLoading, setRepairsLoading] = useState(false);
+  const [repairsError, setRepairsError] = useState<string | null>(null);
+  const repairReq = useRef(0);
+
+  // Cash purchases (old gold bought from customers - "Adagu Nagai")
+  const [purchases, setPurchases] = useState<CashPurchase[]>([]);
+  const [purchasesLoading, setPurchasesLoading] = useState(false);
+  const [purchasesError, setPurchasesError] = useState<string | null>(null);
+  const purchaseReq = useRef(0);
 
   // Admin + bulk delete (select mode)
   const { currentStaff } = useStaff();
@@ -149,6 +175,11 @@ export default function InvoiceListScreen() {
   // Held bills (4-hour temporary estimates)
   const [heldList, setHeldList] = useState<HeldEstimate[]>([]);
   const [heldOpen, setHeldOpen] = useState(false);
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
+
+  const insets = useSafeAreaInsets();
+  // Keeps bottom sheets clear of the Android nav buttons / gesture bar
+  const sheetBottomPad = Math.max(insets.bottom, Platform.OS === 'android' ? 48 : 20) + 12;
 
   // Debounce typing
   useEffect(() => {
@@ -217,11 +248,57 @@ export default function InvoiceListScreen() {
     fetchPage();
   }, [fetchPage]);
 
+  // Repair bills: load when the Repairs tab is open and the search changes
+  const loadRepairs = useCallback(async () => {
+    const id = ++repairReq.current;
+    setRepairsLoading(true);
+    try {
+      const rows = await listRepairOrders(debouncedSearch);
+      if (id !== repairReq.current) return;
+      setRepairs(rows);
+      setRepairsError(null);
+    } catch {
+      if (id === repairReq.current) setRepairsError('Could not load repair bills.');
+    } finally {
+      if (id === repairReq.current) setRepairsLoading(false);
+    }
+  }, [debouncedSearch]);
+
+  useEffect(() => {
+    if (view === 'repairs') loadRepairs();
+  }, [view, loadRepairs]);
+
+  // Cash purchases: load when the Purchases tab is open and the search changes
+  const loadPurchases = useCallback(async () => {
+    const id = ++purchaseReq.current;
+    setPurchasesLoading(true);
+    try {
+      const rows = await listCashPurchases(debouncedSearch);
+      if (id !== purchaseReq.current) return;
+      setPurchases(rows);
+      setPurchasesError(null);
+    } catch {
+      if (id === purchaseReq.current) setPurchasesError('Could not load cash purchases.');
+    } finally {
+      if (id === purchaseReq.current) setPurchasesLoading(false);
+    }
+  }, [debouncedSearch]);
+
+  useEffect(() => {
+    if (view === 'purchases') loadPurchases();
+  }, [view, loadPurchases]);
+
   // Refresh when returning to this screen (e.g. after creating an invoice).
   // Cached rows show instantly, then the fresh copy replaces them.
   // Also re-checks today's date so the list rolls over after midnight.
   const fetchRef = useRef(fetchPage);
   fetchRef.current = fetchPage;
+  const loadRepairsRef = useRef(loadRepairs);
+  loadRepairsRef.current = loadRepairs;
+  const loadPurchasesRef = useRef(loadPurchases);
+  loadPurchasesRef.current = loadPurchases;
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const firstFocus = useRef(true);
   useFocusEffect(
     useCallback(() => {
@@ -231,6 +308,8 @@ export default function InvoiceListScreen() {
         return;
       }
       fetchRef.current();
+      if (viewRef.current === 'repairs') loadRepairsRef.current(); // e.g. after saving a repair
+      if (viewRef.current === 'purchases') loadPurchasesRef.current(); // e.g. after saving a purchase
     }, [])
   );
 
@@ -320,21 +399,85 @@ export default function InvoiceListScreen() {
     });
   };
 
-  const allSelected = invoices.length > 0 && invoices.every((i) => selectedIds.has(i.id));
+  // Select All / Delete act on the list that is on screen (invoices or repairs)
+  const selectableIds =
+    view === 'repairs'
+      ? repairs.map((r) => r.id)
+      : view === 'purchases'
+        ? purchases.map((p) => p.id)
+        : invoices.map((i) => i.id);
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
 
   const toggleSelectAll = () => {
-    setSelectedIds(allSelected ? new Set() : new Set(invoices.map((i) => i.id)));
+    setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
   };
 
   const handleDeleteSelected = () => {
     if (!isAdmin || !currentStaff || selectedIds.size === 0) return;
     const ids = Array.from(selectedIds);
 
+    // ---- Repairs tab ----
+    if (view === 'repairs') {
+      Alert.alert(
+        `Delete ${ids.length} repair bill${ids.length > 1 ? 's' : ''}?`,
+        'The saved receipts will be permanently removed. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              setBulkDeleting(true);
+              try {
+                await deleteRepairOrders(ids);
+                exitSelectMode();
+                await loadRepairsRef.current();
+              } catch (e: any) {
+                Alert.alert('Could not delete', e?.message ?? 'Unknown error');
+              } finally {
+                setBulkDeleting(false);
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    // ---- Purchases tab ----
+    if (view === 'purchases') {
+      Alert.alert(
+        `Delete ${ids.length} purchase receipt${ids.length > 1 ? 's' : ''}?`,
+        'The saved receipts will be permanently removed. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              setBulkDeleting(true);
+              try {
+                await deleteCashPurchases(ids);
+                exitSelectMode();
+                await loadPurchasesRef.current();
+              } catch (e: any) {
+                Alert.alert('Could not delete', e?.message ?? 'Unknown error');
+              } finally {
+                setBulkDeleting(false);
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    // ---- Invoices tab ----
     Alert.alert(
       `Delete ${ids.length} invoice${ids.length > 1 ? 's' : ''}?`,
       'The billed products will be marked available again and all details of ' +
-        'these invoices (items, charges, payments, exchange) will be permanently ' +
-        'removed. This cannot be undone.',
+      'these invoices (items, charges, payments, exchange) will be permanently ' +
+      'removed. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -425,7 +568,11 @@ export default function InvoiceListScreen() {
             <Search size={18} color="#94A3B8" />
             <TextInput
               style={styles.searchInput}
-              placeholder="Search invoice no. or customer name"
+              placeholder={
+                view === 'invoices'
+                  ? 'Search invoice no. or customer name'
+                  : 'Search name, phone or receipt no.'
+              }
               placeholderTextColor="#94A3B8"
               value={searchText}
               onChangeText={setSearchText}
@@ -447,6 +594,37 @@ export default function InvoiceListScreen() {
           */}
         </View>
 
+        {/* Invoices / Repairs switch */}
+        <View style={styles.segment}>
+          <Pressable
+            style={[styles.segBtn, view === 'invoices' && styles.segBtnOn]}
+            onPress={() => {
+              exitSelectMode();
+              setView('invoices');
+            }}
+          >
+            <Text style={[styles.segText, view === 'invoices' && styles.segTextOn]}>Invoices</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.segBtn, view === 'repairs' && styles.segBtnOn]}
+            onPress={() => {
+              exitSelectMode();
+              setView('repairs');
+            }}
+          >
+            <Text style={[styles.segText, view === 'repairs' && styles.segTextOn]}>Repairs</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.segBtn, view === 'purchases' && styles.segBtnOn]}
+            onPress={() => {
+              exitSelectMode();
+              setView('purchases');
+            }}
+          >
+            <Text style={[styles.segText, view === 'purchases' && styles.segTextOn]}>Purchases</Text>
+          </Pressable>
+        </View>
+
         {/* Active date filter pill - DISABLED
         {hasRange && (
           <View style={styles.activeFilterRow}>
@@ -462,31 +640,35 @@ export default function InvoiceListScreen() {
         )}
         */}
 
-        {/* Held Bills + Delete buttons */}
-        <View style={styles.heldBtnRow}>
-          <Pressable
-            style={styles.heldBtn}
-            onPress={() => {
-              refreshHeld();
-              setHeldOpen(true);
-            }}
-          >
-            <Clock size={16} color={colors.primary} />
-            <Text style={styles.heldBtnText}>Held Bills</Text>
-            {heldList.length > 0 && (
-              <View style={styles.heldBadge}>
-                <Text style={styles.heldBadgeText}>{heldList.length}</Text>
-              </View>
-            )}
-          </Pressable>
-
-          {isAdmin && !selectMode && (
-            <Pressable style={styles.deleteModeBtn} onPress={() => setSelectMode(true)}>
-              <Trash2 size={16} color="#C5221F" />
-              <Text style={styles.deleteModeText}>Delete</Text>
+        {/* Held Bills (invoices tab) + Delete (admin, both tabs) */}
+        {(view === 'invoices' || (isAdmin && !selectMode)) && (
+          <View style={styles.heldBtnRow}>
+            {view === 'invoices' && (
+            <Pressable
+              style={styles.heldBtn}
+              onPress={() => {
+                refreshHeld();
+                setHeldOpen(true);
+              }}
+            >
+              <Clock size={16} color={colors.primary} />
+              <Text style={styles.heldBtnText}>Held Bills</Text>
+              {heldList.length > 0 && (
+                <View style={styles.heldBadge}>
+                  <Text style={styles.heldBadgeText}>{heldList.length}</Text>
+                </View>
+              )}
             </Pressable>
-          )}
-        </View>
+            )}
+
+            {isAdmin && !selectMode && (
+              <Pressable style={styles.deleteModeBtn} onPress={() => setSelectMode(true)}>
+                <Trash2 size={16} color="#C5221F" />
+                <Text style={styles.deleteModeText}>Delete</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
 
         {/* Selection bar (admin, in delete mode) */}
         {isAdmin && selectMode && (
@@ -529,7 +711,7 @@ export default function InvoiceListScreen() {
           onRequestClose={() => setHeldOpen(false)}
         >
           <View style={styles.modalBackdrop}>
-            <View style={styles.modalSheet}>
+            <View style={[styles.modalSheet, { paddingBottom: sheetBottomPad }]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Held Bills ({heldList.length})</Text>
                 <Pressable onPress={() => setHeldOpen(false)} hitSlop={8}>
@@ -544,7 +726,7 @@ export default function InvoiceListScreen() {
                 </Pressable>
               )}
 
-              <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+              <ScrollView contentContainerStyle={{ paddingBottom: 8 }}>
                 {heldList.length === 0 ? (
                   <Text style={styles.emptyText}>No held bills.</Text>
                 ) : (
@@ -596,160 +778,416 @@ export default function InvoiceListScreen() {
         />
         */}
 
-        {error && <Text style={styles.errorText}>{error}</Text>}
+        {/* "+" menu: New Invoice / Repair & Service */}
+        <Modal
+          visible={newMenuOpen}
+          animationType="slide"
+          transparent
+          statusBarTranslucent
+          onRequestClose={() => setNewMenuOpen(false)}
+        >
+          <Pressable style={styles.modalBackdrop} onPress={() => setNewMenuOpen(false)}>
+            <Pressable
+              style={[styles.modalSheet, { paddingBottom: sheetBottomPad }]}
+              onPress={() => { }}
+            >
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Create new</Text>
+                <Pressable onPress={() => setNewMenuOpen(false)} hitSlop={8}>
+                  <X size={22} color="#0F172A" />
+                </Pressable>
+              </View>
+
+              <Pressable
+                style={styles.newOption}
+                onPress={() => {
+                  setNewMenuOpen(false);
+                  router.push('/invoices/new');
+                }}
+              >
+                <View style={[styles.newOptionIcon, { backgroundColor: '#EFF6FF' }]}>
+                  <FileText size={20} color="#2563EB" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.newOptionTitle}>New Invoice</Text>
+                  <Text style={styles.newOptionSub}>Bill jewellery to a customer</Text>
+                </View>
+                <ChevronRight size={18} color="#94A3B8" />
+              </Pressable>
+
+              <Pressable
+                style={styles.newOption}
+                onPress={() => {
+                  setNewMenuOpen(false);
+                  router.push('/invoices/repair');
+                }}
+              >
+                <View style={[styles.newOptionIcon, { backgroundColor: '#FFF7ED' }]}>
+                  <Wrench size={20} color="#EA580C" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.newOptionTitle}>Repair / Service</Text>
+                  <Text style={styles.newOptionSub}>Take an item for repair and give a receipt</Text>
+                </View>
+                <ChevronRight size={18} color="#94A3B8" />
+              </Pressable>
+
+              <Pressable
+                style={styles.newOption}
+                onPress={() => {
+                  setNewMenuOpen(false);
+                  router.push('/invoices/purchase');
+                }}
+              >
+                <View style={[styles.newOptionIcon, { backgroundColor: '#FEF7E0' }]}>
+                  <Coins size={20} color="#B06000" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.newOptionTitle}>Cash Purchase</Text>
+                  <Text style={styles.newOptionSub}>Buy old gold / silver from a customer</Text>
+                </View>
+                <ChevronRight size={18} color="#94A3B8" />
+              </Pressable>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {/* ===================== INVOICES TAB ===================== */}
+        {view === 'invoices' && error && <Text style={styles.errorText}>{error}</Text>}
 
         {/* Invoice List (today only) */}
-        {loading ? (
-          <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
-        ) : (
-          <FlatList
-            data={invoices}
-            extraData={{ selectMode, selectedIds }}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
-            renderItem={({ item }) => {
-              const badgeTheme = getBadgeColors(item.invoice_number || item.id);
-              const isWalkIn = item.customer_name?.toLowerCase().includes('walk-in');
-              const statusTheme = getStatusBadgeStyle(item.payment_status);
-              const isSelected = selectedIds.has(item.id);
+        {view === 'invoices' &&
+          (loading ? (
+            <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
+          ) : (
+            <FlatList
+              data={invoices}
+              extraData={{ selectMode, selectedIds }}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+              renderItem={({ item }) => {
+                const badgeTheme = getBadgeColors(item.invoice_number || item.id);
+                const isWalkIn = item.customer_name?.toLowerCase().includes('walk-in');
+                const statusTheme = getStatusBadgeStyle(item.payment_status);
+                const isSelected = selectedIds.has(item.id);
 
-              return (
-                <Pressable
-                  style={[
-                    styles.invoiceCard,
-                    selectMode && isSelected && styles.invoiceCardSelected,
-                  ]}
-                  onPress={() =>
-                    selectMode ? toggleSelect(item.id) : router.push(`/invoices/${item.id}`)
-                  }
-                >
-                  {/* Checkbox (select mode only) */}
-                  {selectMode && (
-                    <View
-                      style={[
-                        styles.checkbox,
-                        { marginRight: 12 },
-                        isSelected && styles.checkboxOn,
-                      ]}
-                    >
-                      {isSelected && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
-                    </View>
-                  )}
-
-                  {/* Left Badge Icon */}
-                  <View style={[styles.iconBox, { backgroundColor: badgeTheme.bg }]}>
-                    {isWalkIn ? (
-                      <Footprints size={16} color={badgeTheme.icon} />
-                    ) : (
-                      <FileText size={16} color={badgeTheme.icon} />
+                return (
+                  <Pressable
+                    style={[
+                      styles.invoiceCard,
+                      selectMode && isSelected && styles.invoiceCardSelected,
+                    ]}
+                    onPress={() =>
+                      selectMode ? toggleSelect(item.id) : router.push(`/invoices/${item.id}`)
+                    }
+                  >
+                    {/* Checkbox (select mode only) */}
+                    {selectMode && (
+                      <View
+                        style={[
+                          styles.checkbox,
+                          { marginRight: 12 },
+                          isSelected && styles.checkboxOn,
+                        ]}
+                      >
+                        {isSelected && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
+                      </View>
                     )}
-                  </View>
 
-                  {/* Middle Information */}
-                  <View style={styles.infoCol}>
-                    <Text style={styles.invoiceNumber} numberOfLines={1}>
-                      {item.invoice_number}
-                    </Text>
+                    {/* Left Badge Icon */}
+                    <View style={[styles.iconBox, { backgroundColor: badgeTheme.bg }]}>
+                      {isWalkIn ? (
+                        <Footprints size={16} color={badgeTheme.icon} />
+                      ) : (
+                        <FileText size={16} color={badgeTheme.icon} />
+                      )}
+                    </View>
 
-                    {/* Date Metadata */}
-                    <View style={styles.metaRowInline}>
-                      <View style={styles.metaItem}>
-                        <CalendarDays size={13} color="#94A3B8" />
-                        <Text style={styles.metaText}>
-                          {formatInvoiceDate(item.invoice_date)}
+                    {/* Middle Information */}
+                    <View style={styles.infoCol}>
+                      <Text style={styles.invoiceNumber} numberOfLines={1}>
+                        {item.invoice_number}
+                      </Text>
+
+                      {/* Date Metadata */}
+                      <View style={styles.metaRowInline}>
+                        <View style={styles.metaItem}>
+                          <CalendarDays size={13} color="#94A3B8" />
+                          <Text style={styles.metaText}>
+                            {formatInvoiceDate(item.invoice_date)}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Right: Amount & Payment Status Pill */}
+                    <View style={styles.rightCol}>
+                      <Text style={styles.amountText}>{money(item.grand_total)}</Text>
+                      <View
+                        style={[
+                          styles.statusPill,
+                          {
+                            backgroundColor: statusTheme.bg,
+                            borderColor: statusTheme.border,
+                          },
+                        ]}
+                      >
+                        {item.payment_status?.toLowerCase() === 'paid' && (
+                          <Check size={11} color={statusTheme.text} strokeWidth={3} />
+                        )}
+                        <Text style={[styles.statusText, { color: statusTheme.text }]}>
+                          {item.payment_status}
                         </Text>
                       </View>
                     </View>
-                  </View>
 
-                  {/* Right: Amount & Payment Status Pill */}
-                  <View style={styles.rightCol}>
-                    <Text style={styles.amountText}>{money(item.grand_total)}</Text>
-                    <View
-                      style={[
-                        styles.statusPill,
-                        {
-                          backgroundColor: statusTheme.bg,
-                          borderColor: statusTheme.border,
-                        },
-                      ]}
+                    {!selectMode && (
+                      <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
+                    )}
+                  </Pressable>
+                );
+              }}
+              ListFooterComponent={
+                invoices.length > 0 ? (
+                  <View style={styles.paginationContainer}>
+                    <Pressable
+                      style={[styles.pageButton, currentPage === 1 && styles.pageButtonDisabled]}
+                      onPress={handlePrevPage}
+                      disabled={currentPage === 1}
                     >
-                      {item.payment_status?.toLowerCase() === 'paid' && (
-                        <Check size={11} color={statusTheme.text} strokeWidth={3} />
-                      )}
-                      <Text style={[styles.statusText, { color: statusTheme.text }]}>
-                        {item.payment_status}
+                      <ChevronLeft size={16} color={currentPage === 1 ? '#CBD5E1' : '#0F172A'} />
+                      <Text
+                        style={[
+                          styles.pageButtonText,
+                          currentPage === 1 && styles.pageButtonTextDisabled,
+                        ]}
+                      >
+                        Previous
+                      </Text>
+                    </Pressable>
+
+                    <View style={styles.pageInfoWrap}>
+                      <Text style={styles.pageInfoText}>
+                        Page <Text style={styles.pageInfoBold}>{currentPage}</Text> of{' '}
+                        <Text style={styles.pageInfoBold}>{totalPages}</Text>
                       </Text>
                     </View>
-                  </View>
 
-                  {!selectMode && (
-                    <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
-                  )}
-                </Pressable>
-              );
-            }}
-            ListFooterComponent={
-              invoices.length > 0 ? (
-                <View style={styles.paginationContainer}>
-                  <Pressable
-                    style={[styles.pageButton, currentPage === 1 && styles.pageButtonDisabled]}
-                    onPress={handlePrevPage}
-                    disabled={currentPage === 1}
-                  >
-                    <ChevronLeft size={16} color={currentPage === 1 ? '#CBD5E1' : '#0F172A'} />
-                    <Text
-                      style={[
-                        styles.pageButtonText,
-                        currentPage === 1 && styles.pageButtonTextDisabled,
-                      ]}
+                    <Pressable
+                      style={[styles.pageButton, !hasMore && styles.pageButtonDisabled]}
+                      onPress={handleNextPage}
+                      disabled={!hasMore}
                     >
-                      Previous
-                    </Text>
-                  </Pressable>
-
-                  <View style={styles.pageInfoWrap}>
-                    <Text style={styles.pageInfoText}>
-                      Page <Text style={styles.pageInfoBold}>{currentPage}</Text> of{' '}
-                      <Text style={styles.pageInfoBold}>{totalPages}</Text>
-                    </Text>
+                      <Text
+                        style={[
+                          styles.pageButtonText,
+                          !hasMore && styles.pageButtonTextDisabled,
+                        ]}
+                      >
+                        Next
+                      </Text>
+                      <ChevronRight size={16} color={!hasMore ? '#CBD5E1' : '#0F172A'} />
+                    </Pressable>
                   </View>
+                ) : null
+              }
+              ListEmptyComponent={
+                <Text style={styles.emptyText}>
+                  {hasFilters ? 'No invoices match your search.' : 'No invoices today.'}
+                </Text>
+              }
+            />
+          ))}
 
+        {/* ===================== REPAIRS TAB ===================== */}
+        {view === 'repairs' && repairsError && <Text style={styles.errorText}>{repairsError}</Text>}
+
+        {view === 'repairs' &&
+          (repairsLoading && repairs.length === 0 ? (
+            <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
+          ) : (
+            <FlatList
+              data={repairs}
+              extraData={{ selectMode, selectedIds }}
+              keyExtractor={(r) => r.id}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              refreshing={repairsLoading}
+              onRefresh={loadRepairs}
+              ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+              renderItem={({ item }) => {
+                const delivered = item.status === 'delivered';
+                const bal = Math.max(0, item.charge - item.advance - item.final_payment);
+                const statusTheme = getStatusBadgeStyle(
+                  delivered ? 'paid' : item.advance > 0 ? 'partial' : 'unpaid'
+                );
+                const isSelected = selectedIds.has(item.id);
+
+                return (
                   <Pressable
-                    style={[styles.pageButton, !hasMore && styles.pageButtonDisabled]}
-                    onPress={handleNextPage}
-                    disabled={!hasMore}
+                    style={[styles.invoiceCard, selectMode && isSelected && styles.invoiceCardSelected]}
+                    onPress={() =>
+                      selectMode ? toggleSelect(item.id) : router.push(`/invoices/repair?id=${item.id}`)
+                    }
                   >
-                    <Text
-                      style={[
-                        styles.pageButtonText,
-                        !hasMore && styles.pageButtonTextDisabled,
-                      ]}
-                    >
-                      Next
-                    </Text>
-                    <ChevronRight size={16} color={!hasMore ? '#CBD5E1' : '#0F172A'} />
+                    {/* Checkbox (select mode only) */}
+                    {selectMode && (
+                      <View
+                        style={[styles.checkbox, { marginRight: 12 }, isSelected && styles.checkboxOn]}
+                      >
+                        {isSelected && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
+                      </View>
+                    )}
+
+                    <View style={[styles.iconBox, { backgroundColor: '#FFF7ED' }]}>
+                      <Wrench size={16} color="#EA580C" />
+                    </View>
+
+                    <View style={styles.infoCol}>
+                      <Text style={styles.invoiceNumber} numberOfLines={1}>
+                        {item.customer_name}
+                      </Text>
+                      <Text style={styles.metaText} numberOfLines={1}>
+                        {item.item}
+                      </Text>
+                      <View style={styles.metaRowInline}>
+                        <View style={styles.metaItem}>
+                          <CalendarDays size={13} color="#94A3B8" />
+                          <Text style={styles.metaText} numberOfLines={1}>
+                            {item.receipt_no} · {formatInvoiceDate(item.created_at)}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    <View style={styles.rightCol}>
+                      <Text style={styles.amountText}>{money(item.charge)}</Text>
+                      <View
+                        style={[
+                          styles.statusPill,
+                          { backgroundColor: statusTheme.bg, borderColor: statusTheme.border },
+                        ]}
+                      >
+                        {delivered && <Check size={11} color={statusTheme.text} strokeWidth={3} />}
+                        <Text style={[styles.statusText, { color: statusTheme.text }]}>
+                          {delivered ? 'Delivered' : `Due ${money(bal)}`}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {!selectMode && (
+                      <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
+                    )}
                   </Pressable>
-                </View>
-              ) : null
-            }
-            ListEmptyComponent={
-              <Text style={styles.emptyText}>
-                {hasFilters ? 'No invoices match your search.' : 'No invoices today.'}
-              </Text>
-            }
-          />
+                );
+              }}
+              ListEmptyComponent={
+                <Text style={styles.emptyText}>
+                  {hasFilters ? 'No repair bills match your search.' : 'No repair bills yet.'}
+                </Text>
+              }
+            />
+          ))}
+
+        {/* ===================== PURCHASES TAB ===================== */}
+        {view === 'purchases' && purchasesError && (
+          <Text style={styles.errorText}>{purchasesError}</Text>
         )}
 
-        {/* Floating "+ New Invoice" Button (hidden while selecting) */}
+        {view === 'purchases' &&
+          (purchasesLoading && purchases.length === 0 ? (
+            <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
+          ) : (
+            <FlatList
+              data={purchases}
+              extraData={{ selectMode, selectedIds }}
+              keyExtractor={(p) => p.id}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              refreshing={purchasesLoading}
+              onRefresh={loadPurchases}
+              ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+              renderItem={({ item }) => {
+                const isSelected = selectedIds.has(item.id);
+                const paidTheme = getStatusBadgeStyle('paid');
+                const first = item.items[0]?.name ?? 'Old gold';
+                const summary =
+                  item.items.length > 1 ? `${first} +${item.items.length - 1} more` : first;
+
+                return (
+                  <Pressable
+                    style={[styles.invoiceCard, selectMode && isSelected && styles.invoiceCardSelected]}
+                    onPress={() =>
+                      selectMode ? toggleSelect(item.id) : router.push(`/invoices/purchase?id=${item.id}`)
+                    }
+                  >
+                    {selectMode && (
+                      <View
+                        style={[styles.checkbox, { marginRight: 12 }, isSelected && styles.checkboxOn]}
+                      >
+                        {isSelected && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
+                      </View>
+                    )}
+
+                    <View style={[styles.iconBox, { backgroundColor: '#FEF7E0' }]}>
+                      <Coins size={16} color="#B06000" />
+                    </View>
+
+                    <View style={styles.infoCol}>
+                      <Text style={styles.invoiceNumber} numberOfLines={1}>
+                        {item.customer_name}
+                      </Text>
+                      <Text style={styles.metaText} numberOfLines={1}>
+                        {summary}
+                      </Text>
+                      <View style={styles.metaRowInline}>
+                        <View style={styles.metaItem}>
+                          <CalendarDays size={13} color="#94A3B8" />
+                          <Text style={styles.metaText} numberOfLines={1}>
+                            {item.receipt_no} · {formatInvoiceDate(item.created_at)}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    <View style={styles.rightCol}>
+                      <Text style={styles.amountText}>{money(item.total_amount)}</Text>
+                      <View
+                        style={[
+                          styles.statusPill,
+                          { backgroundColor: paidTheme.bg, borderColor: paidTheme.border },
+                        ]}
+                      >
+                        <Check size={11} color={paidTheme.text} strokeWidth={3} />
+                        <Text style={[styles.statusText, { color: paidTheme.text }]}>
+                          {purchaseModeLabel(item.payment_mode)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {!selectMode && (
+                      <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
+                    )}
+                  </Pressable>
+                );
+              }}
+              ListEmptyComponent={
+                <Text style={styles.emptyText}>
+                  {hasFilters ? 'No purchases match your search.' : 'No cash purchases yet.'}
+                </Text>
+              }
+            />
+          ))}
+
+        {/* Floating "+" button (hidden while selecting) */}
         {!selectMode && (
           <View style={styles.fabWrapper}>
-            <Pressable style={styles.fabButton} onPress={() => router.push('/invoices/new')}>
+            <Pressable style={styles.fabButton} onPress={() => setNewMenuOpen(true)}>
               <Plus size={24} color="#FFFFFF" strokeWidth={2.5} />
             </Pressable>
-            <Text style={styles.fabLabel}>New Invoice</Text>
+            <Text style={styles.fabLabel}>New</Text>
           </View>
         )}
       </View>
@@ -792,6 +1230,27 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     padding: 0,
   },
+
+  // Invoices / Repairs switch
+  segment: {
+    flexDirection: 'row',
+    marginHorizontal: spacing.lg,
+    marginTop: 10,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 14,
+    padding: 3,
+  },
+  segBtn: {
+    flex: 1,
+    height: 36,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segBtnOn: { backgroundColor: '#FFFFFF' },
+  segText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
+  segTextOn: { color: '#0F172A', fontWeight: '700' },
+
   // Date filter styles - kept for when the date filter is turned back on
   calendarButton: {
     width: 48,
@@ -1146,4 +1605,26 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     padding: spacing.xl,
   },
+
+  // "+" create menu
+  newOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    padding: 14,
+    marginBottom: 10,
+  },
+  newOptionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  newOptionTitle: { fontSize: 15, fontWeight: '700', color: '#0F172A' },
+  newOptionSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
 });

@@ -217,6 +217,19 @@ export function JewelryItemSheet({
   const makingEditedRef = useRef(false);
 
   // ---------------------------------------------------------
+  // Diamond detection: metal OR category whose name contains "diamond".
+  // e.g. Metal: Gold + Category: Diamond still shows the diamond rows.
+  //
+  // The section also stays visible whenever diamond rows already exist
+  // (scanned product / edit mode), so an existing diamond charge is never
+  // hidden from the cashier while still being added to the total.
+  // ---------------------------------------------------------
+  const selectedMetalName = (metals ?? []).find((m) => m.id === state.metalId)?.name ?? '';
+  const selectedCategoryName = (categories ?? []).find((c) => c.id === state.categoryId)?.name ?? '';
+  const isDiamond = /diamond/i.test(selectedMetalName) || /diamond/i.test(selectedCategoryName);
+  const showDiamonds = isDiamond || state.diamonds.length > 0;
+
+  // ---------------------------------------------------------
   // Keyboard handling.
   //
   // On Android the window may ALREADY shrink when the keyboard opens
@@ -555,19 +568,23 @@ export function JewelryItemSheet({
 
     // Diamond lines: "Diamond <size>", fixed ₹ = carat × rate per carat.
     // Same naming/shape the scan flow produces, so slip + saved invoice match.
-    state.diamonds.forEach((d) => {
-      if (!d.size.trim()) return;
-      const charge = diamondCharge(d);
-      if (charge <= 0) return;
-      synthesizedVaLines.push({
-        id: `va-diamond-${d.key}`,
-        charge_type_id: '',
-        name: `${DIAMOND_CHARGE_PREFIX} ${d.size.trim()}`,
-        calculation_type: 'fixed',
-        value: charge,
-        amount: charge,
+    // Only counted while the Diamonds section is visible, so a hidden section
+    // can never silently add charges to the bill.
+    if (showDiamonds) {
+      state.diamonds.forEach((d) => {
+        if (!d.size.trim()) return;
+        const charge = diamondCharge(d);
+        if (charge <= 0) return;
+        synthesizedVaLines.push({
+          id: `va-diamond-${d.key}`,
+          charge_type_id: '',
+          name: `${DIAMOND_CHARGE_PREFIX} ${d.size.trim()}`,
+          calculation_type: 'fixed',
+          value: charge,
+          amount: charge,
+        });
       });
-    });
+    }
 
     // Keep any other lines so editing the item never drops them.
     synthesizedVaLines.push(...state.extraCharges);
@@ -584,7 +601,7 @@ export function JewelryItemSheet({
     });
 
     return { netWeight, quantity, vaLinesWithAmount: synthesizedVaLines, ...calc };
-  }, [state, taxSettings, vaChargeTypes]);
+  }, [state, taxSettings, vaChargeTypes, showDiamonds]);
 
   // ---------------------------------------------------------
   // Save
@@ -924,56 +941,60 @@ export function JewelryItemSheet({
               )}
             </Section>
 
-            {/* ---------------- Diamonds ---------------- */}
-            <Section title="Diamonds" hint="size (ct) × rate per carat">
-              {state.diamonds.length === 0 && (
-                <Text style={styles.emptyHint}>No diamonds added.</Text>
-              )}
-              {state.diamonds.map((d) => {
-                const ct = parseCarat(d.size);
-                const charge = diamondCharge(d);
-                return (
-                  <View key={d.key} style={styles.diamondBlock}>
-                    <View style={styles.diamondRow}>
-                      <View style={styles.col}>
-                        <Text style={styles.label}>Size (ct)</Text>
-                        <TextInput
-                          style={styles.input}
-                          placeholder="e.g. 0.25"
-                          placeholderTextColor={colors.textMuted}
-                          value={d.size}
-                          onChangeText={(v) => updateDiamondRow(d.key, { size: v })}
-                        />
+            {/* ---------------- Diamonds ----------------
+                Shown when the Metal OR Category is Diamond
+                (or when the item already carries diamond lines). */}
+            {showDiamonds && (
+              <Section title="Diamonds" hint="size (ct) × rate per carat">
+                {state.diamonds.length === 0 && (
+                  <Text style={styles.emptyHint}>No diamonds added.</Text>
+                )}
+                {state.diamonds.map((d) => {
+                  const ct = parseCarat(d.size);
+                  const charge = diamondCharge(d);
+                  return (
+                    <View key={d.key} style={styles.diamondBlock}>
+                      <View style={styles.diamondRow}>
+                        <View style={styles.col}>
+                          <Text style={styles.label}>Size (ct)</Text>
+                          <TextInput
+                            style={styles.input}
+                            placeholder="e.g. 0.25"
+                            placeholderTextColor={colors.textMuted}
+                            value={d.size}
+                            onChangeText={(v) => updateDiamondRow(d.key, { size: v })}
+                          />
+                        </View>
+                        <View style={styles.col}>
+                          <Text style={styles.label}>Rate (₹/ct)</Text>
+                          <TextInput
+                            style={styles.input}
+                            placeholder="0"
+                            placeholderTextColor={colors.textMuted}
+                            keyboardType="decimal-pad"
+                            value={d.rate}
+                            onChangeText={(v) => updateDiamondRow(d.key, { rate: v })}
+                          />
+                        </View>
+                        <Pressable onPress={() => removeDiamondRow(d.key)} hitSlop={8} style={styles.removeBtn}>
+                          <X size={18} color="#DC2626" />
+                        </Pressable>
                       </View>
-                      <View style={styles.col}>
-                        <Text style={styles.label}>Rate (₹/ct)</Text>
-                        <TextInput
-                          style={styles.input}
-                          placeholder="0"
-                          placeholderTextColor={colors.textMuted}
-                          keyboardType="decimal-pad"
-                          value={d.rate}
-                          onChangeText={(v) => updateDiamondRow(d.key, { rate: v })}
-                        />
-                      </View>
-                      <Pressable onPress={() => removeDiamondRow(d.key)} hitSlop={8} style={styles.removeBtn}>
-                        <X size={18} color="#DC2626" />
-                      </Pressable>
+                      {ct > 0 && charge > 0 && (
+                        <Text style={styles.computedHint}>
+                          {ct} ct × ₹{(parseFloat(d.rate) || 0).toLocaleString('en-IN')} = ₹
+                          {charge.toLocaleString('en-IN')}
+                        </Text>
+                      )}
                     </View>
-                    {ct > 0 && charge > 0 && (
-                      <Text style={styles.computedHint}>
-                        {ct} ct × ₹{(parseFloat(d.rate) || 0).toLocaleString('en-IN')} = ₹
-                        {charge.toLocaleString('en-IN')}
-                      </Text>
-                    )}
-                  </View>
-                );
-              })}
-              <Pressable style={styles.addRowBtn} onPress={addDiamondRow}>
-                <Plus size={16} color={colors.primary} />
-                <Text style={styles.addRowBtnText}>Add diamond</Text>
-              </Pressable>
-            </Section>
+                  );
+                })}
+                <Pressable style={styles.addRowBtn} onPress={addDiamondRow}>
+                  <Plus size={16} color={colors.primary} />
+                  <Text style={styles.addRowBtnText}>Add diamond</Text>
+                </Pressable>
+              </Section>
+            )}
 
             {/* ---------------- Tax & Discounts ---------------- */}
             <Section title="Tax & Discount">

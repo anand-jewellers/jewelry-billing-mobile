@@ -13,7 +13,8 @@ import { downloadSalesReportPdf } from '../../src/lib/pdfReport';
 import type { Metal, Purity, CurrentMetalRate } from '../../src/types/settings';
 import { PaymentBreakdownChart } from '../../src/components/ui/PaymentBreakdownChart';
 import { PageGuard } from '../../src/components/PageGuard';
-
+import { countPendingRepairs } from '../../src/lib/api/repairs';
+import { countOpenOrders } from '../../src/lib/api/customerOrders';
 
 // ---- Navigation targets (change these if your routes are named differently) ----
 const ROUTE_INVOICES = '/invoices';
@@ -21,6 +22,10 @@ const ROUTE_CUSTOMERS = '/customers';
 const ROUTE_PRODUCTS = '/products';
 const ROUTE_NEW_INVOICE = '/invoices/new'; // new invoice screen (opens scanner when scan=1)
 const ROUTE_ADD_PRODUCT = '/products/add'; // add product screen
+const ROUTE_REPAIR = '/invoices/repair';     // repair / service screen
+const ROUTE_PURCHASE = '/invoices/purchase'; // cash purchase (Adagu Nagai) screen
+const ROUTE_REPAIRS_LIST = '/invoices'; // change to wherever your repairs list opens
+const ROUTE_ORDERS = '/customers/orders';  // change to your customer orders route
 
 const RATE_ROWS: { label: string; metalMatch: string; purityMatch: string }[] = [
   // { label: '24K Gold', metalMatch: 'gold', purityMatch: '24k' },
@@ -121,7 +126,7 @@ type QuickActionProps = {
   variant?: 'solid' | 'outline';
 };
 
-function QuickAction({ icon, label, onPress, variant = 'solid' }: QuickActionProps) {
+function QuickAction({ icon, label, onPress, variant = 'outline' }: QuickActionProps) {
   const solid = variant === 'solid';
   return (
     <Pressable
@@ -167,6 +172,8 @@ function DashboardScreenInner() {
   // ---- Static counts, not date-dependent ----
   const [totalCustomers, setTotalCustomers] = useState(0);
   const [totalProducts, setTotalProducts] = useState(0);
+  const [pendingRepairs, setPendingRepairs] = useState(0);
+  const [openOrders, setOpenOrders] = useState(0);
 
   // ---- Date filter drives everything below ----
   const [filter, setFilter] = useState<DateFilterValue>({ mode: 'today' });
@@ -194,9 +201,9 @@ function DashboardScreenInner() {
         setTotalCustomers(s.totalCustomers);
         setTotalProducts(s.totalProducts);
       })
-      .catch(() => {
-        // non-critical, leave counts as-is
-      });
+      .catch(() => { });
+    countPendingRepairs().then(setPendingRepairs).catch(() => { });
+    countOpenOrders().then(setOpenOrders).catch(() => { });
   }, []);
 
   const loadReport = useCallback((value: DateFilterValue) => {
@@ -275,15 +282,15 @@ function DashboardScreenInner() {
   // `route` is where the card takes the user when tapped.
   const summaryCards = [
     {
-      icon: 'cash-outline',
-      label: 'Sales',
-      value: reportLoading ? '…' : inr(report?.totalSales ?? 0),
-      route: ROUTE_INVOICES,
-    },
-    {
       icon: 'receipt-outline',
       label: 'Invoices',
       value: reportLoading ? '…' : String(report?.totalInvoices ?? 0),
+      route: ROUTE_INVOICES,
+    },
+    {
+      icon: 'checkmark-circle-outline',
+      label: 'Collection',
+      value: reportLoading ? '…' : inr(report?.totalCollected ?? 0),
       route: ROUTE_INVOICES,
     },
     {
@@ -299,16 +306,16 @@ function DashboardScreenInner() {
       route: ROUTE_PRODUCTS,
     },
     {
-      icon: 'pricetag-outline',
-      label: 'Discount',
-      value: reportLoading ? '…' : inr(report?.totalDiscount ?? 0),
-      route: ROUTE_INVOICES,
+      icon: 'construct-outline',
+      label: 'Repair',
+      value: String(pendingRepairs),
+      route: ROUTE_REPAIRS_LIST,
     },
     {
-      icon: 'checkmark-circle-outline',
-      label: 'Collection',
-      value: reportLoading ? '…' : inr(report?.totalCollected ?? 0),
-      route: ROUTE_INVOICES,
+      icon: 'clipboard-outline',
+      label: 'Orders',
+      value: String(openOrders),
+      route: ROUTE_ORDERS,
     },
   ];
 
@@ -320,13 +327,35 @@ function DashboardScreenInner() {
       {reportError && <Text style={styles.errorText}>{reportError}</Text>}
 
       {/* Quick actions */}
+      {/* Quick actions */}
       <View style={styles.quickRow}>
-        <QuickAction icon="barcode-outline" label="Scan & Bill" onPress={openScanner} />
+        <QuickAction
+          icon="barcode-outline"
+          label="Scan & Bill"
+          variant="outline"
+          onPress={openScanner}
+        />
         <QuickAction
           icon="add-circle-outline"
           label="Add Product"
           variant="outline"
           onPress={openAddProduct}
+        />
+      </View>
+
+      {/* Repair + Cash purchase */}
+      <View style={[styles.quickRow, styles.quickRowSecond]}>
+        <QuickAction
+          icon="construct-outline"
+          label="Repair / Service"
+          variant="outline"
+          onPress={() => go(ROUTE_REPAIR)}
+        />
+        <QuickAction
+          icon="wallet-outline"
+          label="Cash Purchase"
+          variant="outline"
+          onPress={() => go(ROUTE_PURCHASE)}
         />
       </View>
 
@@ -417,6 +446,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     marginTop: spacing.lg,
   },
+  quickRowSecond: { marginTop: spacing.md },
   quickBtn: {
     flex: 1,
     flexDirection: 'row',

@@ -1,18 +1,26 @@
 // app/(tabs)/customers/add.tsx
 
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, TextInput, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Button, Input } from '../../../src/components/ui';
 import { DateField } from '../../../src/components/ui/DateFilter';
 import { SelectField, SelectOption } from '../../../src/components/ui/SelectField';
-import { MultiSelectField } from '../../../src/components/ui/MultiSelectField';
+// import { MultiSelectField } from '../../../src/components/ui/MultiSelectField'; // stone name removed
 import { ErrorModal } from '../../../src/components/ui/ErrorModal';
+import { ImagePickerGrid, PickedImage } from '../../../src/components/product/ImagePickerGrid';
 import { colors, spacing } from '../../../src/theme';
 import { createCustomer } from '../../../src/lib/api/customers';
-import { createCustomerOrder } from '../../../src/lib/api/customerOrders';
-import { getMetals, getPurities, getCategories, getStoneNames } from '../../../src/lib/products';
-import { createCategory, createPurity, createStoneName } from '../../../src/lib/api/settings';
+import {
+  createCustomerOrder,
+  attachOrderReferenceImages,
+  getOrderImageUrl,
+  PAYMENT_MODES,
+  PaymentMode,
+} from '../../../src/lib/api/customerOrders';
+import { shareOrderWithGoldsmithOnWhatsApp } from '../../../src/lib/whatsappShare';
+import { getMetals, getPurities, getCategories /*, getStoneNames */ } from '../../../src/lib/products';
+import { createCategory, createPurity /*, createStoneName */ } from '../../../src/lib/api/settings';
 import { useKeyboardHeight } from '../../../src/lib/useKeyboardHeight';
 import { useNotifications } from '../../../src/context/NotificationContext';
 import { formatDisplayDate } from '../../../src/lib/dateUtils';
@@ -33,35 +41,59 @@ export default function AddCustomerScreen() {
   const [categories, setCategories] = useState<SelectOption[]>([]);
   const [metals, setMetals] = useState<SelectOption[]>([]);
   const [purities, setPurities] = useState<SelectOption[]>([]);
-  const [stoneOptions, setStoneOptions] = useState<SelectOption[]>([]);
+  // const [stoneOptions, setStoneOptions] = useState<SelectOption[]>([]); // stone name removed
   const [loadingMeta, setLoadingMeta] = useState(true);
 
   // Selections (ids)
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [metalId, setMetalId] = useState<string | null>(null);
   const [purityId, setPurityId] = useState<string | null>(null);
-  const [stoneIds, setStoneIds] = useState<string[]>([]);
+  // const [stoneIds, setStoneIds] = useState<string[]>([]); // stone name removed
 
   const [weightMin, setWeightMin] = useState('');
-  const [weightMax, setWeightMax] = useState('');
+  const [weightMax, setWeightMax] = useState(''); // optional
   const [stoneWeight, setStoneWeight] = useState('');
   const [orderNotes, setOrderNotes] = useState('');
   const [dueDate, setDueDate] = useState<string | null>(null);
 
+  // Charges
+  const [vacPercent, setVacPercent] = useState('');
+  const [makingChargeFixed, setMakingChargeFixed] = useState('');
+  const [stoneChargeFixed, setStoneChargeFixed] = useState('');
+
+  // Reference pictures
+  const [images, setImages] = useState<PickedImage[]>([]);
+
+  // Goldsmith
+  const [goldsmithName, setGoldsmithName] = useState('');
+  const [goldsmithPhone, setGoldsmithPhone] = useState('');
+
+  // Advance payment
+  const [advanceAmount, setAdvanceAmount] = useState('');
+  const [paymentMode, setPaymentMode] = useState<PaymentMode | null>(null);
+
   // The jewel order fields are always visible. An order is only created when
   // the cashier has filled in at least one of them; if they're all left
   // blank, only the customer is saved. Once any field is touched, the full
-  // order validation below applies (category, metal, purity, weight range).
+  // order validation below applies (category, metal, purity, min weight).
   const includeOrder =
     !!categoryId ||
     !!metalId ||
     !!purityId ||
     weightMin.trim() !== '' ||
     weightMax.trim() !== '' ||
-    stoneIds.length > 0 ||
+    // stoneIds.length > 0 ||
     stoneWeight.trim() !== '' ||
     orderNotes.trim() !== '' ||
-    !!dueDate;
+    !!dueDate ||
+    vacPercent.trim() !== '' ||
+    makingChargeFixed.trim() !== '' ||
+    stoneChargeFixed.trim() !== '' ||
+    goldsmithName.trim() !== '' ||
+    goldsmithPhone.trim() !== '' ||
+    advanceAmount.trim() !== '' ||
+    !!paymentMode ||
+    images.length > 0;
 
   const [saving, setSaving] = useState(false);
 
@@ -75,14 +107,29 @@ export default function AddCustomerScreen() {
     setErrorVisible(true);
   }
 
-  // Load categories, metals and stone names from the database
+  // Asks whether to send the design to the goldsmith right after the order is saved
+  function askShareWithSmith(): Promise<boolean> {
+    return new Promise((resolve) => {
+      Alert.alert(
+        'Share with goldsmith?',
+        `Send the design details and reference picture to ${goldsmithName.trim() || 'the goldsmith'} on WhatsApp?`,
+        [
+          { text: 'Not now', style: 'cancel', onPress: () => resolve(false) },
+          { text: 'Share', onPress: () => resolve(true) },
+        ],
+        { cancelable: false }
+      );
+    });
+  }
+
+  // Load categories and metals from the database
   useEffect(() => {
     (async () => {
       try {
-        const [c, m, stones] = await Promise.all([getCategories(), getMetals(), getStoneNames()]);
+        const [c, m /*, stones */] = await Promise.all([getCategories(), getMetals() /*, getStoneNames() */]);
         setCategories((c ?? []).map((x: any) => ({ id: x.id, label: x.name })));
         setMetals((m ?? []).map((x: any) => ({ id: x.id, label: x.name })));
-        setStoneOptions((stones ?? []).map((x: any) => ({ id: x.id, label: x.name })));
+        // setStoneOptions((stones ?? []).map((x: any) => ({ id: x.id, label: x.name })));
       } catch (e: any) {
         console.warn('Could not load order master data:', e);
         showError(e?.message ?? 'Could not load order master data.');
@@ -124,12 +171,13 @@ export default function AddCustomerScreen() {
     return opt;
   }
 
-  async function handleAddStoneName(newName: string): Promise<SelectOption> {
-    const created = await createStoneName({ name: newName });
-    const opt: SelectOption = { id: created.id, label: created.name };
-    setStoneOptions((prev) => [...prev, opt].sort((a, b) => a.label.localeCompare(b.label)));
-    return opt;
-  }
+  // Stone name removed
+  // async function handleAddStoneName(newName: string): Promise<SelectOption> {
+  //   const created = await createStoneName({ name: newName });
+  //   const opt: SelectOption = { id: created.id, label: created.name };
+  //   setStoneOptions((prev) => [...prev, opt].sort((a, b) => a.label.localeCompare(b.label)));
+  //   return opt;
+  // }
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -141,14 +189,15 @@ export default function AddCustomerScreen() {
       return;
     }
 
-    // The order is stored by NAME (category / metal / purity / stone), which
+    // The order is stored by NAME (category / metal / purity), which
     // is what the invoice prefill matches on, so resolve ids back to names.
     let categoryName = '';
     let metalName = '';
     let purityName = '';
-    let stoneNames = '';
+    // let stoneNames = ''; // stone name removed
     let min: number | null = null;
     let max: number | null = null;
+    let advance: number | null = null;
 
     if (includeOrder) {
       categoryName = categories.find((c) => c.id === categoryId)?.label ?? '';
@@ -168,29 +217,48 @@ export default function AddCustomerScreen() {
         return;
       }
 
+      // Min weight is required, max weight is optional
       min = parseFloat(weightMin);
-      max = parseFloat(weightMax);
-      if (isNaN(min) || isNaN(max)) {
-        showError('Enter a valid weight range for the jewel order.', 'Incomplete order');
+      if (isNaN(min)) {
+        showError('Enter the minimum weight for the jewel order.', 'Incomplete order');
         return;
       }
-      if (min > max) {
-        showError('Minimum weight cannot exceed maximum weight.', 'Invalid weight range');
-        return;
+      if (weightMax.trim()) {
+        max = parseFloat(weightMax);
+        if (isNaN(max)) {
+          showError('Enter a valid maximum weight.', 'Invalid weight range');
+          return;
+        }
+        if (min > max) {
+          showError('Minimum weight cannot exceed maximum weight.', 'Invalid weight range');
+          return;
+        }
       }
 
-      // A jewel order can carry several stones — stored as one comma-separated string.
-      stoneNames = stoneIds
-        .map((id) => stoneOptions.find((s) => s.id === id)?.label)
-        .filter(Boolean)
-        .join(', ');
+      if (advanceAmount.trim()) {
+        advance = parseFloat(advanceAmount);
+        if (isNaN(advance) || advance < 0) {
+          showError('Enter a valid advance amount.', 'Invalid advance');
+          return;
+        }
+        if (advance > 0 && !paymentMode) {
+          showError('Select a payment mode for the advance.', 'Incomplete order');
+          return;
+        }
+      }
+
+      // Stone name removed
+      // stoneNames = stoneIds
+      //   .map((id) => stoneOptions.find((s) => s.id === id)?.label)
+      //   .filter(Boolean)
+      //   .join(', ');
     }
 
     setSaving(true);
     try {
       const customer = await createCustomer({ name, phone, email, address, gstin });
 
-      if (includeOrder && min !== null && max !== null) {
+      if (includeOrder && min !== null) {
         try {
           const order = await createCustomerOrder({
             customer_id: customer.id,
@@ -200,18 +268,57 @@ export default function AddCustomerScreen() {
             weight_min: min,
             weight_max: max,
             stone_weight: stoneWeight ? parseFloat(stoneWeight) : null,
-            stone_name: stoneNames || null,
+            // stone_name: stoneNames || null,
             notes: orderNotes,
             due_date: dueDate,
+            vac_percent: vacPercent ? parseFloat(vacPercent) : null,
+            making_charge: makingChargeFixed ? parseFloat(makingChargeFixed) : null,
+            stone_charge: stoneChargeFixed ? parseFloat(stoneChargeFixed) : null,
+            goldsmith_name: goldsmithName,
+            goldsmith_phone: goldsmithPhone,
+            advance_amount: advance,
+            payment_mode: advance ? paymentMode : null,
           });
 
+          // Upload reference pictures (order is already saved; a failed upload shouldn't lose it)
+          const withData = images.filter((i) => !!i.base64) as { base64: string }[];
+          let uploadedPaths: string[] = [];
+          if (withData.length) {
+            try {
+              uploadedPaths = await attachOrderReferenceImages(order.id, withData);
+            } catch (imgErr: any) {
+              console.error('Reference image upload failed:', imgErr);
+              showError(imgErr?.message ?? 'Pictures could not be uploaded.', 'Order saved, pictures failed');
+            }
+          }
+
           // Tell the other staff a new order was created
-          await notify(
-            'order',
-            'New jewel order',
-            `${order.order_number} for ${name.trim()}: ${categoryName}, ${metalName} (${purityName}), ${min}–${max}g` +
-              (dueDate ? `, due ${formatDisplayDate(dueDate)}` : '')
-          );
+          const weightText = max !== null ? `${min}–${max}g` : `${min}g`;
+          try {
+            await notify(
+              'order',
+              'New jewel order',
+              `${order.order_number} for ${name.trim()}: ${categoryName}, ${metalName} (${purityName}), ${weightText}` +
+                (dueDate ? `, due ${formatDisplayDate(dueDate)}` : '')
+            );
+          } catch (notifyErr) {
+            console.warn('Failed to send order notification', notifyErr);
+          }
+
+          // Offer to send the design to the goldsmith
+          if (goldsmithName.trim() || goldsmithPhone.trim()) {
+            if (await askShareWithSmith()) {
+              try {
+                await shareOrderWithGoldsmithOnWhatsApp({
+                  order,
+                  base64Images: withData.map((i) => i.base64),
+                  imageUrls: uploadedPaths.map(getOrderImageUrl), // fallback
+                });
+              } catch (shareErr) {
+                console.warn('Goldsmith share failed', shareErr);
+              }
+            }
+          }
         } catch (orderErr: any) {
           console.error('Order creation failed:', orderErr);
           router.replace(`/customers/${customer.id}?orderFailed=1`);
@@ -246,12 +353,15 @@ export default function AddCustomerScreen() {
         <View style={styles.orderHeader}>
           <Text style={styles.toggleTitle}>Jewel Order Details</Text>
           <Text style={styles.toggleSubtitle}>
-            Customer is ordering a jewel — capture category, metal, weight and stone details. Leave blank to save
+            Customer is ordering a jewel — capture category, metal, weight and goldsmith details. Leave blank to save
             the customer only.
           </Text>
         </View>
 
         <View style={styles.orderSection}>
+          <Text style={styles.sectionTitle}>Reference Pictures</Text>
+          <ImagePickerGrid images={images} onChange={setImages} />
+
           <Text style={styles.sectionTitle}>Category</Text>
           <SelectField
             label="Category"
@@ -276,7 +386,7 @@ export default function AddCustomerScreen() {
           <View style={styles.row}>
             <TextInput
               style={[styles.input, styles.rowInput]}
-              placeholder="Min weight"
+              placeholder="Min weight *"
               placeholderTextColor={colors.textMuted}
               keyboardType="decimal-pad"
               value={weightMin}
@@ -284,7 +394,7 @@ export default function AddCustomerScreen() {
             />
             <TextInput
               style={[styles.input, styles.rowInput]}
-              placeholder="Max weight"
+              placeholder="Max weight (optional)"
               placeholderTextColor={colors.textMuted}
               keyboardType="decimal-pad"
               value={weightMax}
@@ -292,6 +402,7 @@ export default function AddCustomerScreen() {
             />
           </View>
 
+          {/* Stone name field removed
           <Text style={styles.sectionTitle}>Stones</Text>
           <MultiSelectField
             options={stoneOptions}
@@ -305,6 +416,8 @@ export default function AddCustomerScreen() {
               No stone names yet — tap the field and use "+ Add New" to create one.
             </Text>
           )}
+          */}
+          <Text style={styles.sectionTitle}>Stone Weight</Text>
           <TextInput
             style={styles.input}
             placeholder="Stone weight (ct, optional)"
@@ -313,6 +426,83 @@ export default function AddCustomerScreen() {
             value={stoneWeight}
             onChangeText={setStoneWeight}
           />
+
+          <Text style={styles.sectionTitle}>Charges</Text>
+          <View style={styles.row}>
+            <View style={styles.rowInput}>
+              <Text style={styles.label}>Value added %</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="0"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="decimal-pad"
+                value={vacPercent}
+                onChangeText={setVacPercent}
+              />
+            </View>
+            <View style={styles.rowInput}>
+              <Text style={styles.label}>Making charge ₹</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="0"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="decimal-pad"
+                value={makingChargeFixed}
+                onChangeText={setMakingChargeFixed}
+              />
+            </View>
+          </View>
+          <Text style={styles.label}>Stone charge ₹</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="0"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="decimal-pad"
+            value={stoneChargeFixed}
+            onChangeText={setStoneChargeFixed}
+          />
+
+          <Text style={styles.sectionTitle}>Issued to Goldsmith</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Goldsmith name"
+            placeholderTextColor={colors.textMuted}
+            value={goldsmithName}
+            onChangeText={setGoldsmithName}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Goldsmith phone number"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="phone-pad"
+            value={goldsmithPhone}
+            onChangeText={setGoldsmithPhone}
+          />
+
+          <Text style={styles.sectionTitle}>Advance Payment</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Advance amount ₹ (optional)"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="decimal-pad"
+            value={advanceAmount}
+            onChangeText={setAdvanceAmount}
+          />
+          <Text style={styles.label}>Payment mode</Text>
+          <View style={styles.chipWrap}>
+            {PAYMENT_MODES.map((mode) => {
+              const active = paymentMode === mode;
+              return (
+                <TouchableOpacity
+                  key={mode}
+                  style={[styles.chip, active && styles.chipActive]}
+                  onPress={() => setPaymentMode(active ? null : mode)}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{mode}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
 
           <Text style={styles.sectionTitle}>Due Date (optional)</Text>
           <DateField
@@ -375,6 +565,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   sectionTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary, marginTop: spacing.md, marginBottom: spacing.sm },
+  label: { fontSize: 12, fontWeight: '600', color: colors.textMuted, marginBottom: 6 },
   input: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -390,4 +581,16 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: spacing.sm },
   rowInput: { flex: 1 },
   helperText: { color: colors.textMuted, fontSize: 12, marginTop: 2, marginBottom: spacing.sm, fontStyle: 'italic' },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: spacing.sm },
+  chip: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipText: { fontSize: 13, fontWeight: '600', color: colors.textPrimary },
+  chipTextActive: { color: '#fff' },
 });

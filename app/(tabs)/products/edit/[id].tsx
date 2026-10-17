@@ -1,9 +1,5 @@
 // app/(tabs)/products/edit/[id].tsx
-//
-// Edit an existing product. Mirrors the Add Product form field-for-field,
-// including the Diamonds card (rate per carat), and uses ErrorModal instead
-// of Alert.alert (Alert.alert does nothing on web, so errors/validation
-// messages were invisible and Save looked "broken").
+
 import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, ScrollView, TouchableOpacity, StyleSheet,
@@ -90,9 +86,12 @@ export default function EditProductScreen() {
 
   const initialLoadDone = useRef(false);
 
-  // Diamond card shows for any metal whose name contains "diamond"
+  // Diamond card shows when the metal OR the category contains "diamond"
+  // (e.g. Metal: Gold + Category: Diamond Tops).
   const selectedMetalLabel = metals.find((m) => m.id === metalId)?.label ?? '';
-  const isDiamond = /diamond/i.test(selectedMetalLabel);
+  const selectedCategoryLabel = categories.find((c) => c.id === categoryId)?.label ?? '';
+  const isDiamond =
+    /diamond/i.test(selectedMetalLabel) || /diamond/i.test(selectedCategoryLabel);
 
   useEffect(() => {
     if (!id) return;
@@ -275,7 +274,8 @@ export default function EditProductScreen() {
 
       await setProductStones(id, stoneIds);
 
-      // Diamonds are fully replaced too. Non-diamond metal -> clears them.
+      // Diamonds are fully replaced too. If neither the metal nor the
+      // category is Diamond, this clears them.
       await setProductDiamonds(
         id,
         isDiamond
@@ -401,7 +401,7 @@ export default function EditProductScreen() {
         </View>
         <Text style={styles.netWeightText}>Net weight: {netWeight.toFixed(3)} g</Text>
 
-        {/* ---------- Diamonds (Diamond metal only) ---------- */}
+        {/* ---------- Diamonds (Diamond metal OR Diamond category) ---------- */}
         {isDiamond && (
           <>
             <Text style={styles.sectionTitle}>Diamonds</Text>

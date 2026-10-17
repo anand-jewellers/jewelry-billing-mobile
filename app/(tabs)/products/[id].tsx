@@ -84,6 +84,13 @@ export default function ProductDetailsScreen() {
     (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
   );
 
+  // A product counts as a "diamond product" when its metal OR category
+  // contains "diamond" (e.g. Gold + "Diamond Tops"). Used to show the
+  // Diamond card even before any size/rate has been entered.
+  const isDiamondProduct =
+    /diamond/i.test(product.metals?.name ?? '') ||
+    /diamond/i.test(product.categories?.name ?? '');
+
   // ---- Diamond maths: identical to the invoice (src/lib/invoiceCalc.ts) ----
   // `size`   = diamond weight in carats
   // `amount` = RATE PER CARAT (when DIAMOND_AMOUNT_IS_RATE_PER_CARAT is true)
@@ -232,9 +239,18 @@ export default function ProductDetailsScreen() {
         <Row label="Net" value={`${Number(product.net_weight).toFixed(3)} g`} bold />
       </View>
 
-      {diamonds.length > 0 && (
+      {/* Diamond card: shown when diamond rows exist, OR when the product's
+          metal/category is Diamond but no size/rate has been entered yet. */}
+      {(diamonds.length > 0 || isDiamondProduct) && (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Diamond</Text>
+
+          {diamonds.length === 0 && (
+            <Text style={styles.helperNote}>
+              No diamond size/rate added yet. Tap Edit to add them.
+            </Text>
+          )}
+
           {diamonds.map((d: any, i: number) => (
             <View key={d.id ?? i}>
               {diamonds.length > 1 && <Text style={styles.subTitle}>Diamond {i + 1}</Text>}
@@ -287,12 +303,12 @@ export default function ProductDetailsScreen() {
         <Text style={styles.notFound}>No barcode value saved for this product yet.</Text>
       ) : (
         <ProductBarcodeLabel
-  product={product}
-  productId={product.id}
-  productCode={product.product_code}
-  productName={product.product_name}
-  staffId={currentStaff.id}
-/>
+          product={product}
+          productId={product.id}
+          productCode={product.product_code}
+          productName={product.product_name}
+          staffId={currentStaff.id}
+        />
       )}
 
       {/* ===================================================

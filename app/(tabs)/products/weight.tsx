@@ -107,16 +107,32 @@ export default function ProductWeightScreen() {
 
   const inStock = useMemo(() => products.filter((p) => p.status !== SOLD_STATUS), [products]);
 
+  // Name of the Diamond metal as it exists in the metals table (fallback: "Diamond").
+  const diamondMetalName = useMemo(
+    () => metalNames.find((n) => /diamond/i.test(n)) ?? 'Diamond',
+    [metalNames]
+  );
+
+  // Products in a Diamond category count toward the Diamond metal,
+  // regardless of their actual metal (e.g. Gold + Diamond category).
+  const effectiveMetalName = useCallback(
+    (p: ProductRow) =>
+      /diamond/i.test(p.categories?.name ?? '')
+        ? diamondMetalName
+        : p.metals?.name || 'Unknown',
+    [diamondMetalName]
+  );
+
   // REAL weight per metal (every active metal listed, even if 0).
   const realByMetal = useMemo(() => {
     const totals = new Map<string, number>();
     metalNames.forEach((n) => totals.set(n, 0));
     for (const p of inStock) {
-      const name = p.metals?.name || 'Unknown';
+      const name = effectiveMetalName(p);
       totals.set(name, (totals.get(name) || 0) + Number(p.net_weight || 0));
     }
     return Array.from(totals.entries()).map(([name, weight]) => ({ name, weight }));
-  }, [inStock, metalNames]);
+  }, [inStock, metalNames, effectiveMetalName]);
 
   // DISPLAYED weight = temporary override if active, else real.
   const byMetal = useMemo(
@@ -136,7 +152,7 @@ export default function ProductWeightScreen() {
     const cats = new Map<string, { total: number; byMetal: Map<string, number> }>();
     for (const p of inStock) {
       const catName = p.categories?.name || 'Uncategorized';
-      const metal = p.metals?.name || 'Unknown';
+      const metal = effectiveMetalName(p);
       const weight = Number(p.net_weight || 0);
       if (!cats.has(catName)) cats.set(catName, { total: 0, byMetal: new Map() });
       const entry = cats.get(catName)!;
@@ -152,7 +168,7 @@ export default function ProductWeightScreen() {
           .sort((a, b) => b.weight - a.weight),
       }))
       .sort((a, b) => b.total - a.total);
-  }, [inStock]);
+  }, [inStock, effectiveMetalName]);
 
   // ---- Hidden editor: triple-tap on "Total Stock" ----
   function onTotalPress() {

@@ -1,6 +1,6 @@
 // app/(tabs)/invoices/new.tsx
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -10,12 +10,14 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  Keyboard,
 } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, router } from 'expo-router';
 import { Plus, Barcode, X, Check } from 'lucide-react-native';
 import { Button, Card, ErrorModal } from '../../../src/components/ui';
 import { SelectField } from '../../../src/components/master';
 import { colors, spacing, radius } from '../../../src/theme';
+import { searchPhoneContacts } from '../../../src/lib/phoneContacts';
 
 import {
   listMetals,
@@ -33,9 +35,10 @@ import {
   getMakingChargeRule,
   getDefaultTaxSetting,
   createInvoice,
+  searchCustomers,
 } from '../../../src/lib/api/invoices';
 
-import { getCustomerById } from '../../../src/lib/api/customers';
+import { getCustomerById, listCustomers } from '../../../src/lib/api/customers';
 import { completeCustomerOrderWithInvoice } from '../../../src/lib/api/customerOrders';
 
 import { buildInvoiceItemFromProduct, invoiceTotals, recalcItem, withoutGst } from '../../../src/lib/invoiceCalc';
@@ -65,6 +68,7 @@ import type {
   ExchangeItemDetail,
   InvoiceCharge,
   InvoiceDetail,
+  Customer,
 } from '../../../src/types/invoices';
 import { getSavedPrinter } from '../../../src/lib/thermalPrint/printerStore';
 import { getConnectedPrinter, disconnectActive } from '../../../src/lib/thermalPrint/printerService';
@@ -199,6 +203,69 @@ export default function NewInvoiceScreen() {
   const [remark, setRemark] = useState('');
 
   // ---------------------------------------------------------
+  // Customer autocomplete (search by name or phone)
+  // ---------------------------------------------------------
+
+  const [suggestions, setSuggestions] = useState<Customer[]>([]);
+  const [activeField, setActiveField] = useState<'name' | 'phone' | null>(null);
+  const [searchDone, setSearchDone] = useState(false);
+
+  // True only right after the user TYPES a digit (not on focus, not on delete).
+  // Auto-fill is allowed only while this is true.
+  const autoFillArmed = useRef(false);
+  const prevPhoneDigits = useRef(0);
+
+  const selectCustomer = (c: Customer, opts?: { dismissKeyboard?: boolean }) => {
+    const fromContacts = c.id.startsWith('contact-');
+    setCustomerName(c.name ?? '');
+    setCustomerPhone(c.phone ?? '');
+    // A phone contact is a NEW customer, so it has no database id yet
+    setResolvedCustomerId(fromContacts ? null : c.id);
+    setSuggestions([]);
+    setActiveField(null);
+    prevPhoneDigits.current = (c.phone ?? '').replace(/\D/g, '').length;
+    autoFillArmed.current = false;
+    // Only close the keyboard when the user tapped a suggestion
+    if (opts?.dismissKeyboard !== false) Keyboard.dismiss();
+  };
+
+  // Typing by hand means it's no longer a confirmed existing customer.
+  const onNameChange = (text: string) => {
+    autoFillArmed.current = false;
+    setCustomerName(text);
+    setResolvedCustomerId(null);
+    setActiveField('name');
+    setSearchDone(false);
+  };
+
+  const onPhoneChange = (text: string) => {
+    const digits = text.replace(/\D/g, '').length;
+    // Arm auto-fill only when the user is adding digits, never when deleting
+    autoFillArmed.current = digits > prevPhoneDigits.current;
+    prevPhoneDigits.current = digits;
+
+    // Only clear the name when the phone field is emptied completely
+    if (text.trim() === '') {
+      setCustomerName('');
+    }
+    setCustomerPhone(text);
+    setResolvedCustomerId(null);
+    setActiveField('phone');
+    setSearchDone(false);
+  };
+
+  // Focusing a field must never trigger auto-fill
+  const onPhoneFocus = () => {
+    autoFillArmed.current = false;
+    setActiveField('phone');
+  };
+
+  const onNameFocus = () => {
+    autoFillArmed.current = false;
+    setActiveField('name');
+  };
+
+  // ---------------------------------------------------------
   // Invoice items
   // ---------------------------------------------------------
 
@@ -307,6 +374,69 @@ export default function NewInvoiceScreen() {
     }, [load])
   );
 
+  // =========================================================
+  // Customer autocomplete: debounced search
+  // =========================================================
+
+  useEffect(() => {
+    if (readOnly || !activeField || resolvedCustomerId) {
+      setSuggestions([]);
+      setSearchDone(false);
+      return;
+    }
+
+    const raw = activeField === 'name' ? customerName : customerPhone;
+    const q = raw.trim().replace(/[,()%]/g, '');
+    const minLen = activeField === 'phone' ? 3 : 2;
+
+    if (q.length < minLen) {
+      setSuggestions([]);
+      setSearchDone(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const [dbResults, contactResults] = await Promise.all([
+          listCustomers({ search: q }),
+          searchPhoneContacts(q, activeField),
+        ]);
+        if (cancelled) return;
+
+        // Don't show a phone contact if that number is already a saved customer
+        const dbPhones = new Set(dbResults.map((c) => (c.phone ?? '').replace(/\D/g, '').slice(-10)));
+        const extra = contactResults.filter((c) => !dbPhones.has(c.phone ?? ''));
+        const merged = [...dbResults, ...extra];
+
+        // Auto-fill ONLY if the user just typed forward to a full number
+        if (
+          activeField === 'phone' &&
+          autoFillArmed.current &&
+          q.replace(/\D/g, '').length >= 10 &&
+          merged.length === 1
+        ) {
+          selectCustomer(merged[0], { dismissKeyboard: false });
+          return;
+        }
+
+        setSuggestions(merged.slice(0, 6));
+        setSearchDone(true);
+      } catch (e: any) {
+        console.warn('[customer search] failed:', e?.message ?? e);
+        if (!cancelled) {
+          setSuggestions([]);
+          setSearchDone(true);
+        }
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [customerName, customerPhone, activeField, resolvedCustomerId, readOnly]);
+
 
   // =========================================================
   // Pre-fill from a customer jewel order (Create Invoice flow)
@@ -342,7 +472,11 @@ export default function NewInvoiceScreen() {
         ? categories.find((c) => c.name.toLowerCase() === orderCategory.toLowerCase())
         : undefined;
 
-      const netWeight = orderWeightMax ? parseFloat(orderWeightMax) : 0;
+      // Min weight is required on the order, max weight is optional.
+      // Use the max weight when it is given, otherwise fall back to the min weight.
+      const minW = orderWeightMin ? parseFloat(orderWeightMin) : 0;
+      const maxW = orderWeightMax ? parseFloat(orderWeightMax) : 0;
+      const netWeight = maxW > 0 ? maxW : minW;
       const stoneWeight = orderStoneWeight ? parseFloat(orderStoneWeight) : 0;
 
       let rate = 0;
@@ -415,7 +549,7 @@ export default function NewInvoiceScreen() {
       setEditingItem(draftItem);
       setSheetOpen(true);
     })();
-  }, [fromOrder, loadingMaster, orderPrefillApplied, orderCustomerId, orderMetal, orderPurity, orderCategory, orderWeightMax, orderStoneWeight, orderNumberParam, metals, purities, categories]);
+  }, [fromOrder, loadingMaster, orderPrefillApplied, orderCustomerId, orderMetal, orderPurity, orderCategory, orderWeightMin, orderWeightMax, orderStoneWeight, orderNumberParam, metals, purities, categories]);
 
 
   // =========================================================
@@ -604,11 +738,15 @@ export default function NewInvoiceScreen() {
     setPaymentSplits([]);
     setPaymentSplitsTouched(false);
     setResolvedCustomerId(null);
+    setSuggestions([]);
+    setActiveField(null);
     setStage('building');
     setActiveHeldId(null);
     setReadOnly(false);
     setBilledNumber(null);
     setGstEnabled(true);
+    prevPhoneDigits.current = 0;
+    autoFillArmed.current = false;
   };
 
   const handleHoldEstimate = async () => {
@@ -637,8 +775,12 @@ export default function NewInvoiceScreen() {
     const d = h.data;
     setCustomerName(d.customerName);
     setCustomerPhone(d.customerPhone);
+    prevPhoneDigits.current = (d.customerPhone ?? '').replace(/\D/g, '').length;
+    autoFillArmed.current = false;
     setRemark(d.remark);
     setResolvedCustomerId(d.resolvedCustomerId);
+    setActiveField(null); // loading a held bill must not trigger a customer search
+    setSuggestions([]);
     setItems(d.items);
     setExchangeItems(d.exchangeItems);
     setExchangeTotal(d.exchangeTotal);
@@ -1164,7 +1306,10 @@ export default function NewInvoiceScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 140 }}>
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ padding: spacing.lg, paddingBottom: 140 }}
+      >
 
         {/* =================================================
             Billed banner — only for a held estimate that has
@@ -1180,7 +1325,7 @@ export default function NewInvoiceScreen() {
         )}
 
         {/* =================================================
-            Customer
+            Customer (with autocomplete by name / phone)
         ================================================= */}
 
         <TextInput
@@ -1188,7 +1333,8 @@ export default function NewInvoiceScreen() {
           placeholder="Customer Name"
           placeholderTextColor={colors.textMuted}
           value={customerName}
-          onChangeText={setCustomerName}
+          onChangeText={onNameChange}
+          onFocus={onNameFocus}
           editable={!readOnly}
         />
 
@@ -1198,9 +1344,25 @@ export default function NewInvoiceScreen() {
           placeholderTextColor={colors.textMuted}
           keyboardType="phone-pad"
           value={customerPhone}
-          onChangeText={setCustomerPhone}
+          onChangeText={onPhoneChange}
+          onFocus={onPhoneFocus}
           editable={!readOnly}
         />
+
+        {suggestions.length > 0 && (
+          <View style={styles.suggestBox}>
+            {suggestions.map((c) => (
+              <Pressable key={c.id} style={styles.suggestRow} onPress={() => selectCustomer(c)}>
+                <Text style={styles.suggestName}>{c.name}</Text>
+                <Text style={styles.suggestPhone}>{c.phone ?? '—'}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+
+        {resolvedCustomerId && !readOnly && (
+          <Text style={styles.matchedText}>✓ Existing customer</Text>
+        )}
 
         <TextInput
           style={styles.input}
@@ -1800,6 +1962,28 @@ const styles = StyleSheet.create({
   },
   orderBannerTitle: { fontSize: 13, fontWeight: '700', color: '#1D4ED8' },
   orderBannerText: { fontSize: 12, color: '#1E3A8A', marginTop: 4 },
+
+  // Customer autocomplete
+  suggestBox: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius?.md ?? 10,
+    backgroundColor: colors.surface,
+    marginTop: -spacing.sm,
+    marginBottom: spacing.md,
+    overflow: 'hidden',
+  },
+  suggestRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  suggestName: { fontSize: 14, fontWeight: '600', color: colors.textPrimary },
+  suggestPhone: { fontSize: 14, color: colors.textMuted },
+  matchedText: { fontSize: 12, color: '#137333', marginTop: -spacing.sm, marginBottom: spacing.md },
 
   // Billed (read-only) banner
   billedBanner: { backgroundColor: '#E6F4EA', borderWidth: 1, borderColor: '#CEEAD6', borderRadius: radius?.md ?? 10, padding: spacing.md, marginBottom: spacing.md },

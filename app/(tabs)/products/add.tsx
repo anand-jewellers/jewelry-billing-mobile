@@ -116,9 +116,12 @@ export default function AddProductScreen() {
 
   const [images, setImages] = useState<PickedImage[]>([]);
 
-  // Diamond detection: any metal whose name contains "diamond".
+  // Diamond detection: metal OR category whose name contains "diamond".
+  // (e.g. Metal: Gold + Category: Diamond still shows the diamond size/rate rows.)
   const selectedMetalLabel = metals.find((m) => m.id === metalId)?.label ?? '';
-  const isDiamond = /diamond/i.test(selectedMetalLabel);
+  const selectedCategoryLabel = categories.find((c) => c.id === categoryId)?.label ?? '';
+  const isDiamond =
+    /diamond/i.test(selectedMetalLabel) || /diamond/i.test(selectedCategoryLabel);
 
   // ---------- Stone charge logic ----------
   // 0 or 1 stone  -> single "Stone Charge ₹" field, typed by the user.

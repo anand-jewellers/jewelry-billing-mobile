@@ -15,6 +15,12 @@
           "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan barcodes."
         }
       ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Allow $(PRODUCT_NAME) to read your contacts to fill in customer name and phone number."
+        }
+      ],
       "@react-native-community/datetimepicker",
       [
         "expo-splash-screen",
@@ -50,7 +56,8 @@
         "BLUETOOTH_ADMIN",
         "ACCESS_FINE_LOCATION",
         "BLUETOOTH_SCAN",
-        "BLUETOOTH_CONNECT"
+        "BLUETOOTH_CONNECT",
+        "READ_CONTACTS"
       ],
       "package": "com.venkat.sk.jewelrybillingmobile",
       "edgeToEdgeEnabled": true,
