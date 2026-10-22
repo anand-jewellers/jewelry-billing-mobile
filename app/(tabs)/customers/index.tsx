@@ -21,6 +21,7 @@ import {
   ChevronRight,
   ChevronLeft,
   Plus,
+  ClipboardList,
 } from 'lucide-react-native';
 import { CalendarModal } from '../../../src/components/ui/DateFilter';
 import { colors, spacing } from '../../../src/theme';
@@ -259,6 +260,14 @@ export default function CustomerListScreen() {
             onPress={openPicker}
           >
             <Calendar size={20} color={hasRange && !isDefaultToday ? colors.primary : '#334155'} />
+          </Pressable>
+
+          <Pressable
+            style={styles.calendarButton}
+            onPress={() => router.push('/customers/orders' as never)}
+            hitSlop={4}
+          >
+            <ClipboardList size={20} color="#334155" />
           </Pressable>
         </View>
 

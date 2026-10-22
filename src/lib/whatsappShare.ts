@@ -25,7 +25,7 @@ try {
   RNSocial = null;
 }
 // react-native-image-marker is also a native module: load it lazily so Expo Go
-// still starts (photos are then sent without numbers).
+// still starts (photos are then sent without numbers / logo).
 let MarkerMod: any = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -39,14 +39,15 @@ export interface ShopShareInfo {
   address: string | null;
   mapsUrl: string | null;
   website?: string | null;
+  logoUrl?: string | null; // company logo (public URL) used as the photo watermark
+  reviewUrl?: string | null; // Google review link (added to every customer message)
 }
 
 // ---------------------------------------------------------
 // Shop info from the company settings row.
 //
-// Field names are read defensively because I haven't seen your
-// company_settings columns. If your table uses different names,
-// add them to the fallback chains below.
+// Field names are read defensively. logo_url is the column used by
+// Settings > Company (uploaded to the public "company-assets" bucket).
 // ---------------------------------------------------------
 export function shopInfoFromCompany(company: any): ShopShareInfo {
   const name =
@@ -81,7 +82,18 @@ export function shopInfoFromCompany(company: any): ShopShareInfo {
   let website = rawWebsite ? String(rawWebsite).trim() : '';
   if (website && !/^https?:\/\//i.test(website)) website = `https://${website}`;
 
-  return { name: String(name).trim(), address, mapsUrl, website: website || null };
+  // Logo: full https:// URL (Supabase public URL) or a data:image base64 string.
+  const rawLogo = company?.logo_url ?? company?.company_logo ?? company?.logo ?? null;
+  const logoUrl = rawLogo ? String(rawLogo).trim() : null;
+
+  return {
+    name: String(name).trim(),
+    address,
+    mapsUrl,
+    website: website || null,
+    logoUrl: logoUrl || null,
+    reviewUrl: reviewUrlFromCompany(company),
+  };
 }
 
 // ---------------------------------------------------------
@@ -127,6 +139,23 @@ function isUserCancel(e: any): boolean {
 }
 
 // =========================================================
+// Google review block - appended to EVERY customer message.
+// Uses the link passed in; falls back to DEFAULT_GOOGLE_REVIEW_URL.
+// =========================================================
+const REVIEW_INVITE = 'We would love to hear your feedback — please rate us on Google:';
+
+// Lines to append to a message (starts with a blank line).
+function reviewBlock(url?: string | null): string[] {
+  const u = String(url ?? DEFAULT_GOOGLE_REVIEW_URL ?? '').trim();
+  return u ? ['', REVIEW_INVITE, `⭐ ${u}`] : [];
+}
+
+function withReview(message: string, url?: string | null): string {
+  const block = reviewBlock(url);
+  return block.length ? `${message}\n${block.join('\n')}` : message;
+}
+
+// =========================================================
 // Products: single + multiple product share
 //
 // Product photos are sent as real attachments (downloaded to the
@@ -152,12 +181,12 @@ function buildProductLines(p: ShareableProduct, imageUrl?: string | null, indent
   return lines;
 }
 
-// Shop name on top, website at the bottom.
+// Shop name on top, review link, then website at the bottom.
 function wrapWithShopInfo(body: string, shop?: ShopShareInfo | null): string {
   const name = shop?.name?.trim();
   const header = name ? `*${name}*\n\n` : '';
   const footer = shop?.website ? `\n\n${shop.website}` : '';
-  return `${header}${body}${footer}`;
+  return `${header}${withReview(body, shop?.reviewUrl)}${footer}`;
 }
 
 export function buildMultiProductShareMessage(
@@ -235,6 +264,7 @@ async function cleanupOldShareFiles(): Promise<void> {
 // Works on mobile browsers and some desktop browsers (Chrome/Edge on
 // Windows, Safari on Mac). Returns false when unsupported so the caller
 // can fall back to a text-only WhatsApp message.
+// (No logo watermark on web: the native image-marker module is not available.)
 // ---------------------------------------------------------
 async function shareImagesOnWeb(urls: string[], caption: string): Promise<boolean> {
   try {
@@ -351,8 +381,9 @@ function confirmStep(title: string, message: string, okLabel: string): Promise<b
 
 type ShareResult = 'shared' | 'cancelled';
 
-// Launches ONE product: its photo as an attachment with its own details as
-// the caption. Falls back to a text-only WhatsApp message on any problem.
+// Launches ONE product: its photo (with the company logo in the top-right
+// corner) as an attachment with its own details as the caption.
+// Falls back to a text-only WhatsApp message on any problem.
 async function shareOneProduct(
   product: ShareableProductWithImage,
   shop: ShopShareInfo | null | undefined,
@@ -381,6 +412,22 @@ async function shareOneProduct(
     return 'shared';
   }
 
+  // Company logo in the top-right corner (falls back to the plain photo on any problem)
+  let fileUri = file.uri;
+  let fileMime = file.mime;
+  if (ENABLE_LOGO_WATERMARK) {
+    const logo = await prepareLogoFile(shop);
+    if (logo) {
+      const r = await stampLogoOnImage(fileUri, logo);
+      if (r.ok) {
+        fileUri = r.uri;
+        fileMime = 'image/jpeg';
+      } else {
+        debugToast(r.note ?? 'Logo watermark failed');
+      }
+    }
+  }
+
   // Safety net: WhatsApp (especially on iPhone) can drop the caption
   await Clipboard.setStringAsync(caption);
 
@@ -388,12 +435,12 @@ async function shareOneProduct(
     Platform.OS === 'android' && RNShare.shareSingle && RNSocial?.Whatsapp
       ? RNShare.shareSingle({
         social: RNSocial.Whatsapp,
-        url: file.uri,
-        type: file.mime,
+        url: fileUri,
+        type: fileMime,
         message: caption,
         whatsAppNumber: phone ?? undefined, // opens that customer's chat directly
       })
-      : RNShare.open({ urls: [file.uri], type: file.mime, message: caption, failOnCancel: false });
+      : RNShare.open({ urls: [fileUri], type: fileMime, message: caption, failOnCancel: false });
 
   const outcome = await launchShare(call);
   if (outcome === 'cancelled') return 'cancelled';
@@ -506,6 +553,129 @@ async function stampNumberOnImage(uri: string, n: number): Promise<StampResult> 
   return { uri: stampedUri, ok: true };
 }
 
+// ---------------------------------------------------------
+// Company logo watermark (top-right corner of every shared product photo)
+// ---------------------------------------------------------
+
+// Set to false to turn the logo watermark off.
+const ENABLE_LOGO_WATERMARK = true;
+
+// Logo size as a fraction of the photo width, and its opacity.
+// 0.12 = 12% of the photo width. Make it smaller/bigger here.
+const LOGO_WIDTH_RATIO = 0.12;
+const LOGO_ALPHA = 0.95;
+// Gap from the top and right edges, as a fraction of the photo width.
+const LOGO_MARGIN_RATIO = 0.03;
+
+// expo-image-manipulator is used to shrink the logo to the exact pixel size
+// BEFORE stamping, so the size never depends on how the marker library scales.
+// (npx expo install expo-image-manipulator). Optional: without it we fall back
+// to the marker's own scale.
+let Manipulator: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  Manipulator = require('expo-image-manipulator');
+} catch {
+  Manipulator = null;
+}
+
+// The logo is downloaded once and reused for every photo in the same share.
+let logoCache: { src: string; uri: string } | null = null;
+
+// Gets the shop logo as a local file (downloads it, or decodes a data: URI).
+async function prepareLogoFile(shop?: ShopShareInfo | null): Promise<string | null> {
+  const src = shop?.logoUrl;
+  if (!src) return null;
+
+  try {
+    // Reuse the copy from earlier in this share if it is still on disk
+    if (logoCache && logoCache.src === src) {
+      const info = await FileSystem.getInfoAsync(logoCache.uri);
+      if (info.exists) return logoCache.uri;
+    }
+
+    let uri: string | null = null;
+
+    if (src.startsWith('data:image')) {
+      const base64 = src.split(',')[1];
+      if (!base64) return null;
+      const dest = `${FileSystem.cacheDirectory}${SHARE_FILE_PREFIX}logo_${Date.now()}.png`;
+      await FileSystem.writeAsStringAsync(dest, base64, { encoding: FileSystem.EncodingType.Base64 });
+      uri = dest;
+    } else if (/^https?:\/\//i.test(src)) {
+      // Supabase public URL (the ?v=... cache-buster is handled by extFromUrl)
+      const d = await downloadToCache(src, 900);
+      uri = d?.uri ?? null;
+    }
+    // A local file:/content: path or a bare storage path is not usable here
+
+    if (uri) logoCache = { src, uri };
+    return uri;
+  } catch {
+    return null;
+  }
+}
+
+// Stamps the logo in the TOP-RIGHT corner, fully inside the photo.
+// On any failure it returns the original photo untouched plus the real error text.
+async function stampLogoOnImage(uri: string, logoUri: string): Promise<StampResult> {
+  const Marker = MarkerMod?.default ?? MarkerMod;
+  if (!Marker?.markImage) return { uri, ok: false, note: 'markImage not available' };
+
+  const size = await Promise.race([getImageSize(uri), sleep(3000).then(() => null)]);
+  if (!size) return { uri, ok: false, note: 'could not read photo size' };
+
+  const targetW = Math.max(40, Math.round(size.width * LOGO_WIDTH_RATIO));
+  const margin = Math.round(size.width * LOGO_MARGIN_RATIO);
+
+  // The marker library sizes the logo relative to the PHOTO width
+  // (scale 1 = full photo width), so the scale is simply the fraction we want.
+  const useLogo = logoUri;
+  const logoW = targetW;
+  // The marker sizes the logo relative to the photo HEIGHT, so convert the
+  // wanted width (a share of the photo width) into that scale.
+  const scale = (LOGO_WIDTH_RATIO * size.width) / size.height;
+
+  const X = Math.max(0, size.width - logoW - margin);
+  const Y = margin;
+
+  const fmt = (MarkerMod?.ImageFormat ?? Marker?.ImageFormat)?.jpg;
+  const PositionEnum = MarkerMod?.Position ?? Marker?.Position;
+
+  const withFile = (u: string) => (u.startsWith('file://') ? u : `file://${u}`);
+  const noFile = (u: string) => u.replace(/^file:\/\//, '');
+
+  // Exact pixel position first; the library's own top-right anchor as a backup
+  const positions: any[] = [
+    { X, Y },
+    ...(PositionEnum?.topRight ? [{ position: PositionEnum.topRight }] : []),
+    { position: 'topRight' },
+  ];
+  const bgSources: any[] = [{ uri: withFile(uri) }, noFile(uri)];
+  const logoSources: any[] = [{ uri: withFile(useLogo) }, noFile(useLogo)];
+
+  const errs: string[] = [];
+  for (const position of positions) {
+    for (const bg of bgSources) {
+      for (const logo of logoSources) {
+        try {
+          const res = await Marker.markImage({
+            backgroundImage: { src: bg, scale: 1 },
+            watermarkImages: [{ src: logo, scale, alpha: LOGO_ALPHA, position }],
+            quality: 90,
+            ...(fmt ? { saveFormat: fmt } : {}),
+          });
+          const out = extractMarkerPath(res);
+          if (out) return { uri: withFile(out), ok: true };
+          errs.push(`unexpected result: ${JSON.stringify(res)?.slice(0, 120)}`);
+        } catch (e: any) {
+          errs.push(String(e?.message ?? e).slice(0, 120));
+        }
+      }
+    }
+  }
+  return { uri, ok: false, note: `Logo failed. ${Array.from(new Set(errs)).slice(0, 2).join(' | ')}` };
+}
 
 // Set to false to share the plain photos exactly like before (no numbers).
 // Use this to check whether the numbering is what is breaking the photo share.
@@ -533,8 +703,9 @@ function debugToast(msg: string) {
 }
 
 // Sends ALL selected products in ONE WhatsApp send: every photo attached
-// together, plus one caption listing the products in the same order as the
-// photos (1., 2., 3.). One tap, one Send.
+// together (numbered top-left, company logo top-right), plus one caption
+// listing the products in the same order as the photos (1., 2., 3.).
+// One tap, one Send.
 async function shareProductsTogether(
   list: ShareableProductWithImage[],
   shop: ShopShareInfo | null | undefined,
@@ -579,28 +750,42 @@ async function shareProductsTogether(
     return;
   }
 
-  // 2) Numbered copies (each one falls back to its original if stamping fails)
+  // 2) Numbered + logo copies (each step falls back to the previous file if it fails)
+  const logoFile = ENABLE_LOGO_WATERMARK ? await prepareLogoFile(shop) : null;
+
   let numberedFiles: string[] = [];
-  if (ENABLE_NUMBER_STAMP) {
+  if (ENABLE_NUMBER_STAMP || logoFile) {
     const results = await Promise.race([
       (async () => {
-        const out: StampResult[] = [];
+        const out: string[] = [];
+        let numberNote: string | undefined;
         for (let i = 0; i < downloaded.length; i++) {
           const d = downloaded[i];
           if (!d) continue;
-          out.push(await stampNumberOnImage(d.uri, withImages[i].number));
+          let cur = d.uri;
+
+          if (ENABLE_NUMBER_STAMP) {
+            const r = await stampNumberOnImage(cur, withImages[i].number);
+            if (r.ok) cur = r.uri;
+            else numberNote = numberNote ?? r.note;
+          }
+          if (logoFile) {
+            const r = await stampLogoOnImage(cur, logoFile);
+            if (r.ok) cur = r.uri;
+            else debugToast(r.note ?? 'Logo watermark failed');
+          }
+          out.push(cur);
         }
+        if (numberNote) Alert.alert('Numbering failed', numberNote);
         return out;
       })(),
-      sleep(20000).then(() => null), // never let stamping block the share
+      sleep(30000).then(() => null), // never let stamping block the share
     ]);
 
     if (results && results.length === plainFiles.length) {
-      numberedFiles = results.map((r) => r.uri);
-      const failed = results.find((r) => !r.ok);
-      if (failed) Alert.alert('Numbering failed', failed.note ?? 'unknown error');
+      numberedFiles = results;
     } else {
-      debugToast('Numbering took too long, sending photos without numbers');
+      debugToast('Watermarking took too long, sending original photos');
     }
   }
 
@@ -610,11 +795,11 @@ async function shareProductsTogether(
     ToastAndroid.show('Details copied. If the caption is empty, long-press and paste.', ToastAndroid.LONG);
   }
 
-  // 3) Try numbered photos first (only if they really differ from the originals)
+  // 3) Try stamped photos first (only if they really differ from the originals)
   if (numberedFiles.length && numberedFiles.some((f, i) => f !== plainFiles[i])) {
     const r = await tryShareFiles(numberedFiles, caption);
     if (r.outcome === 'launched' || r.outcome === 'cancelled') return;
-    debugToast(`Numbered photos failed: ${r.error || 'unknown error'}`);
+    debugToast(`Stamped photos failed: ${r.error || 'unknown error'}`);
   }
 
   // 4) Plain photos (the original behaviour)
@@ -646,6 +831,8 @@ async function shareProductsTogether(
  * - Web: a confirm box is shown between products (browsers need a fresh
  *   tap per share).
  *
+ * Every photo carries the company logo in its top-right corner.
+ *
  * opts.phone        customer's number, opens that chat directly on Android.
  * opts.confirmEach  true = show a "Share next?" prompt between products.
  * opts.mode         'together' (default): ALL photos in one WhatsApp send with
@@ -664,7 +851,10 @@ export async function shareProductsWithImages(
   const isWeb = Platform.OS === 'web';
   const promptBetween = !!opts?.confirmEach || isWeb;
 
-  if (!isWeb) await cleanupOldShareFiles(); // previous share's photos, not this one's
+  if (!isWeb) {
+    logoCache = null; // its file is about to be deleted with the other share_ files
+    await cleanupOldShareFiles(); // previous share's photos, not this one's
+  }
 
   const together = total > 1 && (opts?.mode ?? 'together') === 'together';
 
@@ -757,6 +947,8 @@ export async function shareProductOnWhatsApp(
 
 // =========================================================
 // Order-ready message
+// Thank-you note + shop location (no review link).
+// No order number, item details, weights, dates or amounts.
 // =========================================================
 export function buildOrderReadyMessage(
   order: CustomerOrder,
@@ -768,25 +960,14 @@ export function buildOrderReadyMessage(
   lines.push(customerName ? `Hello ${customerName},` : 'Hello,');
   lines.push('Your jewel order is ready! 🎉', '');
 
-  lines.push('*Order Details*');
-  lines.push(`Order No: ${order.order_number}`);
-  lines.push(`Item: ${order.category}`);
-  lines.push(`Metal: ${order.metal} (${order.purity})`);
-  lines.push(`Weight: ${order.weight_min}g – ${order.weight_max}g`);
-  if (order.stone_name) {
-    lines.push(`Stone: ${order.stone_name}${order.stone_weight != null ? ` (${order.stone_weight} ct)` : ''}`);
-  }
-  if (order.due_date) {
-    lines.push(`Due Date: ${formatDisplayDate(order.due_date)}`);
-  }
-
   if (shop.address || shop.mapsUrl) {
-    lines.push('', '📍 *Visit us*');
+    lines.push('📍 *Visit us*');
     if (shop.address) lines.push(shop.address);
     if (shop.mapsUrl) lines.push(shop.mapsUrl);
+    lines.push('');
   }
 
-  lines.push('', 'Thank you for choosing us!');
+  lines.push('Thank you for choosing us! 🙏');
   return lines.join('\n');
 }
 
@@ -804,10 +985,9 @@ export async function shareOrderReadyOnWhatsApp(params: {
   await openWhatsApp(message, phone);
 }
 
-
-
 // =========================================================
 // Goldsmith: reference picture(s) + design details only
+// (goes to the goldsmith, not a customer: no review link)
 // =========================================================
 export function buildSmithOrderMessage(order: CustomerOrder): string {
   const lines: string[] = ['*New Jewel Order*', ''];
@@ -895,7 +1075,8 @@ export async function shareOrderWithGoldsmithOnWhatsApp(params: {
 
 // =========================================================
 // Invoice: PDF + thank-you note + Google review link
-// in ONE WhatsApp message
+// in ONE WhatsApp message.
+// The TEXT contains no invoice number, amount, GST or bill details.
 // =========================================================
 
 // Fallback if your company settings don't have a review link column.
@@ -911,6 +1092,7 @@ export function reviewUrlFromCompany(company: any): string | null {
     company?.review_url ??
     company?.review_link ??
     null;
+
   const trimmed = raw ? String(raw).trim() : '';
   return trimmed || DEFAULT_GOOGLE_REVIEW_URL || null;
 }
@@ -924,14 +1106,8 @@ export function buildInvoiceThanksMessage(
   const name =
     invoice.customer_name && invoice.customer_name !== 'Walk-in Customer' ? invoice.customer_name : 'there';
   lines.push(`Hi ${name},`);
-  lines.push(`Thank you for shopping with *${shopName?.trim() || 'us'}*! 🙏`, '');
-  lines.push(`Invoice: ${invoice.invoice_number}`);
-  lines.push(`Amount: ₹${Number(invoice.grand_total || 0).toLocaleString('en-IN')}`);
-  lines.push('', 'Your invoice is attached.');
-
-  if (reviewUrl) {
-    lines.push('', 'We would love to hear your feedback — please rate us on Google:', `⭐ ${reviewUrl}`);
-  }
+  lines.push(`Thank you for shopping with *${shopName?.trim() || 'us'}*! 🙏`);
+  lines.push(...reviewBlock(reviewUrl));
   return lines.join('\n');
 }
 
@@ -1200,6 +1376,8 @@ export async function shareInvoiceOnWhatsApp(params: {
 
 // =========================================================
 // Discount broadcast: one customer at a time
+// (the note is whatever the user types; the review link is added
+// automatically by wrapWithShopInfo)
 // =========================================================
 export async function shareDiscountToCustomer(params: {
   imageUri: string;
@@ -1240,26 +1418,34 @@ export async function shareDiscountToCustomer(params: {
   return 'shared';
 }
 
-
-
 // =========================================================
-// Estimate: thermal-style PDF + short note on WhatsApp
+// Estimate: thermal-style PDF + short note + shop location on WhatsApp
+// (no review link). No amount in the text. `amount` is still accepted (and ignored)
+// so existing callers keep compiling.
 // =========================================================
 
 export function buildEstimateShareMessage(
   customerName: string | null,
   shopName: string | null,
-  amount: number
+  _amount?: number,
+  shop?: ShopShareInfo | null
 ): string {
   const name = customerName && customerName !== 'Walk-in Customer' ? customerName : 'there';
-  return [
+  const lines: string[] = [
     `Hi ${name},`,
-    `Here is your estimate from *${shopName?.trim() || 'us'}*.`,
+    `Your estimate from *${shopName?.trim() || shop?.name?.trim() || 'us'}* is attached.`,
     '',
-    `Estimated amount: ₹${Number(amount || 0).toLocaleString('en-IN')}`,
-    '',
-    'Thank you! 🙏',
-  ].join('\n');
+  ];
+
+  if (shop?.address || shop?.mapsUrl) {
+    lines.push('📍 *Visit us*');
+    if (shop.address) lines.push(shop.address);
+    if (shop.mapsUrl) lines.push(shop.mapsUrl);
+    lines.push('');
+  }
+
+  lines.push('Thank you! 🙏');
+  return lines.join('\n');
 }
 
 /**
@@ -1289,13 +1475,24 @@ export async function shareEstimateOnWhatsApp(params: {
   customerName: string | null;
   customerPhone: string | null;
   shopName: string | null;
-  amount: number;
+  amount?: number; // kept for compatibility, not used in the message
+  shop?: ShopShareInfo | null; // optional; loaded from company settings if not given
   heightPt: number;
   widthPt?: number;
 }): Promise<void> {
-  const { html, customerName, customerPhone, shopName, amount, heightPt, widthPt } = params;
+  const { html, customerName, customerPhone, shopName, heightPt, widthPt } = params;
 
-  const message = buildEstimateShareMessage(customerName, shopName, amount);
+  // Location link comes from the shop info (fetched here if the caller did not pass it)
+  let shopInfo: ShopShareInfo | null = params.shop ?? null;
+  if (!shopInfo) {
+    try {
+      shopInfo = await getShopShareInfo();
+    } catch {
+      shopInfo = null;
+    }
+  }
+
+  const message = buildEstimateShareMessage(customerName, shopName, undefined, shopInfo);
   const phone = normalizeWhatsAppPhone(customerPhone);
 
   // ---- Web: A4 PDF through the browser share sheet ----
@@ -1336,47 +1533,43 @@ export async function shareEstimateOnWhatsApp(params: {
 
 // =========================================================
 // Repair / service receipt: PDF + short note on WhatsApp
+// (no amounts or receipt details in the text)
+//  - before delivery: "receipt attached" + review link
+//  - after delivery:  thank you + review link
 // =========================================================
 export function buildRepairShareMessage(
   customerName: string,
   shopName: string | null,
-  receiptNo: string,
-  charge: number,
-  advance: number
+  opts?: { delivered?: boolean; reviewUrl?: string | null }
 ): string {
-  const balance = Math.max(0, charge - advance);
-  const inr = (n: number) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
-  return [
-    `Hi ${customerName || 'there'},`,
-    `Your repair receipt from *${shopName?.trim() || 'us'}* is attached.`,
-    '',
-    `Receipt No: ${receiptNo}`,
-    `Repair charge: ${inr(charge)}`,
-    `Advance paid: ${inr(advance)}`,
-    `Balance due: ${inr(balance)}`,
-    '',
-    'Thank you! 🙏',
-  ].join('\n');
+  const shop = shopName?.trim() || 'us';
+  const lines: string[] = [`Hi ${customerName || 'there'},`];
+
+  if (opts?.delivered) {
+    lines.push(`Thank you for choosing *${shop}*! 🙏`);
+  } else {
+    lines.push(`Your repair receipt from *${shop}* is attached.`, '', 'Thank you! 🙏');
+  }
+  lines.push(...reviewBlock(opts?.reviewUrl));
+  return lines.join('\n');
 }
 
 export async function shareRepairReceiptOnWhatsApp(params: {
   html: string;
   receipt: {
-    receiptNo: string;
+    receiptNo: string; // only used for the PDF file name
     customerName: string;
     phone: string;
-    charge: number;
-    advance: number;
   };
   shopName: string | null;
   heightPt: number;
   widthPt?: number;
+  delivered?: boolean;
+  reviewUrl?: string | null;
 }): Promise<void> {
-  const { html, receipt, shopName, heightPt, widthPt } = params;
+  const { html, receipt, shopName, heightPt, widthPt, delivered, reviewUrl } = params;
 
-  const message = buildRepairShareMessage(
-    receipt.customerName, shopName, receipt.receiptNo, receipt.charge, receipt.advance
-  );
+  const message = buildRepairShareMessage(receipt.customerName, shopName, { delivered, reviewUrl });
   const phone = normalizeWhatsAppPhone(receipt.phone);
 
   if (Platform.OS === 'web') {
@@ -1399,23 +1592,61 @@ export async function shareRepairReceiptOnWhatsApp(params: {
   const call =
     Platform.OS === 'android' && RNShare.shareSingle && RNSocial?.Whatsapp
       ? RNShare.shareSingle({
-          social: RNSocial.Whatsapp,
-          url: pdfUri,
-          type: 'application/pdf',
-          filename: receipt.receiptNo,
-          message,
-          whatsAppNumber: phone ?? undefined,
-        })
+        social: RNSocial.Whatsapp,
+        url: pdfUri,
+        type: 'application/pdf',
+        filename: receipt.receiptNo,
+        message,
+        whatsAppNumber: phone ?? undefined,
+      })
       : RNShare.open({ urls: [pdfUri], type: 'application/pdf', message, failOnCancel: false });
 
   const outcome = await launchShare(call);
   if (outcome === 'error') await openWhatsApp(message, phone);
 }
 
+// =========================================================
+// Repair ready message (text only): item + location link + review link.
+// No receipt number, no amounts.
+// =========================================================
+export function buildRepairReadyMessage(
+  customerName: string | null,
+  item: string,
+  shop: ShopShareInfo
+): string {
+  const lines: string[] = [`*${shop.name}*`, ''];
+
+  lines.push(customerName ? `Hello ${customerName},` : 'Hello,');
+  lines.push('Your jewel is ready! 🎉', '');
+  lines.push(`Item: ${item}`);
+
+  if (shop.address || shop.mapsUrl) {
+    lines.push('', '📍 *Collect it from us*');
+    if (shop.address) lines.push(shop.address);
+    if (shop.mapsUrl) lines.push(shop.mapsUrl);
+  }
+
+  lines.push('', 'Thank you for choosing us!');
+  lines.push(...reviewBlock(shop.reviewUrl));
+  return lines.join('\n');
+}
+
+export async function shareRepairReadyOnWhatsApp(params: {
+  customerName: string | null;
+  customerPhone: string | null;
+  item: string;
+  shop: ShopShareInfo;
+}): Promise<void> {
+  const { customerName, customerPhone, item, shop } = params;
+  const message = buildRepairReadyMessage(customerName, item, shop);
+  const phone = normalizeWhatsAppPhone(customerPhone);
+  await openWhatsApp(message, phone);
+}
 
 // ===================================================================
-// PASTE THIS AT THE VERY BOTTOM OF src/lib/whatsappShare.ts
-// (generic "PDF + note on WhatsApp" - used by the cash purchase receipt)
+// Generic "PDF + note on WhatsApp" - used by the cash purchase receipt
+// (the caller supplies `message`; build it with the helpers below so
+// it contains no amounts and includes the review link)
 // ===================================================================
 
 export async function shareReceiptPdfOnWhatsApp(params: {
@@ -1451,15 +1682,55 @@ export async function shareReceiptPdfOnWhatsApp(params: {
   const call =
     Platform.OS === 'android' && RNShare.shareSingle && RNSocial?.Whatsapp
       ? RNShare.shareSingle({
-          social: RNSocial.Whatsapp,
-          url: pdfUri,
-          type: 'application/pdf',
-          filename: fileName,
-          message,
-          whatsAppNumber: phone ?? undefined,
-        })
+        social: RNSocial.Whatsapp,
+        url: pdfUri,
+        type: 'application/pdf',
+        filename: fileName,
+        message,
+        whatsAppNumber: phone ?? undefined,
+      })
       : RNShare.open({ urls: [pdfUri], type: 'application/pdf', message, failOnCancel: false });
 
   const outcome = await launchShare(call);
   if (outcome === 'error') await openWhatsApp(message, phone); // last resort: text only
+}
+
+// =========================================================
+// Cash purchase receipt: PDF + thank-you note + Google review link
+// No receipt number, amount or payment details in the text.
+// =========================================================
+export function buildPurchaseReceiptShareMessage(
+  customerName: string | null,
+  shopName: string | null,
+  reviewUrl?: string | null
+): string {
+  return [
+    `Hi ${customerName?.trim() || 'there'},`,
+    `Your cash purchase receipt from *${shopName?.trim() || 'us'}* is attached.`,
+    '',
+    `Thank you for choosing *${shopName?.trim() || 'us'}*! 🙏`,
+    ...reviewBlock(reviewUrl),
+  ].join('\n');
+}
+
+export async function sharePurchaseReceiptOnWhatsApp(params: {
+  html: string;
+  receiptNo: string; // only used for the PDF file name
+  customerName: string | null;
+  customerPhone: string | null;
+  shopName: string | null;
+  reviewUrl?: string | null; // optional; falls back to the default review link
+  heightPt: number;
+  widthPt?: number;
+}): Promise<void> {
+  const { html, receiptNo, customerName, customerPhone, shopName, reviewUrl, heightPt, widthPt } = params;
+
+  await shareReceiptPdfOnWhatsApp({
+    html,
+    fileName: receiptNo,
+    message: buildPurchaseReceiptShareMessage(customerName, shopName, reviewUrl),
+    phone: customerPhone,
+    heightPt,
+    widthPt,
+  });
 }

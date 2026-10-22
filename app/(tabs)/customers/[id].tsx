@@ -239,7 +239,7 @@ export default function CustomerDetailsScreen() {
                       {o.category} · {o.metal} · {o.purity}
                     </Text>
                     <Text style={styles.rowSub} numberOfLines={1}>
-                      {o.order_number} · {o.weight_min}g – {o.weight_max}g
+                      {o.order_number} · {o.weight_max != null ? `${o.weight_min}g – ${o.weight_max}g` : `${o.weight_min}g`}
                     </Text>
                     {o.stone_name ? (
                       <Text style={styles.rowSub} numberOfLines={1}>

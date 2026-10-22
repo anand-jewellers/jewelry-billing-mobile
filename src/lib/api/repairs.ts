@@ -12,8 +12,9 @@ export interface RepairOrder {
   charge: number;
   advance: number;
   remarks: string | null;
-  status: string; // 'received' | 'delivered'
+  status: string; // 'received' | 'ready' | 'delivered'
   created_at: string;
+  ready_at: string | null; // when the jewel was marked ready
   final_payment: number; // balance collected on delivery
   final_payment_mode: string | null;
   delivered_at: string | null;
@@ -39,6 +40,7 @@ function normalize(r: any): RepairOrder {
     advance: Number(r.advance ?? 0),
     final_payment: Number(r.final_payment ?? 0),
     final_payment_mode: r.final_payment_mode ?? null,
+    ready_at: r.ready_at ?? null,
     delivered_at: r.delivered_at ?? null,
   };
 }
@@ -92,7 +94,25 @@ export async function deleteRepairOrder(id: string): Promise<void> {
   if (error) throw error;
 }
 
+// Jewel is repaired and waiting for the customer to collect it.
+export async function markRepairReady(id: string): Promise<RepairOrder> {
+  const { data, error } = await supabase
+    .from('repair_orders')
+    .update({
+      status: 'ready',
+      ready_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .eq('status', 'received') // only from "received" (never from ready/delivered)
+    .select('*')
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('This repair is already marked ready or delivered.');
+  return normalize(data);
+}
+
 // Customer came back: collect the balance (if any) and hand over the jewel.
+// Works from both "received" and "ready".
 export async function deliverRepairOrder(
   id: string,
   input: { amount: number; mode: string | null }
@@ -106,7 +126,7 @@ export async function deliverRepairOrder(
       delivered_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .eq('status', 'received') // never deliver twice (e.g. from another device)
+    .in('status', ['received', 'ready']) // never deliver twice (e.g. from another device)
     .select('*')
     .maybeSingle();
   if (error) throw error;
@@ -121,12 +141,12 @@ export async function deleteRepairOrders(ids: string[]): Promise<void> {
   if (error) throw error;
 }
 
-// Number of repairs still with us (received, not yet delivered)
+// Number of repairs still with us (received or ready, not yet delivered)
 export async function countPendingRepairs(): Promise<number> {
   const { count, error } = await supabase
     .from('repair_orders')
     .select('id', { count: 'exact', head: true })
-    .eq('status', 'received');
+    .in('status', ['received', 'ready']);
   if (error) throw error;
   return count ?? 0;
 }

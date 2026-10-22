@@ -23,6 +23,8 @@ import type { TaxSetting } from '../../../../src/types/settings';
 import { uploadProductImageBase64, getProductImageUrl } from '../../../../src/lib/storage';
 import { useStaff } from '../../../../src/context/StaffContext';
 import { parseCarat, diamondChargeAmount } from '../../../../src/lib/invoiceCalc';
+import { PageGuard } from '../../../../src/components/PageGuard';
+
 
 const SAVED_POPUP_AUTO_NAV_MS = 1500;
 
@@ -31,7 +33,16 @@ type ExistingImage = { id: string; storage_path: string; is_primary: boolean };
 // size = carat weight, amount = RATE per carat (same meaning as the Add page)
 type DiamondRow = { key: string; size: string; amount: string };
 
+
 export default function EditProductScreen() {
+  return (
+    <PageGuard pageKey="products.edit">
+      <EditProductScreenInner />
+    </PageGuard>
+  );
+}
+
+function EditProductScreenInner() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { currentStaff } = useStaff();

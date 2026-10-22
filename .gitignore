@@ -13,3 +13,4 @@ dist/
 
 backup.sh
 *.dump
+supabase/.temp/

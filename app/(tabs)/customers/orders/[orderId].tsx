@@ -376,7 +376,7 @@ export default function OrderDetailScreen() {
           ) : (
             <>
               <MessageCircle size={18} color="#fff" />
-              <Text style={styles.estimateBtnText}>Share Estimate on WhatsApp</Text>
+              <Text style={styles.estimateBtnText}>Share Estimate</Text>
             </>
           )}
         </Pressable>
@@ -404,7 +404,7 @@ export default function OrderDetailScreen() {
               ) : (
                 <>
                   <MessageCircle size={18} color="#fff" />
-                  <Text style={styles.whatsappBtnText}>Share on WhatsApp</Text>
+                  <Text style={styles.whatsappBtnText}>Share Order Confirmation</Text>
                 </>
               )}
             </Pressable>

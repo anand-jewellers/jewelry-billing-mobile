@@ -17,6 +17,7 @@ import {
   diamondChargeAmount,
   DIAMOND_AMOUNT_IS_RATE_PER_CARAT,
 } from '../../../src/lib/invoiceCalc';
+import { ComponentGuard } from '../../../src/components/ComponentGuard';
 
 export default function ProductDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -188,10 +189,12 @@ export default function ProductDetailsScreen() {
           <Text style={styles.code}>{product.product_code}</Text>
         </View>
         <View style={styles.titleActions}>
-          <TouchableOpacity style={styles.editBtn} onPress={handleEdit}>
-            <Ionicons name="create-outline" size={20} color={colors.textPrimary} />
-            <Text style={styles.editBtnText}>Edit</Text>
-          </TouchableOpacity>
+          <ComponentGuard pageKey="products.edit">
+            <TouchableOpacity style={styles.editBtn} onPress={handleEdit}>
+              <Ionicons name="create-outline" size={20} color={colors.textPrimary} />
+              <Text style={styles.editBtnText}>Edit</Text>
+            </TouchableOpacity>
+          </ComponentGuard>
           <TouchableOpacity style={styles.shareBtn} onPress={handleShare} disabled={sharing}>
             {sharing ? (
               <ActivityIndicator size="small" color="#25D366" />

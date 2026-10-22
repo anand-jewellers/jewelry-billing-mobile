@@ -130,7 +130,8 @@ export default function CompanySettingsScreen() {
     setSuccessVisible(true);
   }
 
-  const canChangeLogo = hasAccess('settings.company_logo');
+  // const canChangeLogo = hasAccess('settings.company_logo');
+     const canChangeLogo = hasAccess('settings.company');
 
   useEffect(() => {
     getCompanySettings()
@@ -367,9 +368,9 @@ const styles = StyleSheet.create({
   col: { flex: 1 },
   bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: colors.surface ?? '#ffffff', paddingTop: spacing.sm, paddingHorizontal: spacing.lg, borderTopWidth: 1, borderTopColor: colors.border, elevation: 10, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: -3 } },
   previewBackdrop: { flex: 1, backgroundColor: 'rgba(15,31,61,0.5)', alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
-  previewCard: { width: '100%', backgroundColor: colors.surface ?? '#fff', borderRadius: radius.lg, padding: spacing.lg, gap: spacing.md },
+  previewCard: { width: '100%',maxWidth: 420, backgroundColor: colors.surface ?? '#fff', borderRadius: radius.lg, padding: spacing.lg, gap: spacing.md },
   previewTitle: { fontSize: 16, fontWeight: '700', color: colors.textPrimary ?? '#0f172a' },
-  previewBox: { width: '100%', aspectRatio: 1, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: '#f8fafc', overflow: 'hidden' },
+  previewBox: { width: '100%',maxHeight: 320,alignSelf: 'center',  aspectRatio: 1, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: '#f8fafc', overflow: 'hidden' },
   previewImage: { width: '100%', height: '100%' },
   previewActions: { flexDirection: 'row', gap: spacing.sm },
 });

@@ -141,12 +141,28 @@ export interface StaffPermission {
 // new top-level screen or Settings sub-page that should be gated.
 export const PAGE_REGISTRY = [
   { key: 'dashboard', label: 'Dashboard', group: 'Main' },
+  // Dashboard components
+  { key: 'dashboard.quick_actions', label: 'Quick Action Buttons', group: 'Dashboard' },
+  { key: 'dashboard.stat_cards', label: 'Stat Cards', group: 'Dashboard' },
+  { key: 'dashboard.live_rates', label: 'Live Jewel Rates', group: 'Dashboard' },
+  { key: 'dashboard.payment_breakdown', label: 'Payment Breakdown', group: 'Dashboard' },
+
   { key: 'products', label: 'Products', group: 'Main' },
+  // Product components
+  { key: 'products.add', label: 'Add Product', group: 'Products' },
+  { key: 'products.stock_weight', label: 'Stock Weight', group: 'Products' },
+  { key: 'products.edit', label: 'Edit Product', group: 'Products' },
+
   { key: 'invoices', label: 'Invoices', group: 'Main' },
+  // Invoice components
+  { key: 'invoices.new_invoice', label: 'New Invoice', group: 'Invoices' },
+  { key: 'invoices.repair', label: 'Repair / Service', group: 'Invoices' },
+  { key: 'invoices.cash_purchase', label: 'Cash Purchase', group: 'Invoices' },
+
   { key: 'customers', label: 'Customers', group: 'Main' },
   { key: 'settings', label: 'Settings (menu)', group: 'Main' },
   { key: 'settings.company', label: 'Company', group: 'Settings' },
-  { key: 'settings.company_logo', label: 'Company Logo', group: 'Settings' },
+  // { key: 'settings.company_logo', label: 'Company Logo', group: 'Settings' },
   { key: 'settings.metals', label: 'Metals', group: 'Settings' },
   { key: 'settings.purity', label: 'Purity', group: 'Settings' },
   { key: 'settings.categories', label: 'Categories', group: 'Settings' },

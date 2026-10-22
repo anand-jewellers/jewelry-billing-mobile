@@ -1,3 +1,5 @@
+// app\(tabs)\customers\orders\index.tsx
+
 import { useCallback, useState } from 'react';
 import { View, Text, FlatList, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';

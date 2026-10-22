@@ -3,7 +3,7 @@
     "name": "Swarnam",
     "slug": "jewelry-billing-mobile",
     "scheme": "swarnam",
-    "version": "2.0.2",
+    "version": "2.0.0",
     "orientation": "portrait",
     "plugins": [
       "expo-router",

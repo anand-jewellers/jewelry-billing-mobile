@@ -2,7 +2,10 @@
 //
 // Two modes:
 //   /invoices/repair          -> new repair form, saves, then shows the receipt
-//   /invoices/repair?id=<id>  -> opens a saved repair (print / share / collect balance & deliver)
+//   /invoices/repair?id=<id>  -> opens a saved repair
+//                                (print / share / mark ready / collect balance & deliver)
+//
+// Status flow: received -> ready -> delivered
 
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -22,7 +25,7 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Print from 'expo-print';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Printer, Share2, Plus, Trash2, Check, X } from 'lucide-react-native';
+import { Printer, Share2, Plus, Trash2, Check, X, BellRing } from 'lucide-react-native';
 import { PageGuard } from '../../../src/components/PageGuard';
 import { ErrorModal } from '../../../src/components/ui';
 import { colors, spacing } from '../../../src/theme';
@@ -33,11 +36,14 @@ import {
   getRepairOrder,
   deleteRepairOrder,
   deliverRepairOrder,
+  markRepairReady,
   type RepairOrder,
 } from '../../../src/lib/api/repairs';
 import {
   shopInfoFromCompany,
   shareRepairReceiptOnWhatsApp,
+  shareRepairReadyOnWhatsApp,
+  type ShopShareInfo,
 } from '../../../src/lib/whatsappShare';
 import {
   getConnectedPrinter,
@@ -101,13 +107,27 @@ export default function RepairServiceScreen() {
   const [advance, setAdvance] = useState('');
   const [remarks, setRemarks] = useState('');
 
+  // extra "repair + weight" rows added with the + button
+  const [extras, setExtras] = useState<{ id: string; item: string; weight: string }[]>([]);
+  const addExtra = () =>
+    setExtras((p) => [...p, { id: `${Date.now()}-${p.length}`, item: '', weight: '' }]);
+  const updateExtra = (id: string, patch: Partial<{ item: string; weight: string }>) =>
+    setExtras((p) => p.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+  const removeExtra = (id: string) => setExtras((p) => p.filter((e) => e.id !== id));
+
   // ---- saved repair (null = still on the form) ----
   const [order, setOrder] = useState<RepairOrder | null>(null);
   const [loadingSaved, setLoadingSaved] = useState(!!id);
   const [saving, setSaving] = useState(false);
   const [shop, setShop] = useState<RepairShopInfo>({ name: 'Our Shop', address: null, phone: null });
+  // full shop info (includes the Google Maps link) used by the "jewel is ready" message
+  const [shopShare, setShopShare] = useState<ShopShareInfo | null>(null);
   const [sharing, setSharing] = useState(false);
   const [printing, setPrinting] = useState(false);
+
+  // ---- mark ready / share ready message ----
+  const [markingReady, setMarkingReady] = useState(false);
+  const [sharingReady, setSharingReady] = useState(false);
 
   // ---- collect balance & deliver ----
   const [collectOpen, setCollectOpen] = useState(false);
@@ -150,6 +170,7 @@ export default function RepairServiceScreen() {
 
   const receipt = order ? orderToReceipt(order) : null;
   const delivered = order?.status === 'delivered';
+  const isReady = order?.status === 'ready';
   const balanceDue = order ? Math.max(0, order.charge - order.advance - order.final_payment) : 0;
 
   // Shop name / address / phone for the receipt header
@@ -160,6 +181,7 @@ export default function RepairServiceScreen() {
         const info = shopInfoFromCompany(company);
         const shopPhone =
           company?.phone ?? company?.mobile ?? company?.contact_number ?? company?.phone_number ?? null;
+        setShopShare(info);
         setShop({
           name: info.name,
           address: info.address,
@@ -214,14 +236,29 @@ export default function RepairServiceScreen() {
       return showError('Check advance', 'Advance cannot be more than the repair charge.');
     }
 
+    // merge the extra rows: weights are added up, every repair item is listed with its own weight
+    const extraWeights = extras.map((e) => toNum(e.weight));
+    const totalWeight = toNum(weight) + extraWeights.reduce((sum, w) => sum + w, 0);
+    const hasExtras = extras.some((e, i) => e.item.trim() || extraWeights[i] > 0);
+    let itemText = item.trim();
+    if (hasExtras) {
+      const rows = [{ text: item.trim(), w: toNum(weight) }].concat(
+        extras.map((e, i) => ({ text: e.item.trim() || `Item ${i + 2}`, w: extraWeights[i] }))
+      );
+      itemText = rows
+        .filter((r, i) => i === 0 || r.text || r.w > 0)
+        .map((r) => (r.w > 0 ? `${r.text} (${r.w.toFixed(3)} g)` : r.text))
+        .join(' | ');
+    }
+
     setSaving(true);
     try {
       const saved = await createRepairOrder({
         receiptNo: generateRepairReceiptNo(new Date()),
         customerName: name.trim(),
         phone: phone.trim(),
-        item: item.trim(),
-        weight: toNum(weight) > 0 ? toNum(weight) : null,
+        item: itemText,
+        weight: totalWeight > 0 ? totalWeight : null,
         charge: chargeNum,
         advance: advanceNum,
         remarks: remarks.trim(),
@@ -231,6 +268,44 @@ export default function RepairServiceScreen() {
       showError('Could not save repair', e?.message ?? 'Unknown error');
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // Mark as ready (repair finished, waiting for the customer)
+  // ---------------------------------------------------------
+  const handleMarkReady = async () => {
+    if (!order || markingReady) return;
+    setMarkingReady(true);
+    try {
+      const updated = await markRepairReady(order.id);
+      setOrder(updated);
+    } catch (e: any) {
+      showError('Could not update', e?.message ?? 'Unknown error');
+    } finally {
+      setMarkingReady(false);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // Share "your jewel is ready" message on WhatsApp
+  // ---------------------------------------------------------
+  const handleShareReady = async () => {
+    if (!order || sharingReady) return;
+    setSharingReady(true);
+    try {
+      await shareRepairReadyOnWhatsApp({
+        customerName: order.customer_name,
+        customerPhone: order.phone,
+        receiptNo: order.receipt_no,
+        item: order.item,
+        balanceDue,
+        shop: shopShare ?? { name: shop.name, address: shop.address, mapsUrl: null },
+      });
+    } catch (e: any) {
+      showError('Could not share message', e?.message ?? 'Unknown error');
+    } finally {
+      setSharingReady(false);
     }
   };
 
@@ -371,6 +446,7 @@ export default function RepairServiceScreen() {
     setCharge('');
     setAdvance('');
     setRemarks('');
+    setExtras([]);
     setOrder(null);
   };
 
@@ -394,6 +470,16 @@ export default function RepairServiceScreen() {
     return (
       <PageGuard pageKey="invoices">
         <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+          {isReady && (
+            <View style={styles.readyBanner}>
+              <BellRing size={16} color="#B06000" />
+              <Text style={styles.readyBannerText}>
+                Ready for pickup
+                {order.ready_at ? ` · ${formatReceiptDate(new Date(order.ready_at))}` : ''}
+              </Text>
+            </View>
+          )}
+
           {delivered && (
             <View style={styles.deliveredBanner}>
               <Check size={16} color="#137333" strokeWidth={3} />
@@ -444,11 +530,49 @@ export default function RepairServiceScreen() {
             <Text style={styles.footNote}>
               {delivered
                 ? 'Item delivered. Visit again!'
-                : 'Please bring this receipt when collecting your item.'}
+                : isReady
+                  ? 'Your item is ready. Please collect it with this receipt.'
+                  : 'Please bring this receipt when collecting your item.'}
             </Text>
           </View>
 
-          {/* Customer came back: collect balance + hand over the jewel */}
+          {/* Step 1: repair finished -> mark as ready */}
+          {order.status === 'received' && (
+            <Pressable
+              style={[styles.readyBtn, markingReady && { opacity: 0.7 }]}
+              onPress={handleMarkReady}
+              disabled={markingReady}
+            >
+              {markingReady ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <BellRing size={18} color="#FFFFFF" />
+                  <Text style={styles.primaryBtnText}>Mark as ready</Text>
+                </>
+              )}
+            </Pressable>
+          )}
+
+          {/* Step 2: tell the customer the jewel is ready (WhatsApp) */}
+          {isReady && (
+            <Pressable
+              style={[styles.readyShareBtn, sharingReady && { opacity: 0.7 }]}
+              onPress={handleShareReady}
+              disabled={sharingReady}
+            >
+              {sharingReady ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Share2 size={18} color="#FFFFFF" />
+                  <Text style={styles.primaryBtnText}>Share "jewel is ready" message</Text>
+                </>
+              )}
+            </Pressable>
+          )}
+
+          {/* Step 3: customer came back: collect balance + hand over the jewel */}
           {!delivered && (
             <Pressable style={styles.deliverBtn} onPress={() => setCollectOpen(true)}>
               <Check size={18} color="#FFFFFF" strokeWidth={3} />
@@ -616,29 +740,68 @@ export default function RepairServiceScreen() {
           />
         </Field>
 
-        <Field label="For Repair" required onLayout={regField('item')}>
-          <TextInput
-            style={[styles.input, styles.inputMulti]}
-            value={item}
-            onChangeText={setItem}
-            placeholder="e.g. Gold chain - broken link, ring resize"
-            placeholderTextColor="#94A3B8"
-            multiline
-            onFocus={() => scrollToField('item')}
-          />
-        </Field>
+        {/* For Repair + Weight side by side. "Add another" adds one more row of the same. */}
+        <View style={styles.field} onLayout={regField('item')}>
+          <Text style={styles.label}>
+            For Repair & Weight <Text style={{ color: '#C5221F' }}>*</Text>
+          </Text>
+          <View style={styles.extraRow}>
+            <TextInput
+              style={[styles.input, styles.extraRemark, styles.remarkGrow]}
+              value={item}
+              onChangeText={setItem}
+              placeholder="e.g. Gold chain - broken link"
+              placeholderTextColor="#94A3B8"
+              multiline
+              onFocus={() => scrollToField('item')}
+            />
+            <TextInput
+              style={[styles.input, styles.extraWeight]}
+              value={weight}
+              onChangeText={setWeight}
+              placeholder="Weight (g)"
+              placeholderTextColor="#94A3B8"
+              keyboardType="decimal-pad"
+              onFocus={() => scrollToField('item')}
+            />
+          </View>
+        </View>
 
-        <Field label="Weight (g)" onLayout={regField('weight')}>
-          <TextInput
-            style={styles.input}
-            value={weight}
-            onChangeText={setWeight}
-            placeholder="0.000"
-            placeholderTextColor="#94A3B8"
-            keyboardType="decimal-pad"
-            onFocus={() => scrollToField('weight')}
-          />
-        </Field>
+        {extras.map((e, i) => (
+          <View key={e.id} style={styles.field} onLayout={regField(`extra-${e.id}`)}>
+            <View style={styles.extraHeader}>
+              <Text style={styles.label}>Item {i + 2}</Text>
+              <Pressable onPress={() => removeExtra(e.id)} hitSlop={8}>
+                <X size={18} color="#94A3B8" />
+              </Pressable>
+            </View>
+            <View style={styles.extraRow}>
+              <TextInput
+                style={[styles.input, styles.extraRemark, styles.remarkGrow]}
+                value={e.item}
+                onChangeText={(t) => updateExtra(e.id, { item: t })}
+                placeholder="For repair"
+                placeholderTextColor="#94A3B8"
+                multiline
+                onFocus={() => scrollToField(`extra-${e.id}`)}
+              />
+              <TextInput
+                style={[styles.input, styles.extraWeight]}
+                value={e.weight}
+                onChangeText={(t) => updateExtra(e.id, { weight: t })}
+                placeholder="Weight (g)"
+                placeholderTextColor="#94A3B8"
+                keyboardType="decimal-pad"
+                onFocus={() => scrollToField(`extra-${e.id}`)}
+              />
+            </View>
+          </View>
+        ))}
+
+        <Pressable style={styles.addMoreBtn} onPress={addExtra}>
+          <Plus size={16} color={colors.primary} />
+          <Text style={styles.addMoreText}>Add another repair & weight</Text>
+        </Pressable>
 
         <View style={styles.twoCol} onLayout={regField('amounts')}>
           <View style={{ flex: 1 }}>
@@ -768,6 +931,32 @@ const styles = StyleSheet.create({
   },
   twoCol: { flexDirection: 'row', gap: 12 },
 
+  extraHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  extraRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+  extraWeight: { flex: 0.45 },
+  extraRemark: { flex: 1 },
+  remarkGrow: {
+    height: undefined,
+    minHeight: 48,
+    paddingTop: 12,
+    paddingBottom: 12,
+    textAlignVertical: 'top',
+  },
+  addMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: colors.primary,
+    backgroundColor: '#FFFFFF',
+    marginBottom: 14,
+  },
+  addMoreText: { color: colors.primary, fontWeight: '700', fontSize: 13 },
+
   balanceCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -824,6 +1013,40 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   deliveredBannerText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#137333' },
+
+  // Ready state
+  readyBtn: {
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#B06000',
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  readyShareBtn: {
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#25D366', // WhatsApp green
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  readyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FEEFC3',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+  },
+  readyBannerText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#B06000' },
 
   // Receipt preview
   slip: {
@@ -932,5 +1155,4 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 13, fontWeight: '600', color: '#0F172A' },
   chipTextOn: { color: '#FFFFFF' },
   collectNote: { fontSize: 12, color: '#64748B', marginTop: 12 },
-
 });

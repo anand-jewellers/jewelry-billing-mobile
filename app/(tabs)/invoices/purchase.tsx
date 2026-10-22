@@ -38,7 +38,7 @@ import {
 import { sumExchangeTotal, displayNetWeight } from '../../../src/lib/exchangeGold';
 import {
   shopInfoFromCompany,
-  shareReceiptPdfOnWhatsApp,
+  sharePurchaseReceiptOnWhatsApp,
 } from '../../../src/lib/whatsappShare';
 import { formatReceiptDate, type RepairShopInfo } from '../../../src/lib/repairReceipt';
 import {
@@ -65,7 +65,9 @@ function purchaseToReceipt(p: CashPurchase): PurchaseReceiptData {
     customerName: p.customer_name,
     phone: p.phone ?? '',
     items: p.items,
-    total: p.total_amount,
+    netAmount: p.total_amount,
+    paidAmount: p.paid_amount,
+    total: p.paid_amount,
     paymentLabel: purchaseModeLabel(p.payment_mode),
     remarks: p.remarks ?? '',
   };
@@ -86,6 +88,8 @@ export default function CashPurchaseScreen() {
   const [items, setItems] = useState<PurchaseItem[]>([]);
   const [payMode, setPayMode] = useState('cash');
   const [remarks, setRemarks] = useState('');
+  const [paidInput, setPaidInput] = useState('');
+  const [paidTouched, setPaidTouched] = useState(false);
   const [itemModalOpen, setItemModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<PurchaseItem | null>(null);
 
@@ -131,6 +135,12 @@ export default function CashPurchaseScreen() {
 
   const receipt = purchase ? purchaseToReceipt(purchase) : null;
   const total = sumExchangeTotal(items);
+  const paid = Number(paidInput) || 0;
+
+  // Keep "Amount paid" in sync with the net amount until the user edits it
+  useEffect(() => {
+    if (!paidTouched) setPaidInput(total > 0 ? String(total) : '');
+  }, [total, paidTouched]);
 
   // Master data + shop info
   useEffect(() => {
@@ -206,6 +216,7 @@ export default function CashPurchaseScreen() {
       return showError('Check phone number', 'Enter a valid 10-digit phone number or leave it empty.');
     }
     if (items.length === 0) return showError('No items', 'Add at least one item before saving.');
+    if (paid <= 0) return showError('Amount paid needed', 'Enter the amount paid to the customer.');
 
     setSaving(true);
     try {
@@ -215,6 +226,7 @@ export default function CashPurchaseScreen() {
         phone: phone.trim(),
         items,
         totalAmount: total,
+        paidAmount: paid,
         paymentMode: payMode,
         remarks: remarks.trim(),
       });
@@ -295,21 +307,12 @@ export default function CashPurchaseScreen() {
     if (!receipt) return;
     setSharing(true);
     try {
-      const message = [
-        `Hi ${receipt.customerName || 'there'},`,
-        `Your cash purchase receipt from *${shop.name?.trim() || 'us'}* is attached.`,
-        '',
-        `Receipt No: ${receipt.receiptNo}`,
-        `Total paid: ${money(receipt.total)} (${receipt.paymentLabel})`,
-        '',
-        'Thank you! 🙏',
-      ].join('\n');
-
-      await shareReceiptPdfOnWhatsApp({
+      await sharePurchaseReceiptOnWhatsApp({
         html: buildPurchaseReceiptHtml(receipt, shop),
-        fileName: receipt.receiptNo,
-        message,
-        phone: receipt.phone || null,
+        receiptNo: receipt.receiptNo,
+        customerName: receipt.customerName,
+        customerPhone: receipt.phone || null,
+        shopName: shop.name,
         heightPt: estimatePurchaseReceiptHeightPt(receipt),
       });
     } catch (e: any) {
@@ -345,6 +348,8 @@ export default function CashPurchaseScreen() {
     setName('');
     setPhone('');
     setItems([]);
+    setPaidInput('');
+    setPaidTouched(false);
     setPayMode('cash');
     setRemarks('');
     setPurchase(null);
@@ -402,9 +407,10 @@ export default function CashPurchaseScreen() {
             })}
 
             <View style={styles.dash} />
+            <Line k="Net Amount" v={money(receipt.netAmount)} />
             <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>TOTAL PAID</Text>
-              <Text style={styles.totalValue}>{money(receipt.total)}</Text>
+              <Text style={styles.totalLabel}>AMOUNT PAID</Text>
+              <Text style={styles.totalValue}>{money(receipt.paidAmount)}</Text>
             </View>
             <Line k="Paid by" v={receipt.paymentLabel} />
 
@@ -416,9 +422,9 @@ export default function CashPurchaseScreen() {
               </>
             ) : null}
 
-            <View style={styles.signBox}>
+            {/* <View style={styles.signBox}>
               <Text style={styles.signText}>Customer signature</Text>
-            </View>
+            </View> */}
           </View>
 
           <View style={styles.actionRow}>
@@ -554,25 +560,31 @@ export default function CashPurchaseScreen() {
         )}
 
         <View style={styles.totalCard}>
-          <Text style={styles.totalCardLabel}>Total to pay customer</Text>
+          <Text style={styles.totalCardLabel}>Net amount (calculated)</Text>
           <Text style={styles.totalCardValue}>{money(total)}</Text>
         </View>
 
-        {/* Payment mode */}
-        <View style={styles.field}>
-          <Text style={styles.label}>Paid by</Text>
-          <View style={styles.chipRow}>
-            {PURCHASE_PAY_MODES.map((m) => (
-              <Pressable
-                key={m.id}
-                style={[styles.chip, payMode === m.id && styles.chipOn]}
-                onPress={() => setPayMode(m.id)}
-              >
-                <Text style={[styles.chipText, payMode === m.id && styles.chipTextOn]}>{m.label}</Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
+        <Field label="Amount paid to customer" required onLayout={regField('paid')}>
+          <TextInput
+            style={[styles.input, styles.paidInput]}
+            value={paidInput}
+            onChangeText={(t) => {
+              setPaidTouched(true);
+              setPaidInput(t.replace(/[^0-9.]/g, ''));
+            }}
+            placeholder="0"
+            placeholderTextColor="#94A3B8"
+            keyboardType="decimal-pad"
+            onFocus={() => scrollToField('paid')}
+          />
+          {paidTouched && paid !== total ? (
+            <Pressable onPress={() => setPaidTouched(false)} hitSlop={8}>
+              <Text style={styles.resetLink}>
+                {paid > total ? `₹${paid - total} above` : `₹${total - paid} below`} net amount · Reset to net
+              </Text>
+            </Pressable>
+          ) : null}
+        </Field>
 
         <Field label="Remarks" onLayout={regField('remarks')}>
           <TextInput
@@ -819,4 +831,6 @@ const styles = StyleSheet.create({
   },
   ghostBtnDanger: { borderColor: '#FAD2CF', backgroundColor: '#FCE8E6' },
   ghostBtnText: { fontSize: 13, fontWeight: '600', color: '#0F172A' },
+  paidInput: { fontSize: 18, fontWeight: '800', height: 52 },
+  resetLink: { fontSize: 12, fontWeight: '600', color: '#1E3A8A', marginTop: 6 },
 });

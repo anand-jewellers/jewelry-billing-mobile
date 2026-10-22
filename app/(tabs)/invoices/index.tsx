@@ -17,6 +17,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, router } from 'expo-router';
 import { PageGuard } from '../../../src/components/PageGuard';
+import { ComponentGuard } from '../../../src/components/ComponentGuard';
 import {
   Search,
   // Calendar,            // date filter disabled - only today's invoices are shown
@@ -154,11 +155,22 @@ export default function InvoiceListScreen() {
   const purchaseReq = useRef(0);
 
   // Admin + bulk delete (select mode)
-  const { currentStaff } = useStaff();
+  const { currentStaff, hasAccess } = useStaff();
   const isAdmin = currentStaff?.role === 'admin';
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  // Component-level access (admin / manager get everything via hasAccess)
+  const canNew = hasAccess('invoices.new_invoice');
+  const canRepair = hasAccess('invoices.repair');
+  const canPurchase = hasAccess('invoices.cash_purchase');
+
+  // If access is removed while a tab is open, fall back to the invoices tab
+  useEffect(() => {
+    if (view === 'repairs' && !canRepair) setView('invoices');
+    if (view === 'purchases' && !canPurchase) setView('invoices');
+  }, [view, canRepair, canPurchase]);
 
   // Search & Pagination
   const [searchText, setSearchText] = useState('');
@@ -594,36 +606,44 @@ export default function InvoiceListScreen() {
           */}
         </View>
 
-        {/* Invoices / Repairs switch */}
-        <View style={styles.segment}>
-          <Pressable
-            style={[styles.segBtn, view === 'invoices' && styles.segBtnOn]}
-            onPress={() => {
-              exitSelectMode();
-              setView('invoices');
-            }}
-          >
-            <Text style={[styles.segText, view === 'invoices' && styles.segTextOn]}>Invoices</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.segBtn, view === 'repairs' && styles.segBtnOn]}
-            onPress={() => {
-              exitSelectMode();
-              setView('repairs');
-            }}
-          >
-            <Text style={[styles.segText, view === 'repairs' && styles.segTextOn]}>Repairs</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.segBtn, view === 'purchases' && styles.segBtnOn]}
-            onPress={() => {
-              exitSelectMode();
-              setView('purchases');
-            }}
-          >
-            <Text style={[styles.segText, view === 'purchases' && styles.segTextOn]}>Purchases</Text>
-          </Pressable>
-        </View>
+        {/* Invoices / Repairs / Purchases switch.
+            Repairs and Purchases tabs follow their access keys; the whole
+            switch is hidden when neither is allowed. */}
+        {(canRepair || canPurchase) && (
+          <View style={styles.segment}>
+            <Pressable
+              style={[styles.segBtn, view === 'invoices' && styles.segBtnOn]}
+              onPress={() => {
+                exitSelectMode();
+                setView('invoices');
+              }}
+            >
+              <Text style={[styles.segText, view === 'invoices' && styles.segTextOn]}>Invoices</Text>
+            </Pressable>
+            {canRepair && (
+              <Pressable
+                style={[styles.segBtn, view === 'repairs' && styles.segBtnOn]}
+                onPress={() => {
+                  exitSelectMode();
+                  setView('repairs');
+                }}
+              >
+                <Text style={[styles.segText, view === 'repairs' && styles.segTextOn]}>Repairs</Text>
+              </Pressable>
+            )}
+            {canPurchase && (
+              <Pressable
+                style={[styles.segBtn, view === 'purchases' && styles.segBtnOn]}
+                onPress={() => {
+                  exitSelectMode();
+                  setView('purchases');
+                }}
+              >
+                <Text style={[styles.segText, view === 'purchases' && styles.segTextOn]}>Purchases</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
 
         {/* Active date filter pill - DISABLED
         {hasRange && (
@@ -640,25 +660,25 @@ export default function InvoiceListScreen() {
         )}
         */}
 
-        {/* Held Bills (invoices tab) + Delete (admin, both tabs) */}
-        {(view === 'invoices' || (isAdmin && !selectMode)) && (
+        {/* Held Bills (invoices tab, needs New Invoice access) + Delete (admin, all tabs) */}
+        {((view === 'invoices' && canNew) || (isAdmin && !selectMode)) && (
           <View style={styles.heldBtnRow}>
-            {view === 'invoices' && (
-            <Pressable
-              style={styles.heldBtn}
-              onPress={() => {
-                refreshHeld();
-                setHeldOpen(true);
-              }}
-            >
-              <Clock size={16} color={colors.primary} />
-              <Text style={styles.heldBtnText}>Held Bills</Text>
-              {heldList.length > 0 && (
-                <View style={styles.heldBadge}>
-                  <Text style={styles.heldBadgeText}>{heldList.length}</Text>
-                </View>
-              )}
-            </Pressable>
+            {view === 'invoices' && canNew && (
+              <Pressable
+                style={styles.heldBtn}
+                onPress={() => {
+                  refreshHeld();
+                  setHeldOpen(true);
+                }}
+              >
+                <Clock size={16} color={colors.primary} />
+                <Text style={styles.heldBtnText}>Held Bills</Text>
+                {heldList.length > 0 && (
+                  <View style={styles.heldBadge}>
+                    <Text style={styles.heldBadgeText}>{heldList.length}</Text>
+                  </View>
+                )}
+              </Pressable>
             )}
 
             {isAdmin && !selectMode && (
@@ -778,7 +798,8 @@ export default function InvoiceListScreen() {
         />
         */}
 
-        {/* "+" menu: New Invoice / Repair & Service */}
+        {/* "+" menu: New Invoice / Repair & Service / Cash Purchase
+            Each option only shows when the staff member has its access key. */}
         <Modal
           visible={newMenuOpen}
           animationType="slide"
@@ -798,56 +819,62 @@ export default function InvoiceListScreen() {
                 </Pressable>
               </View>
 
-              <Pressable
-                style={styles.newOption}
-                onPress={() => {
-                  setNewMenuOpen(false);
-                  router.push('/invoices/new');
-                }}
-              >
-                <View style={[styles.newOptionIcon, { backgroundColor: '#EFF6FF' }]}>
-                  <FileText size={20} color="#2563EB" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.newOptionTitle}>New Invoice</Text>
-                  <Text style={styles.newOptionSub}>Bill jewellery to a customer</Text>
-                </View>
-                <ChevronRight size={18} color="#94A3B8" />
-              </Pressable>
+              <ComponentGuard pageKey="invoices.new_invoice">
+                <Pressable
+                  style={styles.newOption}
+                  onPress={() => {
+                    setNewMenuOpen(false);
+                    router.push('/invoices/new');
+                  }}
+                >
+                  <View style={[styles.newOptionIcon, { backgroundColor: '#EFF6FF' }]}>
+                    <FileText size={20} color="#2563EB" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.newOptionTitle}>New Invoice</Text>
+                    <Text style={styles.newOptionSub}>Bill jewellery to a customer</Text>
+                  </View>
+                  <ChevronRight size={18} color="#94A3B8" />
+                </Pressable>
+              </ComponentGuard>
 
-              <Pressable
-                style={styles.newOption}
-                onPress={() => {
-                  setNewMenuOpen(false);
-                  router.push('/invoices/repair');
-                }}
-              >
-                <View style={[styles.newOptionIcon, { backgroundColor: '#FFF7ED' }]}>
-                  <Wrench size={20} color="#EA580C" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.newOptionTitle}>Repair / Service</Text>
-                  <Text style={styles.newOptionSub}>Take an item for repair and give a receipt</Text>
-                </View>
-                <ChevronRight size={18} color="#94A3B8" />
-              </Pressable>
+              <ComponentGuard pageKey="invoices.repair">
+                <Pressable
+                  style={styles.newOption}
+                  onPress={() => {
+                    setNewMenuOpen(false);
+                    router.push('/invoices/repair');
+                  }}
+                >
+                  <View style={[styles.newOptionIcon, { backgroundColor: '#FFF7ED' }]}>
+                    <Wrench size={20} color="#EA580C" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.newOptionTitle}>Repair / Service</Text>
+                    <Text style={styles.newOptionSub}>Take an item for repair and give a receipt</Text>
+                  </View>
+                  <ChevronRight size={18} color="#94A3B8" />
+                </Pressable>
+              </ComponentGuard>
 
-              <Pressable
-                style={styles.newOption}
-                onPress={() => {
-                  setNewMenuOpen(false);
-                  router.push('/invoices/purchase');
-                }}
-              >
-                <View style={[styles.newOptionIcon, { backgroundColor: '#FEF7E0' }]}>
-                  <Coins size={20} color="#B06000" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.newOptionTitle}>Cash Purchase</Text>
-                  <Text style={styles.newOptionSub}>Buy old gold / silver from a customer</Text>
-                </View>
-                <ChevronRight size={18} color="#94A3B8" />
-              </Pressable>
+              <ComponentGuard pageKey="invoices.cash_purchase">
+                <Pressable
+                  style={styles.newOption}
+                  onPress={() => {
+                    setNewMenuOpen(false);
+                    router.push('/invoices/purchase');
+                  }}
+                >
+                  <View style={[styles.newOptionIcon, { backgroundColor: '#FEF7E0' }]}>
+                    <Coins size={20} color="#B06000" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.newOptionTitle}>Cash Purchase</Text>
+                    <Text style={styles.newOptionSub}>Buy old gold / silver from a customer</Text>
+                  </View>
+                  <ChevronRight size={18} color="#94A3B8" />
+                </Pressable>
+              </ComponentGuard>
             </Pressable>
           </Pressable>
         </Modal>
@@ -1181,8 +1208,8 @@ export default function InvoiceListScreen() {
             />
           ))}
 
-        {/* Floating "+" button (hidden while selecting) */}
-        {!selectMode && (
+        {/* Floating "+" button (hidden while selecting, or when no create access at all) */}
+        {!selectMode && (canNew || canRepair || canPurchase) && (
           <View style={styles.fabWrapper}>
             <Pressable style={styles.fabButton} onPress={() => setNewMenuOpen(true)}>
               <Plus size={24} color="#FFFFFF" strokeWidth={2.5} />

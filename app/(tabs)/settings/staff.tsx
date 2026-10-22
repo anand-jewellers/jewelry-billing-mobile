@@ -1,5 +1,5 @@
 // app/(tabs)/settings/staff.tsx
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, FlatList, Pressable, StyleSheet, TextInput, Switch, Alert } from 'react-native';
 import { Eye, EyeOff } from 'lucide-react-native';
 import { Card, Button, Input, ErrorModal } from '../../../src/components/ui';
@@ -15,9 +15,43 @@ import { PageGuard } from '../../../src/components/PageGuard';
 type PermMap = Record<string, boolean>;
 type StaffWithPerms = Staff & { permissions: PermMap };
 
-// Admin is seeded directly in the database once and is never created or
-// re-assigned from this screen. Only these roles are pickable here.
 const CREATABLE_ROLES: StaffRole[] = ['staff', 'manager'];
+
+// ---------------------------------------------------------
+// Parent -> child hierarchy.
+// Each entry: the parent page (group + label as shown in PAGE_REGISTRY)
+// and the group whose pages are its components.
+// Add a line here to give any other page its own components.
+// ---------------------------------------------------------
+const norm = (s: string) => s.trim().toLowerCase();
+
+const PARENT_RULES = [
+  { parentGroup: 'main', parentLabel: 'dashboard', childGroup: 'dashboard' },
+  { parentGroup: 'main', parentLabel: 'products', childGroup: 'products' },
+  { parentGroup: 'main', parentLabel: 'invoices', childGroup: 'invoices' },
+  { parentGroup: 'main', parentLabel: 'customers', childGroup: 'customers' },
+  { parentGroup: 'main', parentLabel: 'settings (menu)', childGroup: 'settings' },
+];
+
+type Hierarchy = { parentKey: string; childKeys: string[] };
+
+const HIERARCHIES: Hierarchy[] = PARENT_RULES.map((r) => {
+  const parent = PAGE_REGISTRY.find(
+    (p) => norm(p.group) === r.parentGroup && norm(p.label) === r.parentLabel
+  );
+  const children = PAGE_REGISTRY.filter((p) => norm(p.group) === r.childGroup);
+  return parent && children.length ? { parentKey: parent.key as string, childKeys: children.map((c) => c.key as string) } : null;
+}).filter(Boolean) as Hierarchy[];
+
+const PARENT_BY_KEY = new Map(HIERARCHIES.map((h) => [h.parentKey, h]));
+const CHILD_TO_PARENT = new Map<string, string>();
+HIERARCHIES.forEach((h) => h.childKeys.forEach((k) => CHILD_TO_PARENT.set(k, h.parentKey)));
+
+// Groups that are nested under a parent are not shown as their own card
+const NESTED_GROUPS = new Set(PARENT_RULES.map((r) => r.childGroup));
+const GROUPS = Array.from(new Set(PAGE_REGISTRY.map((p) => p.group))).filter(
+  (g) => !NESTED_GROUPS.has(norm(g))
+);
 
 export default function StaffSettingsScreen() {
   return (
@@ -142,6 +176,37 @@ function PasswordField({
   );
 }
 
+/** One permission row. `child` rows are indented with a connector line. */
+function PermRow({
+  label,
+  value,
+  onChange,
+  child,
+  disabled,
+  last,
+}: {
+  label: string;
+  value: boolean;
+  onChange: () => void;
+  child?: boolean;
+  disabled?: boolean;
+  last?: boolean;
+}) {
+  return (
+    <View style={[styles.permRow, child && styles.permRowChild, disabled && styles.permRowDisabled]}>
+      {child && <View style={[styles.connector, last && styles.connectorLast]} />}
+      <Text style={[styles.permLabel, child && styles.permLabelChild]}>{label}</Text>
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        disabled={disabled}
+        trackColor={{ false: '#CBD5E1', true: colors.primary }}
+        thumbColor="#fff"
+      />
+    </View>
+  );
+}
+
 function StaffEditorSheet({
   staff,
   onClose,
@@ -155,21 +220,42 @@ function StaffEditorSheet({
   const [name, setName] = useState(staff?.name ?? '');
   const [phone, setPhone] = useState(staff?.phone ?? '');
   const [email, setEmail] = useState(staff?.email ?? '');
-  // Never default into 'admin', even if this sheet is somehow opened on an admin row.
   const [role, setRole] = useState<StaffRole>(staff?.role === 'admin' ? 'manager' : staff?.role ?? 'staff');
 
-  // New-staff password.
   const [password, setPassword] = useState('');
-
-  // Existing-staff password reset: requires current password before a new one is accepted.
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
-  const [perms, setPerms] = useState<PermMap>(staff?.permissions ?? {});
+  // Normalise on open: dashboard components can't be on while Dashboard is off
+  const [perms, setPerms] = useState<PermMap>(() => {
+    const p = { ...(staff?.permissions ?? {}) };
+    // A component can't be on while its parent is off
+    CHILD_TO_PARENT.forEach((parentKey, childKey) => {
+      if (!p[parentKey]) p[childKey] = false;
+    });
+    return p;
+  });
   const [saving, setSaving] = useState(false);
 
-  const togglePerm = (key: PageKey) => setPerms((p) => ({ ...p, [key]: !p[key] }));
+  // const dashboardOn = DASHBOARD_PARENT ? !!perms[DASHBOARD_PARENT.key] : true;
+
+  const togglePerm = (key: PageKey) =>
+    setPerms((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      // Parent switched -> all its components follow
+      const h = PARENT_BY_KEY.get(key as string);
+      if (h) h.childKeys.forEach((c) => (next[c] = next[key]));
+      return next;
+    });
+
+  const setAll = (value: boolean) =>
+    setPerms(Object.fromEntries(PAGE_REGISTRY.map((p) => [p.key, value])));
+
+  const enabledCount = useMemo(
+    () => PAGE_REGISTRY.filter((p) => perms[p.key]).length,
+    [perms]
+  );
 
   const save = async () => {
     if (!name.trim()) return Alert.alert('Name is required');
@@ -224,7 +310,13 @@ function StaffEditorSheet({
       }
 
       if (role === 'staff' && staffId) {
-        const payload = PAGE_REGISTRY.map((p) => ({ page_key: p.key, can_access: !!perms[p.key] }));
+        const payload = PAGE_REGISTRY.map((p) => {
+          const parentKey = CHILD_TO_PARENT.get(p.key as string);
+          return {
+            page_key: p.key,
+            can_access: parentKey ? !!perms[parentKey] && !!perms[p.key] : !!perms[p.key],
+          };
+        });
         const { error: permErr } = await supabase.rpc('set_staff_permissions', {
           p_staff_id: staffId,
           p_permissions: payload,
@@ -240,8 +332,6 @@ function StaffEditorSheet({
     }
   };
 
-  const groups = Array.from(new Set(PAGE_REGISTRY.map((p) => p.group)));
-
   return (
     <>
       <FormSheet
@@ -251,66 +341,114 @@ function StaffEditorSheet({
         onSave={save}
         saving={saving}
       >
-        <Input label="Name" value={name} onChangeText={setName} placeholder="Full name" />
-        <Input
-          label="Phone"
-          value={phone}
-          onChangeText={setPhone}
-          placeholder="Phone number"
-          keyboardType="phone-pad"
-        />
-        <Input
-          label="Email"
-          value={email}
-          onChangeText={setEmail}
-          placeholder="Email address"
-          keyboardType="email-address"
-          autoCapitalize="none"
-        />
+        {/* ---------- Details ---------- */}
+        <Text style={styles.sectionTitle}>Details</Text>
+        <View style={styles.block}>
+          <Input label="Name" value={name} onChangeText={setName} placeholder="Full name" />
+          <Input
+            label="Phone"
+            value={phone}
+            onChangeText={setPhone}
+            placeholder="Phone number"
+            keyboardType="phone-pad"
+          />
+          <Input
+            label="Email"
+            value={email}
+            onChangeText={setEmail}
+            placeholder="Email address"
+            keyboardType="email-address"
+            autoCapitalize="none"
+          />
+        </View>
 
-        <Text style={styles.fieldLabel}>Role</Text>
-        <View style={styles.roleRow}>
+        {/* ---------- Role ---------- */}
+        <Text style={styles.sectionTitle}>Role</Text>
+        <View style={styles.segment}>
           {CREATABLE_ROLES.map((r) => (
             <Pressable
               key={r}
-              style={[styles.roleChip, role === r && styles.roleChipActive]}
+              style={[styles.segmentItem, role === r && styles.segmentItemActive]}
               onPress={() => setRole(r)}
             >
-              <Text style={[styles.roleChipText, role === r && styles.roleChipTextActive]}>{r}</Text>
+              <Text style={[styles.segmentText, role === r && styles.segmentTextActive]}>
+                {r.charAt(0).toUpperCase() + r.slice(1)}
+              </Text>
             </Pressable>
           ))}
         </View>
 
-        {isNew ? (
-          <PasswordField label="Password" placeholder="Password" value={password} onChangeText={setPassword} />
-        ) : (
-          <>
-            <Text style={styles.permHeader}>Change password</Text>
-            <PasswordField
-              placeholder="Current password"
-              value={currentPassword}
-              onChangeText={(v) => {
-                setCurrentPassword(v);
-                if (passwordError) setPasswordError(null);
-              }}
-            />
-            <PasswordField placeholder="New password" value={newPassword} onChangeText={setNewPassword} />
-            <Text style={styles.hint}>Leave both blank to keep the current password.</Text>
-          </>
-        )}
+        {/* ---------- Password ---------- */}
+        <Text style={styles.sectionTitle}>{isNew ? 'Password' : 'Change password'}</Text>
+        <View style={styles.block}>
+          {isNew ? (
+            <PasswordField placeholder="Password" value={password} onChangeText={setPassword} />
+          ) : (
+            <>
+              <PasswordField
+                placeholder="Current password"
+                value={currentPassword}
+                onChangeText={(v) => {
+                  setCurrentPassword(v);
+                  if (passwordError) setPasswordError(null);
+                }}
+              />
+              <PasswordField placeholder="New password" value={newPassword} onChangeText={setNewPassword} />
+              <Text style={styles.hint}>Leave both blank to keep the current password.</Text>
+            </>
+          )}
+        </View>
 
+        {/* ---------- Page access ---------- */}
         {role === 'staff' ? (
           <>
-            <Text style={styles.permHeader}>Page access</Text>
-            {groups.map((g) => (
-              <View key={g} style={{ marginBottom: spacing.md }}>
+            <View style={styles.accessHeader}>
+              <View>
+                <Text style={styles.sectionTitleInline}>Page access</Text>
+                <Text style={styles.hint}>
+                  {enabledCount} of {PAGE_REGISTRY.length} enabled
+                </Text>
+              </View>
+              <View style={styles.bulkRow}>
+                <Pressable style={styles.bulkBtn} onPress={() => setAll(true)}>
+                  <Text style={styles.bulkText}>Enable all</Text>
+                </Pressable>
+                <Pressable style={styles.bulkBtn} onPress={() => setAll(false)}>
+                  <Text style={styles.bulkText}>Disable all</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            {GROUPS.map((g) => (
+              <View key={g} style={styles.groupCard}>
                 <Text style={styles.groupLabel}>{g}</Text>
-                {PAGE_REGISTRY.filter((p) => p.group === g).map((p) => (
-                  <View key={p.key} style={styles.permRow}>
-                    <Text style={styles.permLabel}>{p.label}</Text>
-                    <Switch value={!!perms[p.key]} onValueChange={() => togglePerm(p.key)} />
-                  </View>
-                ))}
+
+                {PAGE_REGISTRY.filter((p) => p.group === g).map((p) => {
+                  const h = PARENT_BY_KEY.get(p.key as string);
+                  const parentOn = !!perms[p.key];
+                  return (
+                    <View key={p.key}>
+                      <PermRow label={p.label} value={parentOn} onChange={() => togglePerm(p.key)} />
+
+                      {/* Components nested right under their parent */}
+                      {h &&
+                        h.childKeys.map((ck, i) => {
+                          const child = PAGE_REGISTRY.find((x) => x.key === ck)!;
+                          return (
+                            <PermRow
+                              key={ck}
+                              child
+                              last={i === h.childKeys.length - 1}
+                              label={child.label}
+                              value={parentOn && !!perms[ck]}
+                              disabled={!parentOn}
+                              onChange={() => togglePerm(child.key)}
+                            />
+                          );
+                        })}
+                    </View>
+                  );
+                })}
               </View>
             ))}
           </>
@@ -335,6 +473,36 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   addButton: { padding: spacing.lg },
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', padding: spacing.lg },
+
+  // Section headings
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+  },
+  sectionTitleInline: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
+  block: {
+    borderWidth: 1,
+    borderColor: colors.border ?? '#E2E8F0',
+    borderRadius: 12,
+    padding: spacing.md,
+  },
+
+  // Role segmented control
+  segment: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 12,
+    padding: 4,
+  },
+  segmentItem: { flex: 1, paddingVertical: 10, borderRadius: 9, alignItems: 'center' },
+  segmentItemActive: { backgroundColor: colors.primary },
+  segmentText: { fontSize: 13.5, fontWeight: '600', color: colors.textSecondary },
+  segmentTextActive: { color: '#fff' },
+
+  // Password
   fieldLabel: { fontSize: 12, color: colors.textMuted, marginBottom: 4 },
   passwordWrap: {
     flexDirection: 'row',
@@ -346,20 +514,63 @@ const styles = StyleSheet.create({
   },
   passwordInput: { flex: 1, paddingVertical: spacing.sm, color: colors.textPrimary },
   eyeBtn: { padding: spacing.xs },
-  roleRow: { flexDirection: 'row', gap: 8, marginBottom: spacing.sm },
-  roleChip: {
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border ?? '#ddd',
+  hint: { color: colors.textSecondary, fontSize: 12.5, marginTop: 2 },
+
+  // Page access
+  accessHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: spacing.xl,
+    marginBottom: spacing.sm,
   },
-  roleChipActive: { backgroundColor: colors.gold ?? colors.primary, borderColor: colors.gold ?? colors.primary },
-  roleChipText: { color: colors.textSecondary, fontSize: 12.5 },
-  roleChipTextActive: { color: colors.background, fontWeight: '700' },
-  permHeader: { fontWeight: '700', color: colors.textPrimary, marginTop: spacing.md, marginBottom: spacing.sm },
-  groupLabel: { fontSize: 12, color: colors.textMuted, marginBottom: 4, textTransform: 'uppercase' },
-  permRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
-  permLabel: { color: colors.textPrimary, fontSize: 13.5 },
-  hint: { color: colors.textSecondary, fontSize: 12.5, marginTop: spacing.sm },
+  bulkRow: { flexDirection: 'row', gap: 8 },
+  bulkBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  bulkText: { fontSize: 12, fontWeight: '700', color: colors.primary },
+
+  groupCard: {
+    borderWidth: 1,
+    borderColor: colors.border ?? '#E2E8F0',
+    borderRadius: 12,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  groupLabel: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+
+  permRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  permRowChild: { marginLeft: 18, paddingLeft: 16 },
+  permRowDisabled: { opacity: 0.45 },
+  permLabel: { color: colors.textPrimary, fontSize: 14.5, flex: 1 },
+  permLabelChild: { fontSize: 13.5, color: colors.textSecondary },
+
+  // Vertical connector for nested rows
+  connector: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 2,
+    backgroundColor: colors.border ?? '#E2E8F0',
+  },
+  connectorLast: { bottom: '50%' },
 });

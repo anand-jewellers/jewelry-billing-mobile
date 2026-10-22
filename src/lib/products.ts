@@ -311,7 +311,8 @@ export async function getProducts() {
   id, product_name, product_code, net_weight, status,
   metal_id, purity_id, category_id, subcategory_id,
   metals(name, type), purities(name), categories(name), subcategories(name),
-  product_images(storage_path, is_primary)
+  product_images(storage_path, is_primary),
+  product_diamonds(size)
 `)
     .order('created_at', { ascending: false });
   if (error) throw error;

@@ -9,6 +9,15 @@ export type PaymentMode = (typeof PAYMENT_MODES)[number];
 
 const ORDER_IMAGE_BUCKET = 'order-images';
 
+// ---- Order number settings (change these to change the format) ----
+// Result with these values on 18 Oct 2026, serial 1:  ORD-001-181026
+const ORDER_PREFIX = 'ORD';            // ORD-...
+const ORDER_SEPARATOR = '-';           // between prefix, serial number and date
+const ORDER_SEQ_DIGITS = 3;            // 3 -> 001, 4 -> 0001
+const ORDER_DATE_FORMAT = 'DDMMYY';    // tokens: DD, MM, YY, YYYY
+const ORDER_TIMEZONE = 'Asia/Kolkata'; // the day (and the serial) restarts at midnight here
+const ORDER_NUMBER_MAX_ATTEMPTS = 5;   // retries if two orders grab the same number
+
 export interface CustomerOrder {
   id: string;
   order_number: string;
@@ -56,33 +65,88 @@ export interface CreateCustomerOrderInput {
   payment_mode?: PaymentMode | null;
 }
 
-export async function createCustomerOrder(input: CreateCustomerOrderInput): Promise<CustomerOrder> {
+// ---------------------------------------------------------
+// Order number: ORD-001-181026  (prefix, serial for the day, date)
+// ---------------------------------------------------------
+
+/** Today's date part in ORDER_TIMEZONE, formatted with ORDER_DATE_FORMAT. */
+function getOrderDatePart(d: Date = new Date()): string {
+  const day = d.toLocaleDateString('en-GB', { timeZone: ORDER_TIMEZONE, day: '2-digit' });
+  const month = d.toLocaleDateString('en-GB', { timeZone: ORDER_TIMEZONE, month: '2-digit' });
+  const year = d.toLocaleDateString('en-GB', { timeZone: ORDER_TIMEZONE, year: 'numeric' });
+
+  return ORDER_DATE_FORMAT
+    .replace('YYYY', year)
+    .replace('YY', year.slice(-2))
+    .replace('MM', month)
+    .replace('DD', day);
+}
+
+/**
+ * Looks at today's orders, finds the highest serial and returns the next
+ * order number. Old random numbers (e.g. ORD-A3F9C2) don't match today's
+ * pattern, so they are ignored.
+ */
+async function generateCustomerOrderNumber(): Promise<string> {
+  const datePart = getOrderDatePart();
+  const head = `${ORDER_PREFIX}${ORDER_SEPARATOR}`;
+  const tail = `${ORDER_SEPARATOR}${datePart}`;
+
   const { data, error } = await supabase
     .from('customer_orders')
-    .insert({
-      customer_id: input.customer_id,
-      category: input.category.trim(),
-      metal: input.metal.trim(),
-      purity: input.purity.trim(),
-      weight_min: input.weight_min,
-      weight_max: input.weight_max ?? null,
-      stone_weight: input.stone_weight ?? null,
-      stone_name: input.stone_name?.trim() || null,
-      notes: input.notes?.trim() || null,
-      due_date: input.due_date || null,
-      vac_percent: input.vac_percent ?? null,
-      making_charge: input.making_charge ?? null,
-      stone_charge: input.stone_charge ?? null,
-      goldsmith_name: input.goldsmith_name?.trim() || null,
-      goldsmith_phone: input.goldsmith_phone?.trim() || null,
-      advance_amount: input.advance_amount ?? null,
-      payment_mode: input.payment_mode ?? null,
-      status: 'pending',
-    })
-    .select('*')
-    .single();
+    .select('order_number')
+    .like('order_number', `${head}%${tail}`);
   if (error) throw error;
-  return data as CustomerOrder;
+
+  let maxSeq = 0;
+  for (const row of data ?? []) {
+    const no: string = row.order_number ?? '';
+    const middle = no.slice(head.length, no.length - tail.length);
+    if (/^\d+$/.test(middle)) maxSeq = Math.max(maxSeq, parseInt(middle, 10));
+  }
+
+  const seqPart = String(maxSeq + 1).padStart(ORDER_SEQ_DIGITS, '0');
+  return `${head}${seqPart}${tail}`;
+}
+
+export async function createCustomerOrder(input: CreateCustomerOrderInput): Promise<CustomerOrder> {
+  for (let attempt = 1; attempt <= ORDER_NUMBER_MAX_ATTEMPTS; attempt++) {
+    const orderNumber = await generateCustomerOrderNumber();
+
+    const { data, error } = await supabase
+      .from('customer_orders')
+      .insert({
+        order_number: orderNumber,
+        customer_id: input.customer_id,
+        category: input.category.trim(),
+        metal: input.metal.trim(),
+        purity: input.purity.trim(),
+        weight_min: input.weight_min,
+        weight_max: input.weight_max ?? null,
+        stone_weight: input.stone_weight ?? null,
+        stone_name: input.stone_name?.trim() || null,
+        notes: input.notes?.trim() || null,
+        due_date: input.due_date || null,
+        vac_percent: input.vac_percent ?? null,
+        making_charge: input.making_charge ?? null,
+        stone_charge: input.stone_charge ?? null,
+        goldsmith_name: input.goldsmith_name?.trim() || null,
+        goldsmith_phone: input.goldsmith_phone?.trim() || null,
+        advance_amount: input.advance_amount ?? null,
+        payment_mode: input.payment_mode ?? null,
+        status: 'pending',
+      })
+      .select('*')
+      .single();
+
+    if (!error) return data as CustomerOrder;
+
+    // 23505 = unique violation: another device just took this number. Try the next one.
+    if ((error as any).code === '23505' && attempt < ORDER_NUMBER_MAX_ATTEMPTS) continue;
+    throw error;
+  }
+
+  throw new Error('Could not generate a unique order number. Please try again.');
 }
 
 // ---------------------------------------------------------
@@ -192,13 +256,14 @@ export async function completeCustomerOrderWithInvoice(
   return data as CustomerOrder;
 }
 
-/** Live updates for every order belonging to a customer (used on the customer detail screen). */
+let channelSeq = 0;
+
 export function subscribeToCustomerOrders(
   customerId: string,
   onChange: (order: CustomerOrder, eventType: 'INSERT' | 'UPDATE' | 'DELETE') => void
 ): () => void {
   const channel = supabase
-    .channel(`customer_orders:${customerId}`)
+    .channel(`customer_orders:${customerId}:${++channelSeq}`)
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'customer_orders', filter: `customer_id=eq.${customerId}` },
@@ -210,13 +275,13 @@ export function subscribeToCustomerOrders(
     )
     .subscribe();
 
-  return () => { supabase.removeChannel(channel); };
+  return () => { void supabase.removeChannel(channel); };
 }
 
-/** Live status updates for a single order (used on the order detail screen). */
+/** Live status updates for a single order. */
 export function subscribeToOrderStatus(orderId: string, onChange: (order: CustomerOrder) => void): () => void {
   const channel = supabase
-    .channel(`customer_order:${orderId}`)
+    .channel(`customer_order:${orderId}:${++channelSeq}`)
     .on(
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'customer_orders', filter: `id=eq.${orderId}` },

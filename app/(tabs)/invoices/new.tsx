@@ -18,6 +18,7 @@ import { Button, Card, ErrorModal } from '../../../src/components/ui';
 import { SelectField } from '../../../src/components/master';
 import { colors, spacing, radius } from '../../../src/theme';
 import { searchPhoneContacts } from '../../../src/lib/phoneContacts';
+import { PageGuard } from '../../../src/components/PageGuard';
 
 import {
   listMetals,
@@ -133,7 +134,17 @@ const withRate = (label: string, rate?: number | null) =>
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
 
+// Exported screen: only renders the New Invoice screen (and runs its data
+// loading) when the user has the 'invoices.new_invoice' permission.
 export default function NewInvoiceScreen() {
+  return (
+    <PageGuard pageKey="invoices.new_invoice">
+      <NewInvoiceScreenInner />
+    </PageGuard>
+  );
+}
+
+function NewInvoiceScreenInner() {
   // ---------------------------------------------------------
   // Notifications
   // ---------------------------------------------------------
@@ -1366,7 +1377,7 @@ export default function NewInvoiceScreen() {
 
         <TextInput
           style={styles.input}
-          placeholder="Remark"
+          placeholder="LOC / Remark"
           placeholderTextColor={colors.textMuted}
           value={remark}
           onChangeText={setRemark}

@@ -6,13 +6,22 @@ import type { PurchaseItem } from './api/cashPurchases';
 import type { RepairShopInfo } from './repairReceipt';
 import { displayNetWeight } from './exchangeGold';
 
+// ---- Receipt number settings (change these to change the format) ----
+// Result with these values on 18 Oct 2026, serial 1:  CP-001-181026
+const RECEIPT_PREFIX = 'CP';           // CP-...
+const RECEIPT_SEPARATOR = '-';         // between prefix, serial number and date
+const RECEIPT_SEQ_DIGITS = 3;          // 3 -> 001, 4 -> 0001
+const RECEIPT_DATE_FORMAT = 'DDMMYY';  // tokens: DD, MM, YY, YYYY
+
 export interface PurchaseReceiptData {
   receiptNo: string;
   dateText: string;
   customerName: string;
   phone: string;
   items: PurchaseItem[];
-  total: number;
+  netAmount: number;    // calculated
+  paidAmount: number;   // actually paid
+  total: number;        // = paidAmount (kept so the thermal printer still works)
   paymentLabel: string;
   remarks: string;
 }
@@ -25,12 +34,23 @@ export const PURCHASE_PAY_MODES = [
 export const purchaseModeLabel = (id: string | null) =>
   PURCHASE_PAY_MODES.find((m) => m.id === id)?.label ?? id ?? '';
 
-/** CP-YYYYMMDD-HHMMSS (local time) */
-export function generatePurchaseReceiptNo(d: Date = new Date()): string {
+/**
+ * e.g. CP-001-181026 (prefix, serial number, date; no time).
+ * `seq` is the running serial number (1, 2, 3 ...). Pass it in from wherever
+ * you count purchase receipts; without it every receipt will be 001.
+ */
+export function generatePurchaseReceiptNo(d: Date = new Date(), seq: number = 1): string {
   const p = (n: number) => String(n).padStart(2, '0');
-  return `CP-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(
-    d.getMinutes()
-  )}${p(d.getSeconds())}`;
+
+  const datePart = RECEIPT_DATE_FORMAT
+    .replace('YYYY', String(d.getFullYear()))
+    .replace('YY', String(d.getFullYear()).slice(-2))
+    .replace('MM', p(d.getMonth() + 1))
+    .replace('DD', p(d.getDate()));
+
+  const seqPart = String(seq).padStart(RECEIPT_SEQ_DIGITS, '0');
+
+  return [RECEIPT_PREFIX, seqPart, datePart].join(RECEIPT_SEPARATOR);
 }
 
 /** expo-print cannot measure content height, so the PDF needs an estimate. */
@@ -125,20 +145,19 @@ export function buildPurchaseReceiptHtml(data: PurchaseReceiptData, shop: Repair
 
     ${itemsHtml}
 
-    <table>
-      <tr class="total"><td class="k" style="color:#111">TOTAL PAID</td><td class="v">${money(data.total)}</td></tr>
+        <table>
+      ${row('Net Amount', money(data.netAmount))}
+      <tr class="total"><td class="k" style="color:#111">AMOUNT PAID</td><td class="v">${money(data.paidAmount)}</td></tr>
       ${row('Paid by', escapeHtml(data.paymentLabel))}
     </table>
 
-    ${
-      data.remarks
-        ? `<hr class="rule" />
+    ${data.remarks
+      ? `<hr class="rule" />
            <div class="label">Remarks</div>
            <div class="remarks">${escapeHtml(data.remarks)}</div>`
-        : ''
+      : ''
     }
-
-    <div class="sign">Customer signature</div>
+    
     <div class="center foot">Thank you!</div>
   </div>
 </body>

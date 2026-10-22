@@ -24,6 +24,7 @@ import {
 import { uploadProductImageBase64 } from '../../../src/lib/storage';
 import { useStaff } from '../../../src/context/StaffContext';
 import { useNotifications } from '../../../src/context/NotificationContext';
+import { PageGuard } from '../../../src/components/PageGuard';
 
 // How long the "Product Saved" popup stays up before auto-navigating to the
 // product list. A tap on "View Now" inside the popup skips the wait.
@@ -58,7 +59,17 @@ function Field({ label, children, style }: { label: string; children: ReactNode;
   );
 }
 
+// Exported screen: only renders the form (and runs its data loading)
+// when the user has the 'products.add' permission.
 export default function AddProductScreen() {
+  return (
+    <PageGuard pageKey="products.add">
+      <AddProductScreenInner />
+    </PageGuard>
+  );
+}
+
+function AddProductScreenInner() {
   const router = useRouter();
   const { currentStaff } = useStaff();
   const { notify } = useNotifications();

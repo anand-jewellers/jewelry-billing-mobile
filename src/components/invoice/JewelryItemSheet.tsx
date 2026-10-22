@@ -463,8 +463,8 @@ export function JewelryItemSheet({
         stoneAmounts:
           productStones.length >= 2
             ? Object.fromEntries(
-                productStones.map((x: any) => [x.stone_id ?? x.id, String(x.amount ?? 0)])
-              )
+              productStones.map((x: any) => [x.stone_id ?? x.id, String(x.amount ?? 0)])
+            )
             : {},
         stoneName: null,
         extraCharges: otherExtraLines(item.value_added_charges),
@@ -886,6 +886,17 @@ export function JewelryItemSheet({
 
               <View style={[styles.row, { marginTop: spacing.xs }]}>
                 <View style={styles.col}>
+                  <Text style={styles.label}>VA (%)</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="0"
+                    placeholderTextColor={colors.textMuted}
+                    keyboardType="decimal-pad"
+                    value={state.vacPercent}
+                    onChangeText={(v) => setState((s) => ({ ...s, vacPercent: v }))}
+                  />
+                </View>
+                <View style={styles.col}>
                   <Text style={styles.label}>{makingLabel(state.makingType)}</Text>
                   <TextInput
                     style={styles.input}
@@ -916,17 +927,7 @@ export function JewelryItemSheet({
                     />
                   )}
                 </View>
-                <View style={styles.col}>
-                  <Text style={styles.label}>VA (%)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
-                    value={state.vacPercent}
-                    onChangeText={(v) => setState((s) => ({ ...s, vacPercent: v }))}
-                  />
-                </View>
+
               </View>
 
               {/* Any other charge lines carried over from the scanned product */}

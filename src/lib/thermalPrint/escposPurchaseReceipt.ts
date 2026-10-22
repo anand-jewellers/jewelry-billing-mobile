@@ -128,9 +128,10 @@ export async function printPurchaseReceiptDirect(
     out += LF;
   });
 
-  // ---- Total ----
+  // ---- Totals ----
   out += dashed();
-  out += boldRow('TOTAL PAID', fixed2(data.total));
+  out += row('Net Amount', fixed2(data.netAmount));
+  out += boldRow('AMOUNT PAID', fixed2(data.paidAmount));
   out += row('Paid by', data.paymentLabel);
 
   if (data.remarks?.trim()) {
@@ -141,7 +142,7 @@ export async function printPurchaseReceiptDirect(
   // ---- Signature + footer ----
   out += LF + LF + LF;
   out += '_'.repeat(WIDTH) + LF;
-  out += center('Customer signature');
+  // out += center('Customer signature');
   out += LF;
   out += footerLine('Thank you!');
 

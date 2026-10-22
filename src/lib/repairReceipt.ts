@@ -4,6 +4,13 @@
 // printing and sharing. Same HTML feeds Print.printAsync (print) and
 // createThermalPdfFile / createInvoicePdfBlobWeb (share as PDF).
 
+// ---- Receipt number settings (change these to change the format) ----
+// Result with these values on 18 Oct 2026, serial 1:  REP-001-181026
+const RECEIPT_PREFIX = 'REP';          // REP-...
+const RECEIPT_SEPARATOR = '-';         // between prefix, serial number and date
+const RECEIPT_SEQ_DIGITS = 3;          // 3 -> 001, 4 -> 0001
+const RECEIPT_DATE_FORMAT = 'DDMMYY';  // tokens: DD, MM, YY, YYYY
+
 export interface RepairReceiptData {
   receiptNo: string;
   dateText: string;      // already formatted for display, e.g. "14 Oct 2026, 04:30 PM"
@@ -34,12 +41,23 @@ const escapeHtml = (s: string) =>
 
 const money = (n: number) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
 
-/** REP-YYYYMMDD-HHMMSS (local time). Unique enough for a hand-over slip. */
-export function generateRepairReceiptNo(d: Date = new Date()): string {
+/**
+ * e.g. REP-001-181026 (prefix, serial number, date; no time).
+ * `seq` is the running serial number (1, 2, 3 ...). Pass it in from wherever
+ * you count repair receipts; without it every receipt will be 001.
+ */
+export function generateRepairReceiptNo(d: Date = new Date(), seq: number = 1): string {
   const p = (n: number) => String(n).padStart(2, '0');
-  return `REP-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(
-    d.getMinutes()
-  )}${p(d.getSeconds())}`;
+
+  const datePart = RECEIPT_DATE_FORMAT
+    .replace('YYYY', String(d.getFullYear()))
+    .replace('YY', String(d.getFullYear()).slice(-2))
+    .replace('MM', p(d.getMonth() + 1))
+    .replace('DD', p(d.getDate()));
+
+  const seqPart = String(seq).padStart(RECEIPT_SEQ_DIGITS, '0');
+
+  return [RECEIPT_PREFIX, seqPart, datePart].join(RECEIPT_SEPARATOR);
 }
 
 export function formatReceiptDate(d: Date = new Date()): string {

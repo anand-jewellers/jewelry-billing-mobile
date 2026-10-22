@@ -5,10 +5,12 @@ import {
   Pressable, Modal, TextInput, KeyboardAvoidingView, Platform, TouchableOpacity,
 } from 'react-native';
 import { useFocusEffect, Stack } from 'expo-router';
-import { Boxes, Gem, Layers, Clock } from 'lucide-react-native';
+import { Boxes, Gem, Layers } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing } from '../../../src/theme';
 import { getProducts, getMetals } from '../../../src/lib/products';
+import { PageGuard } from '../../../src/components/PageGuard';
+
 
 interface ProductRow {
   id: string;
@@ -17,11 +19,12 @@ interface ProductRow {
   category_id: string | null;
   metals?: { name?: string; type?: string } | null;
   categories?: { name?: string } | null;
+  product_diamonds?: { size: string | null }[] | null;
 }
 
 interface StockOverride {
   expiresAt: number;                 // epoch ms
-  values: Record<string, number>;    // metal name -> temporary weight (g)
+  values: Record<string, number>;    // metal name -> temporary weight (g, or ct for Diamond)
 }
 
 const SOLD_STATUS = 'sold';
@@ -30,14 +33,30 @@ const OVERRIDE_DURATION_MS = 4 * 60 * 60 * 1000; // 4 hours
 const TAP_WINDOW_MS = 1500;
 const TAPS_REQUIRED = 3;
 
-function formatRemaining(ms: number) {
-  const totalMin = Math.max(0, Math.ceil(ms / 60000));
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+// ---- Diamond helpers: Diamond is counted in carats (ct), everything else in grams ----
+const isDiamondName = (n: string) => /diamond/i.test(n);
+const unitOf = (n: string) => (isDiamondName(n) ? 'ct' : 'g');
+const decimalsOf = (n: string) => (isDiamondName(n) ? 2 : 3);
+const fmt = (n: string, v: number) => `${v.toFixed(decimalsOf(n))} ${unitOf(n)}`;
+
+// "0.25 ct" -> 0.25
+function parseCt(size: string | null | undefined) {
+  const m = String(size ?? '').match(/\d*\.?\d+/);
+  return m ? parseFloat(m[0]) : 0;
 }
+const productCt = (p: ProductRow) =>
+  (p.product_diamonds ?? []).reduce((s, d) => s + parseCt(d.size), 0);
+
 
 export default function ProductWeightScreen() {
+  return (
+    <PageGuard pageKey="products.stock_weight">
+      <ProductWeightScreenInner />
+    </PageGuard>
+  );
+}
+
+function ProductWeightScreenInner() {
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [metalNames, setMetalNames] = useState<string[]>([]);
   const [override, setOverride] = useState<StockOverride | null>(null);
@@ -57,7 +76,7 @@ export default function ProductWeightScreen() {
         getMetals(),
         AsyncStorage.getItem(OVERRIDE_KEY),
       ]);
-      setProducts((data as ProductRow[]) ?? []);
+      setProducts((data as unknown as ProductRow[]) ?? []);
       setMetalNames(((metals as { name: string }[]) ?? []).map((m) => m.name));
 
       if (rawOverride) {
@@ -109,30 +128,33 @@ export default function ProductWeightScreen() {
 
   // Name of the Diamond metal as it exists in the metals table (fallback: "Diamond").
   const diamondMetalName = useMemo(
-    () => metalNames.find((n) => /diamond/i.test(n)) ?? 'Diamond',
+    () => metalNames.find(isDiamondName) ?? 'Diamond',
     [metalNames]
   );
 
-  // Products in a Diamond category count toward the Diamond metal,
-  // regardless of their actual metal (e.g. Gold + Diamond category).
-  const effectiveMetalName = useCallback(
-    (p: ProductRow) =>
-      /diamond/i.test(p.categories?.name ?? '')
-        ? diamondMetalName
-        : p.metals?.name || 'Unknown',
-    [diamondMetalName]
+  // Diamond carat total = sum of the sizes entered on in-stock products.
+  const diamondCt = useMemo(
+    () => inStock.reduce((s, p) => s + productCt(p), 0),
+    [inStock]
   );
 
-  // REAL weight per metal (every active metal listed, even if 0).
+  // REAL weight per metal. A jewel's net weight goes to its actual metal.
+  // The Diamond entry holds carats only.
   const realByMetal = useMemo(() => {
     const totals = new Map<string, number>();
     metalNames.forEach((n) => totals.set(n, 0));
+    if (!metalNames.some(isDiamondName)) totals.set(diamondMetalName, 0);
+
     for (const p of inStock) {
-      const name = effectiveMetalName(p);
+      const name = p.metals?.name || 'Unknown';
+      if (isDiamondName(name)) continue; // grams of a "Diamond" metal are not counted
       totals.set(name, (totals.get(name) || 0) + Number(p.net_weight || 0));
     }
-    return Array.from(totals.entries()).map(([name, weight]) => ({ name, weight }));
-  }, [inStock, metalNames, effectiveMetalName]);
+    return Array.from(totals.entries()).map(([name, w]) => ({
+      name,
+      weight: isDiamondName(name) ? diamondCt : w,
+    }));
+  }, [inStock, metalNames, diamondMetalName, diamondCt]);
 
   // DISPLAYED weight = temporary override if active, else real.
   const byMetal = useMemo(
@@ -145,30 +167,38 @@ export default function ProductWeightScreen() {
     [realByMetal, activeOverride]
   );
 
-  const grandTotal = useMemo(() => byMetal.reduce((s, m) => s + m.weight, 0), [byMetal]);
+  // Grams only — carats are not added into the gram total.
+  const grandTotal = useMemo(
+    () => byMetal.filter((m) => !isDiamondName(m.name)).reduce((s, m) => s + m.weight, 0),
+    [byMetal]
+  );
 
   // Category breakdown (always real figures).
   const byCategory = useMemo(() => {
-    const cats = new Map<string, { total: number; byMetal: Map<string, number> }>();
+    const cats = new Map<string, { total: number; ct: number; byMetal: Map<string, number> }>();
     for (const p of inStock) {
       const catName = p.categories?.name || 'Uncategorized';
-      const metal = effectiveMetalName(p);
+      const metal = p.metals?.name || 'Unknown';
       const weight = Number(p.net_weight || 0);
-      if (!cats.has(catName)) cats.set(catName, { total: 0, byMetal: new Map() });
+      if (!cats.has(catName)) cats.set(catName, { total: 0, ct: 0, byMetal: new Map() });
       const entry = cats.get(catName)!;
-      entry.total += weight;
-      entry.byMetal.set(metal, (entry.byMetal.get(metal) || 0) + weight);
+      entry.ct += productCt(p);
+      if (!isDiamondName(metal)) {
+        entry.total += weight;
+        entry.byMetal.set(metal, (entry.byMetal.get(metal) || 0) + weight);
+      }
     }
     return Array.from(cats.entries())
-      .map(([name, { total, byMetal }]) => ({
+      .map(([name, { total, ct, byMetal }]) => ({
         name,
         total,
+        ct,
         breakdown: Array.from(byMetal.entries())
           .map(([metal, weight]) => ({ metal, weight }))
           .sort((a, b) => b.weight - a.weight),
       }))
-      .sort((a, b) => b.total - a.total);
-  }, [inStock, effectiveMetalName]);
+      .sort((a, b) => b.total + b.ct - (a.total + a.ct));
+  }, [inStock]);
 
   // ---- Hidden editor: triple-tap on "Total Stock" ----
   function onTotalPress() {
@@ -177,7 +207,7 @@ export default function ProductWeightScreen() {
     if (tapTimes.current.length >= TAPS_REQUIRED) {
       tapTimes.current = [];
       const initial: Record<string, string> = {};
-      byMetal.forEach((m) => (initial[m.name] = m.weight.toFixed(3)));
+      byMetal.forEach((m) => (initial[m.name] = m.weight.toFixed(decimalsOf(m.name))));
       setDrafts(initial);
       setEditorOpen(true);
     }
@@ -226,7 +256,6 @@ export default function ProductWeightScreen() {
         <Text style={styles.headerTitle}>Current Stock Weight</Text>
         <Text style={styles.headerSubtitle}>Live totals from every product not marked as sold.</Text>
 
-
         <View style={styles.summaryGrid}>
           <Pressable onPress={onTotalPress} style={[styles.summaryCard, styles.summaryCardTotal]}>
             <Boxes size={18} color="#fff" />
@@ -238,7 +267,7 @@ export default function ProductWeightScreen() {
             <View key={m.name} style={styles.summaryCard}>
               <Gem size={18} color={colors.primary} />
               <Text style={styles.summaryCardLabel}>{m.name}</Text>
-              <Text style={styles.summaryCardValue}>{m.weight.toFixed(3)} g</Text>
+              <Text style={styles.summaryCardValue}>{fmt(m.name, m.weight)}</Text>
             </View>
           ))}
           {byMetal.length === 0 && <Text style={styles.emptyText}>No metals found.</Text>}
@@ -261,6 +290,11 @@ export default function ProductWeightScreen() {
                   {b.metal}: {b.weight.toFixed(3)} g
                 </Text>
               ))}
+              {cat.ct > 0 && (
+                <Text style={styles.categoryCardBreakdownItem}>
+                  Diamond: {cat.ct.toFixed(2)} ct
+                </Text>
+              )}
             </View>
           </View>
         ))}
@@ -283,7 +317,7 @@ export default function ProductWeightScreen() {
                 <View key={m.name} style={styles.editRow}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.editLabel}>{m.name}</Text>
-                    <Text style={styles.editReal}>Real: {m.weight.toFixed(3)} g</Text>
+                    <Text style={styles.editReal}>Real: {fmt(m.name, m.weight)}</Text>
                   </View>
                   <TextInput
                     style={styles.editInput}
@@ -292,7 +326,7 @@ export default function ProductWeightScreen() {
                     onChangeText={(v) => setDrafts((d) => ({ ...d, [m.name]: v }))}
                     selectTextOnFocus
                   />
-                  <Text style={styles.editUnit}>g</Text>
+                  <Text style={styles.editUnit}>{unitOf(m.name)}</Text>
                 </View>
               ))}
             </ScrollView>
@@ -321,12 +355,6 @@ const styles = StyleSheet.create({
   scrollContent: { padding: spacing.lg, paddingBottom: spacing.xxl },
   headerTitle: { fontSize: 22, fontWeight: '800', color: '#0F172A' },
   headerSubtitle: { fontSize: 13, color: '#64748B', marginTop: 4, marginBottom: spacing.lg },
-  banner: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#FEF3C7', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12,
-    marginBottom: spacing.md,
-  },
-  bannerText: { color: '#92400E', fontSize: 12, fontWeight: '600' },
   summaryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: spacing.xl },
   summaryCard: {
     flexBasis: '47%', backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1,

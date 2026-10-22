@@ -13,6 +13,8 @@ import { downloadSalesReportPdf } from '../../src/lib/pdfReport';
 import type { Metal, Purity, CurrentMetalRate } from '../../src/types/settings';
 import { PaymentBreakdownChart } from '../../src/components/ui/PaymentBreakdownChart';
 import { PageGuard } from '../../src/components/PageGuard';
+import { ComponentGuard } from '../../src/components/ComponentGuard';
+import { useStaff } from '../../src/context/StaffContext';
 import { countPendingRepairs } from '../../src/lib/api/repairs';
 import { countOpenOrders } from '../../src/lib/api/customerOrders';
 
@@ -22,14 +24,15 @@ const ROUTE_CUSTOMERS = '/customers';
 const ROUTE_PRODUCTS = '/products';
 const ROUTE_NEW_INVOICE = '/invoices/new'; // new invoice screen (opens scanner when scan=1)
 const ROUTE_ADD_PRODUCT = '/products/add'; // add product screen
-const ROUTE_REPAIR = '/invoices/repair';     // repair / service screen
+const ROUTE_REPAIR = '/invoices/repair'; // repair / service screen
 const ROUTE_PURCHASE = '/invoices/purchase'; // cash purchase (Adagu Nagai) screen
 const ROUTE_REPAIRS_LIST = '/invoices'; // change to wherever your repairs list opens
-const ROUTE_ORDERS = '/customers/orders';  // change to your customer orders route
+const ROUTE_NEW_ORDER = '/customers/add'; // new customer + jewel order screen
+const ROUTE_ORDERS = '/customers/orders'; // change to your customer orders route
 
 const RATE_ROWS: { label: string; metalMatch: string; purityMatch: string }[] = [
   // { label: '24K Gold', metalMatch: 'gold', purityMatch: '24k' },
-  { label: '22K Gold', metalMatch: 'gold', purityMatch: '22k' },
+  { label: '22K Gold', metalMatch: 'gold', purityMatch: '916' },
   { label: '18K Gold', metalMatch: 'gold', purityMatch: '18k' },
   { label: 'Silver', metalMatch: 'silver', purityMatch: 'silver' },
 ];
@@ -147,20 +150,43 @@ function QuickAction({ icon, label, onPress, variant = 'outline' }: QuickActionP
   );
 }
 
+function RatesClock() {
+  const [dt, setDt] = useState(getIndianDateTimeLabel());
+  useEffect(() => {
+    const timer = setInterval(() => setDt(getIndianDateTimeLabel()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <Text style={styles.sectionSubtitle}>
+      {dt.date} · {dt.time}
+    </Text>
+  );
+}
+
 function DashboardScreenInner() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isSideBySide = width >= 768;
 
+  // ---- Component-level access (admin / manager get everything via hasAccess) ----
+  const { hasAccess } = useStaff();
+  const canQuick = hasAccess('dashboard.quick_actions');
+  const canStats = hasAccess('dashboard.stat_cards');
+  const canRates = hasAccess('dashboard.live_rates');
+  const canPayments = hasAccess('dashboard.payment_breakdown');
+  // The sales report feeds the Invoices / Collection cards, the payment chart and the PDF.
+  const needsReport = canStats || canPayments;
+
   // ---- Real-time IST Clock ----
   const [istDateTime, setIstDateTime] = useState(getIndianDateTimeLabel());
 
   useEffect(() => {
+    if (!canRates) return; // clock is only shown inside the rates card
     const timer = setInterval(() => {
       setIstDateTime(getIndianDateTimeLabel());
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [canRates]);
 
   // ---- Gold rate strip ----
   const [metals, setMetals] = useState<Metal[]>([]);
@@ -183,6 +209,10 @@ function DashboardScreenInner() {
   const [downloading, setDownloading] = useState(false);
 
   const loadRates = useCallback(() => {
+    if (!canRates) {
+      setRatesLoading(false);
+      return;
+    }
     setRatesLoading(true);
     Promise.all([listMetals(), listPurities(), listCurrentRates()])
       .then(([m, p, r]) => {
@@ -193,9 +223,10 @@ function DashboardScreenInner() {
       })
       .catch(() => setRatesError('Could not load gold rates.'))
       .finally(() => setRatesLoading(false));
-  }, []);
+  }, [canRates]);
 
   const loadCounts = useCallback(() => {
+    if (!canStats) return;
     getDashboardSummary()
       .then((s) => {
         setTotalCustomers(s.totalCustomers);
@@ -204,19 +235,26 @@ function DashboardScreenInner() {
       .catch(() => { });
     countPendingRepairs().then(setPendingRepairs).catch(() => { });
     countOpenOrders().then(setOpenOrders).catch(() => { });
-  }, []);
+  }, [canStats]);
 
-  const loadReport = useCallback((value: DateFilterValue) => {
-    setReportLoading(true);
-    const range = resolveRange(value);
-    getSalesReport(range)
-      .then((r) => {
-        setReport(r);
-        setReportError(null);
-      })
-      .catch((e) => setReportError(e.message ?? 'Could not load dashboard data.'))
-      .finally(() => setReportLoading(false));
-  }, []);
+  const loadReport = useCallback(
+    (value: DateFilterValue) => {
+      if (!needsReport) {
+        setReportLoading(false);
+        return;
+      }
+      setReportLoading(true);
+      const range = resolveRange(value);
+      getSalesReport(range)
+        .then((r) => {
+          setReport(r);
+          setReportError(null);
+        })
+        .catch((e) => setReportError(e.message ?? 'Could not load dashboard data.'))
+        .finally(() => setReportLoading(false));
+    },
+    [needsReport]
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -227,9 +265,8 @@ function DashboardScreenInner() {
   );
 
   function handleFilterChange(value: DateFilterValue) {
-    setFilter(value);
-    loadReport(value);
-  }
+  setFilter(value);
+}
 
   async function handleDownload() {
     if (!report) return;
@@ -321,117 +358,133 @@ function DashboardScreenInner() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={{ paddingTop: spacing.lg, paddingBottom: spacing.xxl }}>
-      {/* Filter sits at the top */}
-      <DateFilter value={filter} onChange={handleFilterChange} />
+      {/* Filter sits at the top (only useful when report-based components are visible) */}
+      {needsReport && <DateFilter value={filter} onChange={handleFilterChange} />}
 
       {reportError && <Text style={styles.errorText}>{reportError}</Text>}
 
-      {/* Quick actions */}
-      {/* Quick actions */}
-      <View style={styles.quickRow}>
-        <QuickAction
-          icon="barcode-outline"
-          label="Scan & Bill"
-          variant="outline"
-          onPress={openScanner}
-        />
-        <QuickAction
-          icon="add-circle-outline"
-          label="Add Product"
-          variant="outline"
-          onPress={openAddProduct}
-        />
-      </View>
+      {/* Quick action buttons */}
+      <ComponentGuard pageKey="dashboard.quick_actions">
+        <View style={styles.quickRow}>
+          <QuickAction icon="barcode-outline" label="Scan & Bill" variant="outline" onPress={openScanner} />
+          <ComponentGuard pageKey="products.add">
+            <QuickAction icon="add-circle-outline" label="Add Product" variant="outline" onPress={openAddProduct} />
+          </ComponentGuard>
+        </View>
 
-      {/* Repair + Cash purchase */}
-      <View style={[styles.quickRow, styles.quickRowSecond]}>
-        <QuickAction
-          icon="construct-outline"
-          label="Repair / Service"
-          variant="outline"
-          onPress={() => go(ROUTE_REPAIR)}
-        />
-        <QuickAction
-          icon="wallet-outline"
-          label="Cash Purchase"
-          variant="outline"
-          onPress={() => go(ROUTE_PURCHASE)}
-        />
-      </View>
+        {/* Repair + Cash purchase */}
+        <View style={[styles.quickRow, styles.quickRowSecond]}>
+          <QuickAction
+            icon="construct-outline"
+            label="Repair / Service"
+            variant="outline"
+            onPress={() => go(ROUTE_REPAIR)}
+          />
+          <QuickAction
+            icon="wallet-outline"
+            label="Cash Purchase"
+            variant="outline"
+            onPress={() => go(ROUTE_PURCHASE)}
+          />
+        </View>
 
-      {/* 2 cards per row on phones (left / right), 3 per row on tablets */}
-      <View style={styles.grid}>
-        {summaryCards.map((item) => (
-          <View key={item.label} style={[styles.gridCell, isSideBySide && styles.gridCellTablet]}>
-            <StatCard
-              icon={item.icon as any}
-              label={item.label}
-              value={item.value}
-              compact={isSideBySide}
-              onPress={() => go(item.route)}
-            />
-          </View>
-        ))}
-      </View>
+        {/* 👇 new: Orders */}
+        <View style={[styles.quickRow, styles.quickRowSecond]}>
+          <QuickAction
+            icon="clipboard-outline"
+            label="New Order"
+            variant="outline"
+            onPress={() => go(ROUTE_NEW_ORDER)}
+          />
+          {/* <View style={{ flex: 1 }} /> */}
+        </View>
+
+      </ComponentGuard>
+
+      {/* Stat cards: 2 per row on phones (left / right), 3 per row on tablets */}
+      <ComponentGuard pageKey="dashboard.stat_cards">
+        <View style={styles.grid}>
+          {summaryCards.map((item) => (
+            <View key={item.label} style={[styles.gridCell, isSideBySide && styles.gridCellTablet]}>
+              <StatCard
+                icon={item.icon as any}
+                label={item.label}
+                value={item.value}
+                compact={isSideBySide}
+                onPress={() => go(item.route)}
+              />
+            </View>
+          ))}
+        </View>
+      </ComponentGuard>
 
       {/* Side-by-side Row: Jewel Rate & Payment Breakdown */}
-      <View style={[styles.sideBySideContainer, isSideBySide && styles.sideBySideRow]}>
-        {/* Left Column: Jewel Rate */}
-        <View style={[styles.columnWrapper, isSideBySide && styles.columnFlex]}>
-          <View style={styles.ratesHeader}>
-            <View>
-              <Text style={styles.sectionTitle}>Jewel Rate</Text>
-              <Text style={styles.sectionSubtitle}>
-                {istDateTime.date} · {istDateTime.time}
-              </Text>
-            </View>
-            <View style={styles.liveIndicator}>
-              <View style={styles.liveDot} />
-              <Text style={styles.liveText}>Live</Text>
-            </View>
-          </View>
-
-          <Card style={[styles.ratesCard, styles.matchedCard]}>
-            {ratesLoading ? (
-              <Text style={styles.emptyText}>Loading rates…</Text>
-            ) : ratesError ? (
-              <Text style={styles.errorText}>{ratesError}</Text>
-            ) : (
-              goldRates.map((rate) => (
-                <View key={rate.label} style={styles.rateRow}>
-                  <Text style={styles.rateLabel}>{rate.label}</Text>
-                  <Text style={styles.rateValue}>{rate.value}</Text>
+      {(canRates || canPayments) && (
+        <View style={[styles.sideBySideContainer, isSideBySide && styles.sideBySideRow]}>
+          {/* Left Column: Jewel Rate */}
+          <ComponentGuard pageKey="dashboard.live_rates">
+            <View style={[styles.columnWrapper, isSideBySide && styles.columnFlex]}>
+              <View style={styles.ratesHeader}>
+                <View>
+                  <Text style={styles.sectionTitle}>Jewel Rate</Text>
+                  {/* <Text style={styles.sectionSubtitle}>
+                    {istDateTime.date} · {istDateTime.time}
+                  </Text> */}
+                  <RatesClock />
                 </View>
-              ))
-            )}
-          </Card>
+                <View style={styles.liveIndicator}>
+                  <View style={styles.liveDot} />
+                  <Text style={styles.liveText}>Live</Text>
+                </View>
+              </View>
+
+              <Card style={[styles.ratesCard, styles.matchedCard]}>
+                {ratesLoading ? (
+                  <Text style={styles.emptyText}>Loading rates…</Text>
+                ) : ratesError ? (
+                  <Text style={styles.errorText}>{ratesError}</Text>
+                ) : (
+                  goldRates.map((rate) => (
+                    <View key={rate.label} style={styles.rateRow}>
+                      <Text style={styles.rateLabel}>{rate.label}</Text>
+                      <Text style={styles.rateValue}>{rate.value}</Text>
+                    </View>
+                  ))
+                )}
+              </Card>
+            </View>
+          </ComponentGuard>
+
+          {/* Right Column: Payment Breakdown */}
+          <ComponentGuard pageKey="dashboard.payment_breakdown">
+            <View style={[styles.columnWrapper, isSideBySide && styles.columnFlex]}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Payment Breakdown</Text>
+              </View>
+
+              <Card style={[styles.ratesCard, styles.matchedCard, styles.chartCardAlign]}>
+                {reportLoading ? (
+                  <Text style={styles.emptyText}>Loading…</Text>
+                ) : (
+                  <PaymentBreakdownChart data={report?.paymentBreakdown ?? []} />
+                )}
+              </Card>
+            </View>
+          </ComponentGuard>
         </View>
+      )}
 
-        {/* Right Column: Payment Breakdown */}
-        <View style={[styles.columnWrapper, isSideBySide && styles.columnFlex]}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Payment Breakdown</Text>
-          </View>
-
-          <Card style={[styles.ratesCard, styles.matchedCard, styles.chartCardAlign]}>
-            {reportLoading ? (
-              <Text style={styles.emptyText}>Loading…</Text>
-            ) : (
-              <PaymentBreakdownChart data={report?.paymentBreakdown ?? []} />
-            )}
-          </Card>
+      {/* Download PDF (sales report: needs stat cards or payment breakdown access) */}
+      {needsReport && (
+        <View style={styles.downloadWrap}>
+          <Button
+            label={downloading ? 'Generating PDF…' : 'Download PDF'}
+            variant="primary"
+            onPress={handleDownload}
+            disabled={downloading || reportLoading || !report || report.totalInvoices === 0}
+          />
         </View>
-      </View>
-
-      {/* Download PDF */}
-      <View style={styles.downloadWrap}>
-        <Button
-          label={downloading ? 'Generating PDF…' : `Download PDF`}
-          variant="primary"
-          onPress={handleDownload}
-          disabled={downloading || reportLoading || !report || report.totalInvoices === 0}
-        />
-      </View>
+      )}
     </ScrollView>
   );
 }

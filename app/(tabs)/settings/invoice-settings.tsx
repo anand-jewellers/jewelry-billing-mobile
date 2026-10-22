@@ -1,3 +1,5 @@
+// app\(tabs)\settings\invoice-settings.tsx
+
 import { useEffect, useState } from 'react';
 import { ScrollView, Text, View, ActivityIndicator, StyleSheet } from 'react-native';
 import { Card, Input, Button } from '../../../src/components/ui';

@@ -18,6 +18,8 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { PageGuard } from '../../../src/components/PageGuard';
+import { ComponentGuard } from '../../../src/components/ComponentGuard';
+import { useStaff } from '../../../src/context/StaffContext';
 import {
   Search,
   X,
@@ -63,9 +65,23 @@ interface ProductRow {
   product_images: { storage_path: string; is_primary: boolean }[];
 }
 
+// Exported screen: only renders the list (and runs its data loading)
+// when the user has the 'products' permission.
 export default function ProductListScreen() {
+  return (
+    <PageGuard pageKey="products">
+      <ProductListScreenInner />
+    </PageGuard>
+  );
+}
+
+function ProductListScreenInner() {
   const router = useRouter();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+
+  // Component-level access (admin / manager get everything via hasAccess)
+  const { hasAccess } = useStaff();
+  const canAdd = hasAccess('products.add');
 
   // Exact, equal width for the Print and Share buttons:
   // (screen width - left/right padding - gap between buttons) / 2
@@ -398,434 +414,438 @@ export default function ProductListScreen() {
   }
 
   return (
-    <PageGuard pageKey="products">
-      <View style={styles.screen}>
-        {/* Search Toolbar */}
-        <View style={styles.searchToolbar}>
-          <View style={styles.searchBar}>
-            <Search size={18} color="#94A3B8" />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search name, code, category or sub category"
-              placeholderTextColor="#94A3B8"
-              value={searchText}
-              onChangeText={(text) => {
-                setSearchText(text);
+    <View style={styles.screen}>
+      {/* Search Toolbar */}
+      <View style={styles.searchToolbar}>
+        <View style={styles.searchBar}>
+          <Search size={18} color="#94A3B8" />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search name, code, category or sub category"
+            placeholderTextColor="#94A3B8"
+            value={searchText}
+            onChangeText={(text) => {
+              setSearchText(text);
+              setCurrentPage(1);
+            }}
+          />
+          {searchText.length > 0 && (
+            <Pressable
+              onPress={() => {
+                setSearchText('');
                 setCurrentPage(1);
               }}
-            />
-            {searchText.length > 0 && (
-              <Pressable
-                onPress={() => {
-                  setSearchText('');
-                  setCurrentPage(1);
-                }}
-                hitSlop={8}
-              >
-                <X size={16} color="#94A3B8" />
-              </Pressable>
-            )}
-          </View>
-        </View>
-
-        {/* Filter and Selection Toolbar Row */}
-        <View style={styles.toolbarRow}>
-          <Pressable
-            style={[styles.filterToggle, (filtersOpen || hasActiveFilters) && styles.filterToggleActive]}
-            onPress={() => setFiltersOpen((v) => !v)}
-          >
-            <SlidersHorizontal
-              size={15}
-              color={filtersOpen || hasActiveFilters ? '#FFFFFF' : '#475569'}
-            />
-            <Text
-              style={[
-                styles.filterToggleText,
-                (filtersOpen || hasActiveFilters) && styles.filterToggleTextActive,
-              ]}
+              hitSlop={8}
             >
-              Filter
-              {hasActiveFilters ? ` (${activeFilterCount})` : ''}
-            </Text>
-          </Pressable>
+              <X size={16} color="#94A3B8" />
+            </Pressable>
+          )}
+        </View>
+      </View>
 
+      {/* Filter and Selection Toolbar Row */}
+      <View style={styles.toolbarRow}>
+        <Pressable
+          style={[styles.filterToggle, (filtersOpen || hasActiveFilters) && styles.filterToggleActive]}
+          onPress={() => setFiltersOpen((v) => !v)}
+        >
+          <SlidersHorizontal
+            size={15}
+            color={filtersOpen || hasActiveFilters ? '#FFFFFF' : '#475569'}
+          />
+          <Text
+            style={[
+              styles.filterToggleText,
+              (filtersOpen || hasActiveFilters) && styles.filterToggleTextActive,
+            ]}
+          >
+            Filter
+            {hasActiveFilters ? ` (${activeFilterCount})` : ''}
+          </Text>
+        </Pressable>
+
+        <ComponentGuard pageKey="products.stock_weight">
           <Pressable style={styles.weightToggle} onPress={() => router.push('/products/weight')}>
             <WeightIcon size={15} color="#475569" />
             <Text style={styles.weightToggleText}>Weight</Text>
           </Pressable>
+        </ComponentGuard>
 
+        <Pressable
+          style={[styles.selectToggle, selectionMode && styles.selectToggleActive]}
+          onPress={toggleSelectionMode}
+        >
+          {selectionMode ? (
+            <X size={15} color="#DC2626" />
+          ) : (
+            <Check size={15} color={colors.primary} />
+          )}
+          <Text style={[styles.selectToggleText, selectionMode && styles.selectToggleTextActive]}>
+            {selectionMode ? 'Cancel' : 'Select'}
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* Select All bar (only in selection mode) */}
+      {selectionMode && (
+        <View style={styles.selectAllBar}>
           <Pressable
-            style={[styles.selectToggle, selectionMode && styles.selectToggleActive]}
-            onPress={toggleSelectionMode}
+            style={styles.selectAllBtn}
+            onPress={handleToggleSelectAll}
+            disabled={filteredProducts.length === 0}
+            hitSlop={6}
           >
-            {selectionMode ? (
-              <X size={15} color="#DC2626" />
-            ) : (
-              <Check size={15} color={colors.primary} />
-            )}
-            <Text style={[styles.selectToggleText, selectionMode && styles.selectToggleTextActive]}>
-              {selectionMode ? 'Cancel' : 'Select'}
+            <View style={[styles.checkbox, styles.selectAllCheckbox, allFilteredSelected && styles.checkboxChecked]}>
+              {allFilteredSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
+            </View>
+            <Text style={styles.selectAllText}>
+              {allFilteredSelected ? 'Deselect All' : 'Select All'}
+              {` (${filteredProducts.length})`}
             </Text>
           </Pressable>
+          <Text style={styles.selectedCountText}>{selectedIds.size} selected</Text>
         </View>
+      )}
 
-        {/* Select All bar (only in selection mode) */}
-        {selectionMode && (
-          <View style={styles.selectAllBar}>
-            <Pressable
-              style={styles.selectAllBtn}
-              onPress={handleToggleSelectAll}
-              disabled={filteredProducts.length === 0}
-              hitSlop={6}
-            >
-              <View style={[styles.checkbox, styles.selectAllCheckbox, allFilteredSelected && styles.checkboxChecked]}>
-                {allFilteredSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
-              </View>
-              <Text style={styles.selectAllText}>
-                {allFilteredSelected ? 'Deselect All' : 'Select All'}
-                {` (${filteredProducts.length})`}
-              </Text>
-            </Pressable>
-            <Text style={styles.selectedCountText}>{selectedIds.size} selected</Text>
-          </View>
-        )}
-
-        {/* Filter Dropdown Tray: fixed height, OK/Clear pinned at the top, options scroll */}
-        {filtersOpen && (
-          <View style={[styles.filterPanel, { height: filterPanelHeight }]}>
-            <View style={styles.filterHeader}>
-              {hasActiveFilters ? (
-                <Pressable onPress={clearFilters} style={styles.clearFiltersBtn} hitSlop={6}>
-                  <Text style={styles.clearFiltersText}>Clear filters</Text>
-                </Pressable>
-              ) : (
-                <View />
-              )}
-              <Pressable onPress={() => setFiltersOpen(false)} style={styles.applyFiltersBtn}>
-                <Text style={styles.applyFiltersBtnText}>OK</Text>
+      {/* Filter Dropdown Tray: fixed height, OK/Clear pinned at the top, options scroll */}
+      {filtersOpen && (
+        <View style={[styles.filterPanel, { height: filterPanelHeight }]}>
+          <View style={styles.filterHeader}>
+            {hasActiveFilters ? (
+              <Pressable onPress={clearFilters} style={styles.clearFiltersBtn} hitSlop={6}>
+                <Text style={styles.clearFiltersText}>Clear filters</Text>
               </Pressable>
-            </View>
-
-            <ScrollView
-              style={styles.filterScroll}
-              contentContainerStyle={styles.filterScrollContent}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              nestedScrollEnabled
-            >
-              {categoryOptions.length > 0 && (
-                <>
-                  <Text style={styles.filterGroupLabel}>Category</Text>
-                  <View style={styles.filterWrap}>
-                    {categoryOptions.map((name) => {
-                      const active = selectedCategory === name;
-                      return (
-                        <Pressable
-                          key={name}
-                          style={[styles.chip, active && styles.chipActive]}
-                          onPress={() => handleSelectCategory(name)}
-                        >
-                          <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </>
-              )}
-
-              {/* Only shown after a category is selected, and only that category's sub categories */}
-              {selectedCategory && subCategoryOptions.length > 0 && (
-                <>
-                  <Text style={styles.filterGroupLabel}>Sub Category</Text>
-                  <View style={styles.filterWrap}>
-                    {subCategoryOptions.map((name) => {
-                      const active = selectedSubCategory === name;
-                      return (
-                        <Pressable
-                          key={name}
-                          style={[styles.chip, styles.chipSubCategory, active && styles.chipActive]}
-                          onPress={() => handleSelectSubCategory(name)}
-                        >
-                          <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </>
-              )}
-
-              {metalOptions.length > 0 && (
-                <>
-                  <Text style={styles.filterGroupLabel}>Metal</Text>
-                  <View style={styles.filterWrap}>
-                    {metalOptions.map((name) => {
-                      const active = selectedMetal === name;
-                      return (
-                        <Pressable
-                          key={name}
-                          style={[styles.chip, active && styles.chipActive]}
-                          onPress={() => handleSelectMetal(name)}
-                        >
-                          <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </>
-              )}
-
-              {purityOptions.length > 0 && (
-                <>
-                  <Text style={styles.filterGroupLabel}>Purity</Text>
-                  <View style={styles.filterWrap}>
-                    {purityOptions.map((name) => {
-                      const active = selectedPurity === name;
-                      return (
-                        <Pressable
-                          key={name}
-                          style={[styles.chip, styles.chipPurity, active && styles.chipActive]}
-                          onPress={() => handleSelectPurity(name)}
-                        >
-                          <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </>
-              )}
-
-              <Text style={styles.filterGroupLabel}>Net Weight (g)</Text>
-              <View style={styles.weightRangeRow}>
-                <TextInput
-                  style={styles.weightInput}
-                  placeholder="Min"
-                  placeholderTextColor="#94A3B8"
-                  keyboardType="decimal-pad"
-                  value={minWeight}
-                  onChangeText={(v) => {
-                    setMinWeight(v);
-                    setCurrentPage(1);
-                  }}
-                />
-                <Text style={styles.weightRangeSeparator}>–</Text>
-                <TextInput
-                  style={styles.weightInput}
-                  placeholder="Max"
-                  placeholderTextColor="#94A3B8"
-                  keyboardType="decimal-pad"
-                  value={maxWeight}
-                  onChangeText={(v) => {
-                    setMaxWeight(v);
-                    setCurrentPage(1);
-                  }}
-                />
-              </View>
-            </ScrollView>
+            ) : (
+              <View />
+            )}
+            <Pressable onPress={() => setFiltersOpen(false)} style={styles.applyFiltersBtn}>
+              <Text style={styles.applyFiltersBtnText}>OK</Text>
+            </Pressable>
           </View>
-        )}
 
-        {/* Product List */}
-        <FlatList
-          data={paginatedProducts}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
-          }
-          ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="cube-outline" size={42} color="#94A3B8" />
-              <Text style={styles.emptyTitle}>
-                {hasActiveFilters ? 'No products match' : 'No products yet'}
-              </Text>
-              <Text style={styles.emptySub}>
-                {hasActiveFilters
-                  ? 'Try adjusting your search or active filters.'
-                  : 'Tap "+ Add Product" below to list your first item.'}
-              </Text>
+          <ScrollView
+            style={styles.filterScroll}
+            contentContainerStyle={styles.filterScrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+          >
+            {categoryOptions.length > 0 && (
+              <>
+                <Text style={styles.filterGroupLabel}>Category</Text>
+                <View style={styles.filterWrap}>
+                  {categoryOptions.map((name) => {
+                    const active = selectedCategory === name;
+                    return (
+                      <Pressable
+                        key={name}
+                        style={[styles.chip, active && styles.chipActive]}
+                        onPress={() => handleSelectCategory(name)}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            {/* Only shown after a category is selected, and only that category's sub categories */}
+            {selectedCategory && subCategoryOptions.length > 0 && (
+              <>
+                <Text style={styles.filterGroupLabel}>Sub Category</Text>
+                <View style={styles.filterWrap}>
+                  {subCategoryOptions.map((name) => {
+                    const active = selectedSubCategory === name;
+                    return (
+                      <Pressable
+                        key={name}
+                        style={[styles.chip, styles.chipSubCategory, active && styles.chipActive]}
+                        onPress={() => handleSelectSubCategory(name)}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            {metalOptions.length > 0 && (
+              <>
+                <Text style={styles.filterGroupLabel}>Metal</Text>
+                <View style={styles.filterWrap}>
+                  {metalOptions.map((name) => {
+                    const active = selectedMetal === name;
+                    return (
+                      <Pressable
+                        key={name}
+                        style={[styles.chip, active && styles.chipActive]}
+                        onPress={() => handleSelectMetal(name)}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            {purityOptions.length > 0 && (
+              <>
+                <Text style={styles.filterGroupLabel}>Purity</Text>
+                <View style={styles.filterWrap}>
+                  {purityOptions.map((name) => {
+                    const active = selectedPurity === name;
+                    return (
+                      <Pressable
+                        key={name}
+                        style={[styles.chip, styles.chipPurity, active && styles.chipActive]}
+                        onPress={() => handleSelectPurity(name)}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            <Text style={styles.filterGroupLabel}>Net Weight (g)</Text>
+            <View style={styles.weightRangeRow}>
+              <TextInput
+                style={styles.weightInput}
+                placeholder="Min"
+                placeholderTextColor="#94A3B8"
+                keyboardType="decimal-pad"
+                value={minWeight}
+                onChangeText={(v) => {
+                  setMinWeight(v);
+                  setCurrentPage(1);
+                }}
+              />
+              <Text style={styles.weightRangeSeparator}>–</Text>
+              <TextInput
+                style={styles.weightInput}
+                placeholder="Max"
+                placeholderTextColor="#94A3B8"
+                keyboardType="decimal-pad"
+                value={maxWeight}
+                onChangeText={(v) => {
+                  setMaxWeight(v);
+                  setCurrentPage(1);
+                }}
+              />
             </View>
-          }
-          renderItem={({ item }) => {
-            const uri = primaryImageUrl(item);
-            const isSelected = selectedIds.has(item.id);
-            const isSold = item.status === 'sold';
-            const categoryLine = [item.categories?.name, item.subcategories?.name]
-              .filter(Boolean)
-              .join(' › ');
+          </ScrollView>
+        </View>
+      )}
 
-            return (
+      {/* Product List */}
+      <FlatList
+        data={paginatedProducts}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
+        }
+        ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Ionicons name="cube-outline" size={42} color="#94A3B8" />
+            <Text style={styles.emptyTitle}>
+              {hasActiveFilters ? 'No products match' : 'No products yet'}
+            </Text>
+            <Text style={styles.emptySub}>
+              {hasActiveFilters
+                ? 'Try adjusting your search or active filters.'
+                : canAdd
+                  ? 'Tap "+ Add Product" below to list your first item.'
+                  : 'No products have been added yet.'}
+            </Text>
+          </View>
+        }
+        renderItem={({ item }) => {
+          const uri = primaryImageUrl(item);
+          const isSelected = selectedIds.has(item.id);
+          const isSold = item.status === 'sold';
+          const categoryLine = [item.categories?.name, item.subcategories?.name]
+            .filter(Boolean)
+            .join(' › ');
+
+          return (
+            <Pressable
+              style={[
+                styles.productCard,
+                isSelected && styles.productCardSelected,
+                isSold && styles.productCardSold,
+              ]}
+              onPress={() => handleRowPress(item)}
+              onLongPress={() => handleRowLongPress(item)}
+            >
+              {selectionMode && (
+                <View style={[styles.checkbox, isSelected && styles.checkboxChecked]}>
+                  {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
+                </View>
+              )}
+
+              {/* Product Thumbnail Container */}
+              <View style={styles.thumbWrapper}>
+                {uri ? (
+                  <Image source={{ uri }} style={[styles.thumb, isSold && styles.thumbSold]} />
+                ) : (
+                  <View style={[styles.thumb, styles.thumbPlaceholder, isSold && styles.thumbSold]}>
+                    <Ionicons name="image-outline" size={24} color="#94A3B8" />
+                  </View>
+                )}
+                {isSold && (
+                  <View style={styles.soldBadge}>
+                    <Text style={styles.soldBadgeText}>SOLD</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Product Metadata Info */}
+              <View style={styles.infoCol}>
+                <Text style={styles.productName} numberOfLines={1}>
+                  {item.product_name}
+                </Text>
+                <Text style={styles.productCode}>{item.product_code}</Text>
+                {/* {!!categoryLine && (
+                  <Text style={styles.productCategory} numberOfLines={1}>
+                    {categoryLine}
+                  </Text>
+                )} */}
+                <Text style={styles.productWeight}>
+                  {Number(item.net_weight).toFixed(3)} g
+                  {item.metals?.name ? ` · ${item.metals.name}` : ''}
+                  {item.purities?.name ? ` ${item.purities.name}` : ''}
+                </Text>
+              </View>
+
+              {/* Actions: WhatsApp + Chevron */}
+              {!selectionMode && (
+                <View style={styles.actionRow}>
+                  <Pressable
+                    style={styles.whatsAppBtn}
+                    onPress={() => handleShare(item)}
+                    hitSlop={8}
+                  >
+                    <Ionicons name="logo-whatsapp" size={20} color="#25D366" />
+                  </Pressable>
+                  <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
+                </View>
+              )}
+            </Pressable>
+          );
+        }}
+        ListFooterComponent={
+          filteredProducts.length > 0 ? (
+            <View style={styles.paginationContainer}>
+              <Pressable
+                style={[styles.pageButton, currentPage === 1 && styles.pageButtonDisabled]}
+                onPress={handlePrevPage}
+                disabled={currentPage === 1}
+              >
+                <ChevronLeft size={16} color={currentPage === 1 ? '#CBD5E1' : '#0F172A'} />
+                <Text
+                  style={[
+                    styles.pageButtonText,
+                    currentPage === 1 && styles.pageButtonTextDisabled,
+                  ]}
+                >
+                  Previous
+                </Text>
+              </Pressable>
+
+              <View style={styles.pageInfoWrap}>
+                <Text style={styles.pageInfoText}>
+                  Page <Text style={styles.pageInfoBold}>{currentPage}</Text> of{' '}
+                  <Text style={styles.pageInfoBold}>{totalPages}</Text>
+                </Text>
+              </View>
+
               <Pressable
                 style={[
-                  styles.productCard,
-                  isSelected && styles.productCardSelected,
-                  isSold && styles.productCardSold,
+                  styles.pageButton,
+                  currentPage === totalPages && styles.pageButtonDisabled,
                 ]}
-                onPress={() => handleRowPress(item)}
-                onLongPress={() => handleRowLongPress(item)}
+                onPress={handleNextPage}
+                disabled={currentPage === totalPages}
               >
-                {selectionMode && (
-                  <View style={[styles.checkbox, isSelected && styles.checkboxChecked]}>
-                    {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
-                  </View>
-                )}
-
-                {/* Product Thumbnail Container */}
-                <View style={styles.thumbWrapper}>
-                  {uri ? (
-                    <Image source={{ uri }} style={[styles.thumb, isSold && styles.thumbSold]} />
-                  ) : (
-                    <View style={[styles.thumb, styles.thumbPlaceholder, isSold && styles.thumbSold]}>
-                      <Ionicons name="image-outline" size={24} color="#94A3B8" />
-                    </View>
-                  )}
-                  {isSold && (
-                    <View style={styles.soldBadge}>
-                      <Text style={styles.soldBadgeText}>SOLD</Text>
-                    </View>
-                  )}
-                </View>
-
-                {/* Product Metadata Info */}
-                <View style={styles.infoCol}>
-                  <Text style={styles.productName} numberOfLines={1}>
-                    {item.product_name}
-                  </Text>
-                  <Text style={styles.productCode}>{item.product_code}</Text>
-                  {/* {!!categoryLine && (
-                    <Text style={styles.productCategory} numberOfLines={1}>
-                      {categoryLine}
-                    </Text>
-                  )} */}
-                  <Text style={styles.productWeight}>
-                    {Number(item.net_weight).toFixed(3)} g
-                    {item.metals?.name ? ` · ${item.metals.name}` : ''}
-                    {item.purities?.name ? ` ${item.purities.name}` : ''}
-                  </Text>
-                </View>
-
-                {/* Actions: WhatsApp + Chevron */}
-                {!selectionMode && (
-                  <View style={styles.actionRow}>
-                    <Pressable
-                      style={styles.whatsAppBtn}
-                      onPress={() => handleShare(item)}
-                      hitSlop={8}
-                    >
-                      <Ionicons name="logo-whatsapp" size={20} color="#25D366" />
-                    </Pressable>
-                    <ChevronRight size={18} color="#94A3B8" style={styles.chevron} />
-                  </View>
-                )}
-              </Pressable>
-            );
-          }}
-          ListFooterComponent={
-            filteredProducts.length > 0 ? (
-              <View style={styles.paginationContainer}>
-                <Pressable
-                  style={[styles.pageButton, currentPage === 1 && styles.pageButtonDisabled]}
-                  onPress={handlePrevPage}
-                  disabled={currentPage === 1}
-                >
-                  <ChevronLeft size={16} color={currentPage === 1 ? '#CBD5E1' : '#0F172A'} />
-                  <Text
-                    style={[
-                      styles.pageButtonText,
-                      currentPage === 1 && styles.pageButtonTextDisabled,
-                    ]}
-                  >
-                    Previous
-                  </Text>
-                </Pressable>
-
-                <View style={styles.pageInfoWrap}>
-                  <Text style={styles.pageInfoText}>
-                    Page <Text style={styles.pageInfoBold}>{currentPage}</Text> of{' '}
-                    <Text style={styles.pageInfoBold}>{totalPages}</Text>
-                  </Text>
-                </View>
-
-                <Pressable
+                <Text
                   style={[
-                    styles.pageButton,
-                    currentPage === totalPages && styles.pageButtonDisabled,
+                    styles.pageButtonText,
+                    currentPage === totalPages && styles.pageButtonTextDisabled,
                   ]}
-                  onPress={handleNextPage}
-                  disabled={currentPage === totalPages}
                 >
-                  <Text
-                    style={[
-                      styles.pageButtonText,
-                      currentPage === totalPages && styles.pageButtonTextDisabled,
-                    ]}
-                  >
-                    Next
-                  </Text>
-                  <ChevronRight
-                    size={16}
-                    color={currentPage === totalPages ? '#CBD5E1' : '#0F172A'}
-                  />
-                </Pressable>
-              </View>
-            ) : null
-          }
-        />
+                  Next
+                </Text>
+                <ChevronRight
+                  size={16}
+                  color={currentPage === totalPages ? '#CBD5E1' : '#0F172A'}
+                />
+              </Pressable>
+            </View>
+          ) : null
+        }
+      />
 
-        {/* Action Footer: Bulk Print/Share or Floating "+ Add Product" Button */}
-        {selectionMode ? (
-          <View style={styles.bulkActionContainer}>
-            <Pressable
-              style={[
-                styles.bulkBtn,
-                { width: bulkBtnWidth },
-                styles.printSelectedBtn,
-                (selectedIds.size === 0 || bulkBusy) && styles.bulkBtnDisabled,
-              ]}
-              onPress={handlePrintSelected}
-              disabled={selectedIds.size === 0 || bulkBusy}
-            >
-              {bulkPrinting ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="print-outline" size={20} color="#fff" />
-                  <Text style={styles.bulkBtnText}>Print</Text>
-                </>
-              )}
-            </Pressable>
+      {/* Action Footer: Bulk Print/Share or Floating "+ Add Product" Button */}
+      {selectionMode ? (
+        <View style={styles.bulkActionContainer}>
+          <Pressable
+            style={[
+              styles.bulkBtn,
+              { width: bulkBtnWidth },
+              styles.printSelectedBtn,
+              (selectedIds.size === 0 || bulkBusy) && styles.bulkBtnDisabled,
+            ]}
+            onPress={handlePrintSelected}
+            disabled={selectedIds.size === 0 || bulkBusy}
+          >
+            {bulkPrinting ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="print-outline" size={20} color="#fff" />
+                <Text style={styles.bulkBtnText}>Print</Text>
+              </>
+            )}
+          </Pressable>
 
-            <Pressable
-              style={[
-                styles.bulkBtn,
-                { width: bulkBtnWidth },
-                styles.shareSelectedBtn,
-                (selectedIds.size === 0 || bulkBusy) && styles.bulkBtnDisabled,
-              ]}
-              onPress={handleShareSelected}
-              disabled={selectedIds.size === 0 || bulkBusy}
-            >
-              {bulkSharing ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="logo-whatsapp" size={20} color="#fff" />
-                  <Text style={styles.bulkBtnText}>Share</Text>
-                </>
-              )}
-            </Pressable>
-          </View>
-        ) : (
+          <Pressable
+            style={[
+              styles.bulkBtn,
+              { width: bulkBtnWidth },
+              styles.shareSelectedBtn,
+              (selectedIds.size === 0 || bulkBusy) && styles.bulkBtnDisabled,
+            ]}
+            onPress={handleShareSelected}
+            disabled={selectedIds.size === 0 || bulkBusy}
+          >
+            {bulkSharing ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="logo-whatsapp" size={20} color="#fff" />
+                <Text style={styles.bulkBtnText}>Share</Text>
+              </>
+            )}
+          </Pressable>
+        </View>
+      ) : (
+        <ComponentGuard pageKey="products.add">
           <View style={styles.fabWrapper}>
             <Pressable style={styles.fabButton} onPress={() => router.push('/products/add')}>
               <Plus size={24} color="#FFFFFF" strokeWidth={2.5} />
             </Pressable>
             <Text style={styles.fabLabel}>Add Product</Text>
           </View>
-        )}
-      </View>
-    </PageGuard>
+        </ComponentGuard>
+      )}
+    </View>
   );
 }
 

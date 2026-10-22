@@ -27,7 +27,8 @@ export interface CashPurchase {
   customer_name: string;
   phone: string | null;
   items: PurchaseItem[];
-  total_amount: number;
+  total_amount: number;      // net (calculated)
+  paid_amount: number;       // actually paid
   payment_mode: string;
   remarks: string | null;
   created_at: string;
@@ -38,7 +39,8 @@ export interface CreateCashPurchaseInput {
   customerName: string;
   phone: string;
   items: PurchaseItem[];
-  totalAmount: number;
+  totalAmount: number;       // net
+  paidAmount: number;        // actually paid
   paymentMode: string;
   remarks: string;
 }
@@ -56,6 +58,7 @@ function normalize(r: any): CashPurchase {
       amount: Number(i.amount ?? 0),
     })),
     total_amount: Number(r.total_amount ?? 0),
+    paid_amount: Number(r.paid_amount ?? r.total_amount ?? 0),
   };
 }
 
@@ -68,6 +71,7 @@ export async function createCashPurchase(input: CreateCashPurchaseInput): Promis
       phone: input.phone || null,
       items: input.items,
       total_amount: input.totalAmount,
+      paid_amount: input.paidAmount,
       payment_mode: input.paymentMode,
       remarks: input.remarks || null,
     })
