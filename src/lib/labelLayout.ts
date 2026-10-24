@@ -35,19 +35,19 @@ const MAX_MODULE_DOTS = 4;     // 0.5mm
 
 // ---- Left block: barcode, digits, then "purity | huid" underneath ----
 const BARS_X = 6.2;            // quiet zone left of the bars
-const QUIET_R = 2.2;           // quiet zone right of the bars
+const QUIET_R = 1.2;           // quiet zone right of the bars
 const MAX_BARS_MM = 24;        // barcode width cap
-const BAR_TOP = 2;
+const BAR_TOP = 3;
 const BAR_H = 6.2;             // bars end at y = 8.2
-const DIGITS_Y = 10.5;         // barcode number baseline
+const DIGITS_Y = 11.5;         // barcode number baseline
 const DIGITS_SIZE = 2.5;
-const ID_Y = 12.5;             // "18K | 23JO9P" baseline
+const ID_Y = 14;             // "18K | 23JO9P" baseline
 const ID_MAX_SIZE = 2.0;
 
 // ---- Right block: item details ----
-const RIGHT_GAP_MM = 6.0;      // gap between left block and details
-const RIGHT_PAD_MM = 0.1;      // keep clear of the printable edge
-const MAX_ROW_H = 3.2;
+const RIGHT_GAP_MM = 5.0;      // gap between left block and details
+const RIGHT_PAD_MM = 0.9;      // keep clear of the printable edge
+const MAX_ROW_H = 2.2;
 const LINE_RATIO = 1.25;
 const CHAR_W = 0.64;           // avg glyph width / font size (Arial bold), for fitting
 
@@ -207,7 +207,7 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
   if ((dwt && dwt !== '0') || num(l.diamondCharge) > 0) {
     rows.push({ left: `DWT:${dwt || '-'}`, right: `DC:${trim(num(l.diamondCharge))}` });
   }
-  const textX = barsX + barsW + QUIET_R + RIGHT_GAP_MM;
+  const textX = barsX + barsW + QUIET_R + RIGHT_GAP_MM -1;
   const avail = x0 + PRINT_W_MM - textX - RIGHT_PAD_MM;
   const maxRowH = Math.min(MAX_ROW_H, (LABEL_H_MM - 1.2) / rows.length);
 
