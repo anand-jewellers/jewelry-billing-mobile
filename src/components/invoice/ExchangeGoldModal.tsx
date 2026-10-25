@@ -1,10 +1,22 @@
 // src/components/invoice/ExchangeGoldModal.tsx
 
-import { useEffect, useMemo, useState } from 'react';
-import { Modal, View, Text, TextInput, StyleSheet, Pressable, ScrollView, ActivityIndicator } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Modal,
+  View,
+  Text,
+  TextInput,
+  StyleSheet,
+  Pressable,
+  ScrollView,
+  ActivityIndicator,
+  useWindowDimensions,
+} from 'react-native';
 import { X, ChevronDown, ChevronUp } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, spacing, radius } from '../../theme';
 import { SelectField } from '../master';
+import { useKeyboardHeight } from '../../lib/useKeyboardHeight';
 import {
   computeExchangeItem,
   deductionFromOldPercent,
@@ -57,6 +69,26 @@ export function ExchangeGoldModal({
   const [ratePerGram, setRatePerGram] = useState('');
   const [rateLoading, setRateLoading] = useState(false);
   const [rateError, setRateError] = useState<string | null>(null);
+
+  // Keyboard / safe-area handling
+  const insets = useSafeAreaInsets();
+  const keyboardHeight = useKeyboardHeight();
+  const { height: windowHeight } = useWindowDimensions();
+  const scrollRef = useRef<ScrollView>(null);
+
+  // When a field near the bottom gets focus, scroll so it isn't hidden
+  // behind the keyboard. The delay lets the keyboard finish opening.
+  const scrollToField = () => {
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 250);
+  };
+
+  const keyboardOpen = keyboardHeight > 0;
+
+  // Sheet sits right above the keyboard when it is open, and is limited to
+  // the space that is left so the header never goes off the top of the screen.
+  const sheetMaxHeight = keyboardOpen
+    ? Math.max(240, windowHeight - keyboardHeight - insets.top - 12)
+    : windowHeight * 0.9;
 
   // Only 91.6% (22K), REG, and 925 (Silver) are ever shown, whether the
   // options come from the live Purity table or the hardcoded fallback.
@@ -205,9 +237,27 @@ export function ExchangeGoldModal({
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <View style={styles.sheet}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      statusBarTranslucent
+      navigationBarTranslucent
+      onRequestClose={onClose}
+    >
+      {/* Backdrop is pushed up by the keyboard height so the sheet sits above it */}
+      <View style={[styles.backdrop, { paddingBottom: keyboardHeight }]}>
+        <View
+          style={[
+            styles.sheet,
+            {
+              maxHeight: sheetMaxHeight,
+              // Keyboard open: it already covers the navigation bar.
+              // Keyboard closed: keep the button clear of the navigation bar.
+              paddingBottom: keyboardOpen ? spacing.md : Math.max(insets.bottom, 24) + spacing.md,
+            },
+          ]}
+        >
           <View style={styles.header}>
             <Text style={styles.title}>{editingItem ? 'Edit Old Gold Item' : 'Add Old Gold Item'}</Text>
             <Pressable onPress={onClose} hitSlop={8}>
@@ -215,7 +265,11 @@ export function ExchangeGoldModal({
             </Pressable>
           </View>
 
-          <ScrollView contentContainerStyle={{ paddingBottom: spacing.md }}>
+          <ScrollView
+            ref={scrollRef}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingBottom: spacing.md }}
+          >
             <Field label="Description">
               <TextInput
                 style={styles.input}
@@ -268,6 +322,7 @@ export function ExchangeGoldModal({
                 options={OLD_PERCENT_STEPS}
                 placeholder="Tap to pick or type a value"
                 invalid={oldPercentInvalid}
+                onFocus={scrollToField}
               />
               {oldPercentInvalid && (
                 <Text style={styles.errorText}>Old % can't exceed 100%.</Text>
@@ -283,6 +338,7 @@ export function ExchangeGoldModal({
                   placeholderTextColor={colors.textMuted}
                   value={ratePerGram}
                   onChangeText={setRatePerGram}
+                  onFocus={scrollToField}
                 />
                 {rateLoading && <ActivityIndicator size="small" color={colors.primary} style={styles.rateSpinner} />}
               </View>
@@ -302,7 +358,11 @@ export function ExchangeGoldModal({
             </View>
           </ScrollView>
 
-          <Pressable style={[styles.saveBtn, !canSave && styles.saveBtnDisabled]} onPress={handleSave} disabled={!canSave}>
+          <Pressable
+            style={[styles.saveBtn, !canSave && styles.saveBtnDisabled]}
+            onPress={handleSave}
+            disabled={!canSave}
+          >
             <Text style={styles.saveBtnText}>{editingItem ? 'Update Item' : 'Add Item'}</Text>
           </Pressable>
         </View>
@@ -324,12 +384,14 @@ function PercentPickerField({
   options,
   placeholder,
   invalid,
+  onFocus,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: number[];
   placeholder?: string;
   invalid?: boolean;
+  onFocus?: () => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -343,6 +405,7 @@ function PercentPickerField({
           placeholderTextColor={colors.textMuted}
           value={value}
           onChangeText={onChange}
+          onFocus={onFocus}
         />
         <Pressable style={styles.percentToggle} onPress={() => setOpen((o) => !o)} hitSlop={8}>
           {open ? (
@@ -387,7 +450,7 @@ function Field({ label, children, style }: { label: string; children: React.Reac
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.5)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: spacing.lg, maxHeight: '90%' },
+  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: spacing.lg },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
   title: { fontSize: 16, fontWeight: '700', color: colors.textPrimary },
   fieldLabel: { fontSize: 12, fontWeight: '600', color: colors.textMuted, marginBottom: 6 },

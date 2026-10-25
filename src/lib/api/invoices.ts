@@ -232,6 +232,7 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice>
     discount: item.item_discount,
     tax_amount: item.tax_amount,
     total: item.total_amount,
+    remark: item.remark?.trim() || null,   // NEW
     // Includes the "Diamond <size>" lines, so diamonds are saved with the invoice.
     value_added_charges: item.value_added_charges.map((c) => ({
       charge_name: c.name,

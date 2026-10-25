@@ -207,11 +207,11 @@ function NewInvoiceScreenInner() {
 
   // ---------------------------------------------------------
   // Customer
+  // (LOC / Remark is now stored PER ITEM, on each InvoiceItem.remark)
   // ---------------------------------------------------------
 
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
-  const [remark, setRemark] = useState('');
 
   // ---------------------------------------------------------
   // Customer autocomplete (search by name or phone)
@@ -469,10 +469,6 @@ function NewInvoiceScreenInner() {
         }
       }
 
-      if (orderNumberParam) {
-        setRemark((prev) => prev || `Order ${orderNumberParam}${orderCategory ? ` — ${orderCategory}` : ''}`);
-      }
-
       const matchedMetal = orderMetal
         ? metals.find((m) => m.name.toLowerCase() === orderMetal.toLowerCase())
         : undefined;
@@ -549,6 +545,10 @@ function NewInvoiceScreenInner() {
         tax_amount: calc.tax_amount,
         total_amount: calc.total_amount,
         huid: null,
+        // The order note now lives on the item itself
+        remark: orderNumberParam
+          ? `Order ${orderNumberParam}${orderCategory ? ` — ${orderCategory}` : ''}`
+          : '',
       };
 
       if (!matchedMetal || !matchedPurity) {
@@ -565,6 +565,9 @@ function NewInvoiceScreenInner() {
 
   // =========================================================
   // Barcode scan -> auto-fetch product -> build priced item
+  //
+  // If the product is already sold, show ONLY an "Already sold"
+  // message (no product details) and do not add anything.
   // =========================================================
 
   const handleScanned = async (code: string) => {
@@ -594,6 +597,23 @@ function NewInvoiceScreenInner() {
         return;
       }
 
+      // Already sold -> error modal only, no product details, nothing added.
+      if (product.status === 'sold') {
+        setScannerOpen(false); // close the scanner so the modal can show on top of it
+        setErrorTitle('Already sold');
+        setErrorMessage('This product has already been sold.');
+        return;
+      }
+
+      // Same piece is already in the current bill.
+      if (items.some((i) => i.product_id === product.id)) {
+        setScannerOpen(false);
+        setErrorTitle('Already added');
+        setErrorMessage('This product is already in the current bill.');
+        return;
+      }
+
+      
       const [rate, makingRule, taxSetting] = await Promise.all([
         getCurrentRate(product.metal_id, product.purity_id),
         getMakingChargeRule(product.metal_id, product.purity_id, product.category_id),
@@ -601,7 +621,7 @@ function NewInvoiceScreenInner() {
       ]);
 
       const item = buildInvoiceItemFromProduct(product, rate, makingRule, taxSetting);
-      setItems((prev) => [...prev, item]);
+      setItems((prev) => [...prev, { ...item, remark: '' }]);
       setScannerOpen(false);
     } catch (e: any) {
       Alert.alert('Lookup error', e?.message ?? 'Could not fetch product.');
@@ -612,13 +632,15 @@ function NewInvoiceScreenInner() {
 
 
   // =========================================================
-  // Item sheet save / remove
+  // Item sheet save / remove / per-item remark
   // =========================================================
 
   const handleItemSave = (item: InvoiceItem) => {
     setItems((prev) => {
-      const exists = prev.some((i) => i.id === item.id);
-      return exists ? prev.map((i) => (i.id === item.id ? item : i)) : [...prev, item];
+      const existing = prev.find((i) => i.id === item.id);
+      // The sheet may not know about `remark`, so keep the one already typed.
+      const merged: InvoiceItem = { ...item, remark: item.remark ?? existing?.remark ?? '' };
+      return existing ? prev.map((i) => (i.id === item.id ? merged : i)) : [...prev, merged];
     });
     setSheetOpen(false);
     setEditingItem(null);
@@ -626,6 +648,10 @@ function NewInvoiceScreenInner() {
 
   const removeItem = (id: string) => {
     setItems((prev) => prev.filter((i) => i.id !== id));
+  };
+
+  const updateItemRemark = (id: string, text: string) => {
+    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, remark: text } : i)));
   };
 
 
@@ -695,6 +721,13 @@ function NewInvoiceScreenInner() {
 
   const hasTax = totals.cgstTotal > 0 || totals.sgstTotal > 0 || totals.igstTotal > 0;
 
+  // Per-item remarks joined into one text, used for the invoice-level
+  // `remark` column and the estimate object.
+  const combinedRemark = items
+    .map((i) => i.remark?.trim())
+    .filter(Boolean)
+    .join(' | ');
+
 
   // =========================================================
   // Apply GST toggle (Receipt Preview header)
@@ -723,10 +756,12 @@ function NewInvoiceScreenInner() {
   // =========================================================
 
   // Everything needed to rebuild the screen later.
+  // `remark` is kept (blank) only so the HeldEstimate type is still satisfied;
+  // the real remarks now live on each item.
   const buildHeldData = () => ({
     customerName,
     customerPhone,
-    remark,
+    remark: '',
     resolvedCustomerId,
     items,
     exchangeItems,
@@ -744,7 +779,6 @@ function NewInvoiceScreenInner() {
     setExchangeTotal(0);
     setCustomerName('');
     setCustomerPhone('');
-    setRemark('');
     setDiscountAmount('0');
     setPaymentSplits([]);
     setPaymentSplitsTouched(false);
@@ -788,11 +822,12 @@ function NewInvoiceScreenInner() {
     setCustomerPhone(d.customerPhone);
     prevPhoneDigits.current = (d.customerPhone ?? '').replace(/\D/g, '').length;
     autoFillArmed.current = false;
-    setRemark(d.remark);
     setResolvedCustomerId(d.resolvedCustomerId);
     setActiveField(null); // loading a held bill must not trigger a customer search
     setSuggestions([]);
-    setItems(d.items);
+    // Older held bills had ONE bill-wide remark: copy it onto each item
+    // that has no remark of its own.
+    setItems(d.items.map((i: InvoiceItem) => ({ ...i, remark: i.remark ?? d.remark ?? '' })));
     setExchangeItems(d.exchangeItems);
     setExchangeTotal(d.exchangeTotal);
     setDiscountAmount(d.discountAmount);
@@ -824,6 +859,7 @@ function NewInvoiceScreenInner() {
       cancelled = true;
     };
   }, [heldIdParam]);
+
   // Opened from the dashboard "Scan & Bill" quick action:
   // open the barcode scanner straight away once master data is ready.
   useEffect(() => {
@@ -910,6 +946,7 @@ function NewInvoiceScreenInner() {
       discount: item.item_discount,
       tax_amount: item.tax_amount,
       total: item.total_amount,
+      remark: items.find((i) => i.id === item.id)?.remark ?? null,
       value_added_charges: item.value_added_charges.map((c) => ({
         id: c.id,
         charge_name: c.name,
@@ -957,7 +994,7 @@ function NewInvoiceScreenInner() {
       exchange_total: exchangeTotal,
       exchange_items: detailExchangeItems,
       payment_splits: splitsForPrint,
-      remark: remark.trim() || null,
+      remark: combinedRemark || null,
     };
 
     return { estimateInvoice, shop, display };
@@ -1177,9 +1214,11 @@ function NewInvoiceScreenInner() {
       return;
     }
 
-    if (!remark.trim()) {
+    // LOC / Remark is mandatory for EVERY item
+    const missingIdx = items.findIndex((i) => !i.remark?.trim());
+    if (missingIdx !== -1) {
       setErrorTitle('Missing details');
-      setErrorMessage('Remark is mandatory.');
+      setErrorMessage(`LOC / Remark is mandatory for item ${missingIdx + 1}.`);
       return;
     }
 
@@ -1216,7 +1255,11 @@ function NewInvoiceScreenInner() {
         customerId: resolvedCustomerId,
         customerName: customerName.trim() || 'Walk-in Customer',
         customerMobile: customerPhone.trim() || null,
-        items: billItems,
+        // withoutGst may drop `remark`, so re-attach it from the editable items
+        items: billItems.map((b) => ({
+          ...b,
+          remark: items.find((i) => i.id === b.id)?.remark ?? null,
+        })),
         metals,
         purities,
         subtotal: totals.taxableTotal,
@@ -1233,8 +1276,8 @@ function NewInvoiceScreenInner() {
         paymentSplits: splitsToSave,
         exchangeItems,
         exchangeTotal,
-        remark: remark.trim() || null,
-
+        // Invoice-level column keeps a combined text of all item remarks
+        remark: combinedRemark,
       });
 
       // Keep the estimate for its 4 hours, tagged as billed (read-only).
@@ -1375,22 +1418,12 @@ function NewInvoiceScreenInner() {
           <Text style={styles.matchedText}>✓ Existing customer</Text>
         )}
 
-        <TextInput
-          style={styles.input}
-          placeholder="LOC / Remark"
-          placeholderTextColor={colors.textMuted}
-          value={remark}
-          onChangeText={setRemark}
-          multiline
-          numberOfLines={2}
-          editable={!readOnly}
-        />
-
         <View style={styles.divider} />
 
 
         {/* =================================================
             Products / Services
+            Each item has its own LOC / Remark field.
         ================================================= */}
 
         <Text style={styles.sectionTitle}>Products / Services</Text>
@@ -1401,36 +1434,47 @@ function NewInvoiceScreenInner() {
               No items yet. Scan a barcode or add manually.
             </Text>
           ) : (
-            billItems.map((item) => (
-              <InvoiceItemRow
-                key={item.id}
-                item={item}
-                metals={metals}
-                purities={purities}
-                onPress={() => {
-                  if (readOnly) return;
-                  if (stage === 'estimate') {
-                    Alert.alert('Editing locked', 'Go back to editing to change items.', [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Go back', onPress: handleBackToEditing },
-                    ]);
-                    return;
-                  }
-                  setEditingItem(item);
-                  setSheetOpen(true);
-                }}
-                onRemove={() => {
-                  if (readOnly) return;
-                  if (stage === 'estimate') {
-                    Alert.alert('Editing locked', 'Go back to editing to remove items.', [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Go back', onPress: handleBackToEditing },
-                    ]);
-                    return;
-                  }
-                  removeItem(item.id);
-                }}
-              />
+            billItems.map((item, idx) => (
+              <View key={item.id}>
+                <InvoiceItemRow
+                  item={item}
+                  metals={metals}
+                  purities={purities}
+                  onPress={() => {
+                    if (readOnly) return;
+                    if (stage === 'estimate') {
+                      Alert.alert('Editing locked', 'Go back to editing to change items.', [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Go back', onPress: handleBackToEditing },
+                      ]);
+                      return;
+                    }
+                    setEditingItem(item);
+                    setSheetOpen(true);
+                  }}
+                  onRemove={() => {
+                    if (readOnly) return;
+                    if (stage === 'estimate') {
+                      Alert.alert('Editing locked', 'Go back to editing to remove items.', [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Go back', onPress: handleBackToEditing },
+                      ]);
+                      return;
+                    }
+                    removeItem(item.id);
+                  }}
+                />
+                <View style={styles.itemRemarkWrap}>
+                  <TextInput
+                    style={styles.itemRemarkInput}
+                    placeholder={`LOC / Remark for item ${idx + 1}`}
+                    placeholderTextColor={colors.textMuted}
+                    value={items.find((i) => i.id === item.id)?.remark ?? ''}
+                    onChangeText={(t) => updateItemRemark(item.id, t)}
+                    editable={!readOnly}
+                  />
+                </View>
+              </View>
             ))
           )}
         </Card>
@@ -2025,4 +2069,22 @@ const styles = StyleSheet.create({
   gridBtnPrimary: { backgroundColor: colors.primary },
   gridBtnText: { color: colors.primary, fontWeight: '700', fontSize: 14, textAlign: 'center' },
   gridBtnTextPrimary: { color: '#fff' },
+
+  // Per-item LOC / Remark
+  itemRemarkWrap: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  itemRemarkInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius?.md ?? 10,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: colors.textPrimary,
+    backgroundColor: colors.surface,
+  },
 });

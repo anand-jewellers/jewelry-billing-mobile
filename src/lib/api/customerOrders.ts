@@ -2,7 +2,11 @@
 
 import { supabase } from '../supabaseClient';
 
+import type { ExchangeItem } from '../../types/invoices';
+
 export type OrderStatus = 'pending' | 'ready' | 'completed';
+
+
 
 export const PAYMENT_MODES = ['Cash', 'UPI', 'Card', 'Bank Transfer'] as const;
 export type PaymentMode = (typeof PAYMENT_MODES)[number];
@@ -43,6 +47,8 @@ export interface CustomerOrder {
   invoice_id: string | null;
   created_at: string;
   updated_at: string;
+  exchange_items: ExchangeItem[];
+  exchange_total: number;
 }
 
 export interface CreateCustomerOrderInput {
@@ -63,6 +69,9 @@ export interface CreateCustomerOrderInput {
   goldsmith_phone?: string | null;
   advance_amount?: number | null;
   payment_mode?: PaymentMode | null;
+  exchange_items?: ExchangeItem[];
+  exchange_total?: number;
+
 }
 
 // ---------------------------------------------------------
@@ -135,6 +144,8 @@ export async function createCustomerOrder(input: CreateCustomerOrderInput): Prom
         advance_amount: input.advance_amount ?? null,
         payment_mode: input.payment_mode ?? null,
         status: 'pending',
+        exchange_items: input.exchange_items ?? [],
+        exchange_total: input.exchange_total ?? 0,
       })
       .select('*')
       .single();

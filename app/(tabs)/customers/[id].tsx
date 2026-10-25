@@ -18,6 +18,8 @@ import {
   MapPin,
   ChevronRight,
   Plus,
+  Check,
+  MessageCircle,
   // FileText,          // only used by the "No invoices yet" empty state (disabled)
   Gem,
 } from 'lucide-react-native';
@@ -32,9 +34,20 @@ import {
 import {
   listCustomerOrders,
   subscribeToCustomerOrders,
+  getOrderImageUrl,
   CustomerOrder,
   OrderStatus,
 } from '../../../src/lib/api/customerOrders';
+import { getCompanySettings } from '../../../src/lib/api/settings';
+import { companyToShopDetails } from '../../../src/lib/invoicePdf';
+import { buildEstimateSlip } from '../../../src/lib/estimateSlip';
+import { buildCombinedOrderEstimate } from '../../../src/lib/orderEstimate';
+import {
+  shareEstimateOnWhatsApp,
+  shareOrderWithGoldsmithOnWhatsApp,
+} from '../../../src/lib/whatsappShare';
+
+const WHATSAPP_GREEN = '#25D366';
 
 const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
   pending: 'Pending',
@@ -104,6 +117,13 @@ export default function CustomerDetailsScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Orders the cashier has UNticked. Every open order is ticked by default,
+  // so a freshly created order is included without any extra tap.
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [sharingEstimate, setSharingEstimate] = useState(false);
+  const [sharingSmithId, setSharingSmithId] = useState<string | null>(null);
+  const [shareError, setShareError] = useState<string | null>(null);
+
   const load = useCallback(() => {
     if (!id) return;
     setLoading(true);
@@ -137,6 +157,86 @@ export default function CustomerDetailsScreen() {
       });
     });
   }, [id]);
+
+  const toggleOrder = (orderId: string) =>
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(orderId)) next.delete(orderId);
+      else next.add(orderId);
+      return next;
+    });
+
+  // Orders that can go into an estimate (not yet invoiced) and are ticked
+  const openOrders = orders.filter((o) => o.status !== 'completed');
+  const selectedOrders = openOrders.filter((o) => !excluded.has(o.id));
+
+  // ---------------------------------------------------------
+  // ONE estimate slip with every ticked order as an item
+  // ---------------------------------------------------------
+  const shareCombinedEstimate = async () => {
+    if (selectedOrders.length === 0) return;
+    setSharingEstimate(true);
+    setShareError(null);
+    try {
+      // Oldest order first, so ORD-001 is ITEM 1
+      const ordered = [...selectedOrders].sort((a, b) => a.created_at.localeCompare(b.created_at));
+
+      const [company, estimate] = await Promise.all([
+        getCompanySettings(),
+        buildCombinedOrderEstimate(ordered),
+      ]);
+      const shop = companyToShopDetails(company);
+
+      const { html, heightPt } = buildEstimateSlip(estimate.lines, {
+        shopName: (shop as any)?.name ?? null,
+        title: 'ROUGH ESTIMATE',
+      });
+
+      await shareEstimateOnWhatsApp({
+        html,
+        customerName: customer?.name ?? null,
+        customerPhone: customer?.phone ?? null,
+        shopName: (shop as any)?.name ?? null,
+        amount: estimate.netAmount,
+        heightPt,
+      });
+    } catch (e: any) {
+      setShareError(e?.message ?? 'Could not share estimate.');
+    } finally {
+      setSharingEstimate(false);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // Each order goes to ITS OWN goldsmith (design + pictures)
+  // ---------------------------------------------------------
+  const shareWithSmith = async (order: CustomerOrder) => {
+    setSharingSmithId(order.id);
+    setShareError(null);
+    try {
+      await shareOrderWithGoldsmithOnWhatsApp({
+        order,
+        imageUrls: (order.reference_images ?? []).map(getOrderImageUrl),
+      });
+    } catch (e: any) {
+      setShareError(e?.message ?? 'Could not open WhatsApp.');
+    } finally {
+      setSharingSmithId(null);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // Open ONE combined bill for every ticked order
+  // (same receipt preview, GST, old gold and discount as the invoice screen)
+  // ---------------------------------------------------------
+  const openCombinedBill = () => {
+    if (selectedOrders.length === 0) return;
+    const ordered = [...selectedOrders].sort((a, b) => a.created_at.localeCompare(b.created_at));
+    router.push({
+      pathname: '/customers/orders/combined',
+      params: { customerId: id, orderIds: ordered.map((o) => o.id).join(',') },
+    });
+  };
 
   if (loading) {
     return (
@@ -228,33 +328,118 @@ export default function CustomerDetailsScreen() {
               <Text style={styles.emptyText}>No jewel orders yet</Text>
             </View>
           ) : (
-            orders.map((o, index) => (
-              <View key={o.id}>
-                <Pressable
-                  style={({ pressed }) => [styles.orderRow, pressed && styles.rowPressed]}
-                  onPress={() => router.push(`/customers/orders/${o.id}`)}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowTitle} numberOfLines={1}>
-                      {o.category} · {o.metal} · {o.purity}
-                    </Text>
-                    <Text style={styles.rowSub} numberOfLines={1}>
-                      {o.order_number} · {o.weight_max != null ? `${o.weight_min}g – ${o.weight_max}g` : `${o.weight_min}g`}
-                    </Text>
-                    {o.stone_name ? (
-                      <Text style={styles.rowSub} numberOfLines={1}>
-                        Stone: {o.stone_name}
+            orders.map((o, index) => {
+              const canSelect = o.status !== 'completed';
+              const checked = canSelect && !excluded.has(o.id);
+              const hasSmith = !!o.goldsmith_phone;
+
+              return (
+                <View key={o.id}>
+                  <Pressable
+                    style={({ pressed }) => [styles.orderRow, pressed && styles.rowPressed]}
+                    onPress={() => router.push(`/customers/orders/${o.id}`)}
+                  >
+                    {/* Tick = include this order in the combined estimate */}
+                    {canSelect && (
+                      <Pressable
+                        style={[styles.checkbox, checked && styles.checkboxOn]}
+                        onPress={() => toggleOrder(o.id)}
+                        hitSlop={10}
+                      >
+                        {checked && <Check size={14} color="#fff" strokeWidth={3} />}
+                      </Pressable>
+                    )}
+
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.rowTitle} numberOfLines={1}>
+                        {o.category} · {o.metal} · {o.purity}
                       </Text>
-                    ) : null}
-                  </View>
-                  <StatusPill label={ORDER_STATUS_LABEL[o.status]} color={ORDER_STATUS_COLOR[o.status]} />
-                  <ChevronRight size={18} color={colors.textMuted} style={{ marginLeft: 6 }} />
-                </Pressable>
-                {index < orders.length - 1 && <View style={styles.separator} />}
-              </View>
-            ))
+                      <Text style={styles.rowSub} numberOfLines={1}>
+                        {o.order_number} · {o.weight_max != null ? `${o.weight_min}g – ${o.weight_max}g` : `${o.weight_min}g`}
+                      </Text>
+                      {o.stone_name ? (
+                        <Text style={styles.rowSub} numberOfLines={1}>
+                          Stone: {o.stone_name}
+                        </Text>
+                      ) : null}
+
+                      {/* This order's own goldsmith */}
+                      {hasSmith && (
+                        <Pressable
+                          style={[styles.smithChip, sharingSmithId === o.id && styles.smithChipBusy]}
+                          onPress={() => shareWithSmith(o)}
+                          disabled={sharingSmithId !== null}
+                          hitSlop={6}
+                        >
+                          {sharingSmithId === o.id ? (
+                            <ActivityIndicator size="small" color="#fff" />
+                          ) : (
+                            <MessageCircle size={13} color="#fff" />
+                          )}
+                          <Text style={styles.smithChipText} numberOfLines={1}>
+                            Share with {o.goldsmith_name?.trim() || 'Goldsmith'}
+                          </Text>
+                        </Pressable>
+                      )}
+                    </View>
+
+                    <StatusPill label={ORDER_STATUS_LABEL[o.status]} color={ORDER_STATUS_COLOR[o.status]} />
+                    <ChevronRight size={18} color={colors.textMuted} style={{ marginLeft: 6 }} />
+                  </Pressable>
+                  {index < orders.length - 1 && <View style={styles.separator} />}
+                </View>
+              );
+            })
           )}
         </Card>
+
+        {/* One bill for all ticked orders */}
+        {openOrders.length > 1 && (
+          <View style={styles.shareWrap}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.shareBtn,
+                (selectedOrders.length < 1 || sharingEstimate) && styles.shareBtnDisabled,
+                pressed && { opacity: 0.8 },
+              ]}
+              onPress={shareCombinedEstimate}
+              disabled={selectedOrders.length < 1 || sharingEstimate}
+            >
+              {sharingEstimate ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <MessageCircle size={18} color="#fff" />
+                  <Text style={styles.shareBtnText}>
+                    Share Combined Estimate ({selectedOrders.length} {selectedOrders.length === 1 ? 'order' : 'orders'})
+                  </Text>
+                </>
+              )}
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [
+                styles.invoiceBtn,
+                selectedOrders.length < 1 && styles.shareBtnDisabled,
+                pressed && { opacity: 0.8 },
+              ]}
+              onPress={openCombinedBill}
+              disabled={selectedOrders.length < 1}
+            >
+              <Text style={styles.invoiceBtnText}>
+                View Combined Bill ({selectedOrders.length} {selectedOrders.length === 1 ? 'order' : 'orders'})
+              </Text>
+            </Pressable>
+            <Text style={styles.shareHint}>
+              One bill with every ticked order as an item, old gold included. Untick an order to leave it out.
+            </Text>
+          </View>
+        )}
+
+        {shareError && (
+          <View style={styles.warningBox}>
+            <Text style={styles.warningText}>{shareError}</Text>
+          </View>
+        )}
 
         {/* Invoice History - DISABLED (previous invoices are no longer shown here)
         <SectionHeader title="Invoice History" count={invoices.length} />
@@ -375,6 +560,59 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
   rowSub: { fontSize: 12, color: colors.textMuted, marginTop: 3 },
   separator: { height: 1, backgroundColor: colors.border },
+
+  // Order tick box (include in combined estimate)
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+
+  // Per-order goldsmith share
+  smithChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: WHATSAPP_GREEN,
+    maxWidth: '100%',
+  },
+  smithChipBusy: { opacity: 0.7 },
+  smithChipText: { fontSize: 12, fontWeight: '700', color: '#fff', flexShrink: 1 },
+
+  // Combined estimate button
+  shareWrap: { marginHorizontal: spacing.lg, marginBottom: spacing.lg },
+  shareBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: WHATSAPP_GREEN,
+  },
+  shareBtnDisabled: { opacity: 0.5 },
+  shareBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  invoiceBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.sm,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+  },
+  invoiceBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  shareHint: { fontSize: 11.5, color: colors.textMuted, textAlign: 'center', marginTop: 6 },
 
   // Invoice cards (kept for when invoice history is turned back on)
   invoiceCard: {

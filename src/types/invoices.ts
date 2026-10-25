@@ -74,6 +74,7 @@ export interface InvoiceItem {
   total_amount: number;
   huid: string | null;
   gst_enabled?: boolean; //
+  remark?: string | null;          // NEW: per-item LOC / remark
 }
 
 export interface Customer {
@@ -140,6 +141,7 @@ export interface InvoiceItemDetail {
   tax_amount: number;
   total: number;
   value_added_charges: InvoiceItemVaCharge[];
+  remark?: string | null;          // NEW
 }
 
 export interface InvoiceCharge {

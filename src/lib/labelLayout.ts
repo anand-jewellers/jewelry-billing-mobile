@@ -207,7 +207,7 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
   if ((dwt && dwt !== '0') || num(l.diamondCharge) > 0) {
     rows.push({ left: `DWT:${dwt || '-'}`, right: `DC:${trim(num(l.diamondCharge))}` });
   }
-  const textX = barsX + barsW + QUIET_R + RIGHT_GAP_MM -1;
+  const textX = barsX + barsW + QUIET_R + RIGHT_GAP_MM - 0.3;
   const avail = x0 + PRINT_W_MM - textX - RIGHT_PAD_MM;
   const maxRowH = Math.min(MAX_ROW_H, (LABEL_H_MM - 1.2) / rows.length);
 
@@ -229,7 +229,8 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
   const rightX = textX + (maxL + 2) * cw;
 
   // Block is still centred vertically on the label
-  const top = (LABEL_H_MM - rows.length * rowH) / 2;
+  const RIGHT_TOP_MARGIN_MM = 3;
+  const top = RIGHT_TOP_MARGIN_MM;
   rows.forEach((row, i) => {
     const y = top + i * rowH + rowH * 0.78;
     texts.push({ x: textX, y, size, text: row.left, anchor: 'start' });

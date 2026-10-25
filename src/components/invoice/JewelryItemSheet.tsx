@@ -19,6 +19,7 @@ import { SelectField, SelectOption } from '../ui/SelectField';
 import { MultiSelectField } from '../ui/MultiSelectField';
 import { colors, spacing } from '../../theme';
 import { useKeyboardHeight } from '../../lib/useKeyboardHeight';
+import { ErrorModal } from '../ui';
 import {
   getProductByCode,
   getCurrentRate,
@@ -209,7 +210,9 @@ export function JewelryItemSheet({
   const [lookupBusy, setLookupBusy] = useState(false);
   const [lookupMsg, setLookupMsg] = useState<string | null>(null);
 
+
   const linkedProductRef = useRef<Product | null>(null);
+  const [soldError, setSoldError] = useState<string | null>(null);
 
   // Once the cashier types their own rate / making charge, auto-fill
   // must stop overwriting it (even if they later change metal/purity).
@@ -315,6 +318,7 @@ export function JewelryItemSheet({
     rateEditedRef.current = false;
     makingEditedRef.current = false;
     setLookupMsg(null);
+    setSoldError(null);
 
     if (initial) {
       setState(stateFromItem(initial));
@@ -400,9 +404,11 @@ export function JewelryItemSheet({
     setLookupMsg(null);
     try {
       const found = await getProductByCode(code);
-      if (!found) {
-        setLookupMsg(`No product found for "${code}". You can type the item details manually.`);
-        return;
+      if ((found as any).status === 'sold') {
+        setSoldError('This product has already been sold.');
+        setLookupMsg(null);
+        setProductCode('');   // don't leave the sold code sitting in the field
+        return;               // nothing is filled in, so no details are shown
       }
       await applyProduct(found as Product);
       setLookupMsg('Product details filled.');
@@ -1057,6 +1063,12 @@ export function JewelryItemSheet({
             </View>
           </ScrollView>
         </View>
+        <ErrorModal
+          visible={!!soldError}
+          title="Already sold"
+          message={soldError}
+          onClose={() => setSoldError(null)}
+        />
       </View>
     </Modal>
   );

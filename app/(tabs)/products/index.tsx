@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   Platform,
   Alert,
+  Keyboard,
   useWindowDimensions,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -44,7 +45,7 @@ import {
 } from '../../../src/lib/whatsappShare';
 
 const PAGE_SIZE = 15;
-const BULK_GAP = 10;
+const BULK_GAP = 30;
 // Filter card height as a share of the screen height (fixed, never changes with content)
 const FILTER_PANEL_HEIGHT_RATIO = 0.45;
 
@@ -77,7 +78,8 @@ export default function ProductListScreen() {
 
 function ProductListScreenInner() {
   const router = useRouter();
-  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  // const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const { height: screenHeight } = useWindowDimensions();
 
   // Component-level access (admin / manager get everything via hasAccess)
   const { hasAccess } = useStaff();
@@ -85,7 +87,7 @@ function ProductListScreenInner() {
 
   // Exact, equal width for the Print and Share buttons:
   // (screen width - left/right padding - gap between buttons) / 2
-  const bulkBtnWidth = Math.floor((screenWidth - spacing.lg * 2 - BULK_GAP) / 2);
+  // const bulkBtnWidth = Math.floor((screenWidth - spacing.lg * 2 - BULK_GAP) / 2);
 
   // Fixed height for the filter card; its content scrolls inside
   const filterPanelHeight = Math.floor(screenHeight * FILTER_PANEL_HEIGHT_RATIO);
@@ -108,6 +110,7 @@ function ProductListScreenInner() {
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageInput, setPageInput] = useState('');
 
   // Multi-select state
   const [selectionMode, setSelectionMode] = useState(false);
@@ -289,6 +292,15 @@ function ProductListScreenInner() {
 
   const handleNextPage = () => {
     if (currentPage < totalPages) setCurrentPage((prev) => prev + 1);
+  };
+
+  const handleGoToPage = () => {
+    const n = parseInt(pageInput, 10);
+    if (isNaN(n)) return;
+    // Clamp so 0 or a too-large number still lands on a valid page
+    setCurrentPage(Math.min(Math.max(n, 1), totalPages));
+    setPageInput('');
+    Keyboard.dismiss();
   };
 
   // True when every product matching the current search/filters (all pages) is selected
@@ -742,52 +754,78 @@ function ProductListScreenInner() {
         }}
         ListFooterComponent={
           filteredProducts.length > 0 ? (
-            <View style={styles.paginationContainer}>
-              <Pressable
-                style={[styles.pageButton, currentPage === 1 && styles.pageButtonDisabled]}
-                onPress={handlePrevPage}
-                disabled={currentPage === 1}
-              >
-                <ChevronLeft size={16} color={currentPage === 1 ? '#CBD5E1' : '#0F172A'} />
-                <Text
-                  style={[
-                    styles.pageButtonText,
-                    currentPage === 1 && styles.pageButtonTextDisabled,
-                  ]}
+            <>
+              <View style={styles.paginationContainer}>
+                <Pressable
+                  style={[styles.pageButton, currentPage === 1 && styles.pageButtonDisabled]}
+                  onPress={handlePrevPage}
+                  disabled={currentPage === 1}
                 >
-                  Previous
-                </Text>
-              </Pressable>
+                  <ChevronLeft size={16} color={currentPage === 1 ? '#CBD5E1' : '#0F172A'} />
+                  <Text
+                    style={[
+                      styles.pageButtonText,
+                      currentPage === 1 && styles.pageButtonTextDisabled,
+                    ]}
+                  >
+                    Previous
+                  </Text>
+                </Pressable>
 
-              <View style={styles.pageInfoWrap}>
-                <Text style={styles.pageInfoText}>
-                  Page <Text style={styles.pageInfoBold}>{currentPage}</Text> of{' '}
-                  <Text style={styles.pageInfoBold}>{totalPages}</Text>
-                </Text>
+                <View style={styles.pageInfoWrap}>
+                  <Text style={styles.pageInfoText}>
+                    Page <Text style={styles.pageInfoBold}>{currentPage}</Text> of{' '}
+                    <Text style={styles.pageInfoBold}>{totalPages}</Text>
+                  </Text>
+                </View>
+
+                <Pressable
+                  style={[
+                    styles.pageButton,
+                    currentPage === totalPages && styles.pageButtonDisabled,
+                  ]}
+                  onPress={handleNextPage}
+                  disabled={currentPage === totalPages}
+                >
+                  <Text
+                    style={[
+                      styles.pageButtonText,
+                      currentPage === totalPages && styles.pageButtonTextDisabled,
+                    ]}
+                  >
+                    Next
+                  </Text>
+                  <ChevronRight
+                    size={16}
+                    color={currentPage === totalPages ? '#CBD5E1' : '#0F172A'}
+                  />
+                </Pressable>
               </View>
 
-              <Pressable
-                style={[
-                  styles.pageButton,
-                  currentPage === totalPages && styles.pageButtonDisabled,
-                ]}
-                onPress={handleNextPage}
-                disabled={currentPage === totalPages}
-              >
-                <Text
-                  style={[
-                    styles.pageButtonText,
-                    currentPage === totalPages && styles.pageButtonTextDisabled,
-                  ]}
-                >
-                  Next
-                </Text>
-                <ChevronRight
-                  size={16}
-                  color={currentPage === totalPages ? '#CBD5E1' : '#0F172A'}
-                />
-              </Pressable>
-            </View>
+              {totalPages > 1 && (
+                <View style={styles.goToPageRow}>
+                  <Text style={styles.goToPageLabel}>Go to page</Text>
+                  <TextInput
+                    style={styles.goToPageInput}
+                    placeholder={`1-${totalPages}`}
+                    placeholderTextColor="#94A3B8"
+                    keyboardType="number-pad"
+                    value={pageInput}
+                    onChangeText={(t) => setPageInput(t.replace(/[^0-9]/g, ''))}
+                    onSubmitEditing={handleGoToPage}
+                    returnKeyType="go"
+                    maxLength={4}
+                  />
+                  <Pressable
+                    style={[styles.goToPageBtn, !pageInput && styles.goToPageBtnDisabled]}
+                    onPress={handleGoToPage}
+                    disabled={!pageInput}
+                  >
+                    <Text style={styles.goToPageBtnText}>Go</Text>
+                  </Pressable>
+                </View>
+              )}
+            </>
           ) : null
         }
       />
@@ -798,7 +836,6 @@ function ProductListScreenInner() {
           <Pressable
             style={[
               styles.bulkBtn,
-              { width: bulkBtnWidth },
               styles.printSelectedBtn,
               (selectedIds.size === 0 || bulkBusy) && styles.bulkBtnDisabled,
             ]}
@@ -818,7 +855,6 @@ function ProductListScreenInner() {
           <Pressable
             style={[
               styles.bulkBtn,
-              { width: bulkBtnWidth },
               styles.shareSelectedBtn,
               (selectedIds.size === 0 || bulkBusy) && styles.bulkBtnDisabled,
             ]}
@@ -940,12 +976,42 @@ const styles = StyleSheet.create({
   fabWrapper: { position: 'absolute', bottom: 24, right: 20, alignItems: 'center' },
   fabButton: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#1E3A8A', alignItems: 'center', justifyContent: 'center', shadowColor: '#1E3A8A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 8, elevation: 6 },
   fabLabel: { fontSize: 10, fontWeight: '700', color: '#1E3A8A', marginTop: 3 },
-  bulkActionContainer: { position: 'absolute', bottom: 20, left: spacing.lg, right: spacing.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  // Shared by both buttons. Width is set inline (bulkBtnWidth) so both are
-  // exactly equal; height is fixed so the spinner never changes the size.
-  bulkBtn: { height: 52, flexGrow: 0, flexShrink: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 16, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  // bulkActionContainer: { position: 'absolute', bottom: 20, left: spacing.lg, right: spacing.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  // // Shared by both buttons. Width is set inline (bulkBtnWidth) so both are
+  // // exactly equal; height is fixed so the spinner never changes the size.
+  // bulkBtn: { height: 52, flexGrow: 0, flexShrink: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 16, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  bulkActionContainer: {
+    position: 'absolute',
+    bottom: 20,
+    left: spacing.lg,
+    right: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: BULK_GAP,
+  },
+  bulkBtn: {
+    flex: 1,              // equal share of the row on mobile
+    maxWidth: 480,        // stops them stretching across a wide desktop screen
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 18,
+    borderRadius: 16,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
   shareSelectedBtn: { backgroundColor: '#25D366', shadowColor: '#25D366' },
   printSelectedBtn: { backgroundColor: '#1E3A8A', shadowColor: '#1E3A8A' },
   bulkBtnDisabled: { opacity: 0.5 },
   bulkBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
+  goToPageRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingBottom: 14 },
+  goToPageLabel: { fontSize: 13, color: '#64748B', fontWeight: '600' },
+  goToPageInput: { width: 80, borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12, fontSize: 13, color: '#0F172A', backgroundColor: '#FFFFFF', textAlign: 'center' },
+  goToPageBtn: { backgroundColor: '#0F172A', borderRadius: 10, paddingVertical: 9, paddingHorizontal: 20 },
+  goToPageBtnDisabled: { opacity: 0.4 },
+  goToPageBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
 });
