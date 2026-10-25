@@ -101,7 +101,10 @@ export async function printRepairReceiptDirect(
   shop: RepairShopInfo
 ) {
   const finalPaid = num(receipt.finalPaid);
-  const balance = round2(Math.max(0, num(receipt.charge) - num(receipt.advance) - finalPaid));
+  const outstanding = round2(Math.max(0, num(receipt.charge) - num(receipt.advance) - finalPaid));
+  const isDelivered = !!receipt.deliveredText;
+  const discount = isDelivered ? outstanding : 0;
+  const balance = isDelivered ? 0 : outstanding;
 
   let out = INIT;
 
@@ -133,6 +136,7 @@ export async function printRepairReceiptDirect(
   out += row('Repair Charge', fixed2(receipt.charge));
   out += row('Advance Paid', fixed2(receipt.advance));
   if (finalPaid > 0) out += row('Paid on Delivery', fixed2(finalPaid));
+  if (discount > 0) out += row('Discount', fixed2(discount));
   out += tightDash();
   out += boldRow('Balance Due', fixed2(balance));
 

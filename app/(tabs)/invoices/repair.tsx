@@ -6,6 +6,9 @@
 //                                (print / share / mark ready / collect balance & deliver)
 //
 // Status flow: received -> ready -> delivered
+//
+// Remarks are kept per repair item and are NEVER printed / shared on the receipt.
+// "Amount collected" on delivery is editable (defaults to the balance due).
 
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -33,6 +36,7 @@ import { useStaff } from '../../../src/context/StaffContext';
 import { getCompanySettings } from '../../../src/lib/api/settings';
 import {
   createRepairOrder,
+  getNextRepairReceiptNo,
   getRepairOrder,
   deleteRepairOrder,
   deliverRepairOrder,
@@ -74,6 +78,8 @@ const PAY_MODES = [
 ];
 const modeLabel = (id: string | null) => PAY_MODES.find((m) => m.id === id)?.label ?? id ?? '';
 
+// Remarks are intentionally left empty here so they never reach
+// the thermal printer, the print dialog or the shared PDF.
 function orderToReceipt(o: RepairOrder): RepairReceiptData {
   return {
     receiptNo: o.receipt_no,
@@ -84,12 +90,14 @@ function orderToReceipt(o: RepairOrder): RepairReceiptData {
     weight: o.weight && o.weight > 0 ? o.weight : null,
     charge: o.charge,
     advance: o.advance,
-    remarks: o.remarks ?? '',
+    remarks: '',
     finalPaid: o.final_payment > 0 ? o.final_payment : 0,
     deliveredText:
       o.status === 'delivered' && o.delivered_at ? formatReceiptDate(new Date(o.delivered_at)) : null,
   };
 }
+
+type ExtraRow = { id: string; item: string; weight: string; remark: string };
 
 export default function RepairServiceScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
@@ -103,15 +111,16 @@ export default function RepairServiceScreen() {
   const [phone, setPhone] = useState('');
   const [item, setItem] = useState('');
   const [weight, setWeight] = useState('');
+  const [itemRemark, setItemRemark] = useState(''); // remark for the first item
   const [charge, setCharge] = useState('');
   const [advance, setAdvance] = useState('');
-  const [remarks, setRemarks] = useState('');
+  const [remarks, setRemarks] = useState(''); // general remarks
 
-  // extra "repair + weight" rows added with the + button
-  const [extras, setExtras] = useState<{ id: string; item: string; weight: string }[]>([]);
+  // extra "repair + weight + remark" rows added with the + button
+  const [extras, setExtras] = useState<ExtraRow[]>([]);
   const addExtra = () =>
-    setExtras((p) => [...p, { id: `${Date.now()}-${p.length}`, item: '', weight: '' }]);
-  const updateExtra = (id: string, patch: Partial<{ item: string; weight: string }>) =>
+    setExtras((p) => [...p, { id: `${Date.now()}-${p.length}`, item: '', weight: '', remark: '' }]);
+  const updateExtra = (id: string, patch: Partial<Omit<ExtraRow, 'id'>>) =>
     setExtras((p) => p.map((e) => (e.id === id ? { ...e, ...patch } : e)));
   const removeExtra = (id: string) => setExtras((p) => p.filter((e) => e.id !== id));
 
@@ -133,6 +142,8 @@ export default function RepairServiceScreen() {
   const [collectOpen, setCollectOpen] = useState(false);
   const [collectMode, setCollectMode] = useState('cash');
   const [collecting, setCollecting] = useState(false);
+  const [collectInput, setCollectInput] = useState('');
+  const [collectTouched, setCollectTouched] = useState(false);
 
   // ---- error modal (same ErrorModal as the New Invoice page) ----
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -171,7 +182,15 @@ export default function RepairServiceScreen() {
   const receipt = order ? orderToReceipt(order) : null;
   const delivered = order?.status === 'delivered';
   const isReady = order?.status === 'ready';
-  const balanceDue = order ? Math.max(0, order.charge - order.advance - order.final_payment) : 0;
+  const outstanding = order ? Math.max(0, order.charge - order.advance - order.final_payment) : 0;
+  const discount = delivered ? outstanding : 0; // delivered = job closed, shortfall is a discount
+  const balanceDue = delivered ? 0 : outstanding;
+  const collectAmount = Number(collectInput) || 0;
+
+  // Keep "Amount collected" equal to the balance until the user edits it
+  useEffect(() => {
+    if (!collectTouched) setCollectInput(balanceDue > 0 ? String(balanceDue) : '');
+  }, [balanceDue, collectTouched]);
 
   // Shop name / address / phone for the receipt header
   useEffect(() => {
@@ -251,19 +270,39 @@ export default function RepairServiceScreen() {
         .join(' | ');
     }
 
+    // per-item remarks + general remarks -> one "remarks" text (screen only, never printed)
+    const remarkLines: string[] = [];
+    if (itemRemark.trim()) remarkLines.push(`${item.trim()}: ${itemRemark.trim()}`);
+    extras.forEach((e, i) => {
+      if (e.remark.trim()) {
+        remarkLines.push(`${e.item.trim() || `Item ${i + 2}`}: ${e.remark.trim()}`);
+      }
+    });
+    if (remarks.trim()) remarkLines.push(remarks.trim());
+    const remarksText = remarkLines.join('\n');
+
     setSaving(true);
     try {
-      const saved = await createRepairOrder({
-        receiptNo: generateRepairReceiptNo(new Date()),
-        customerName: name.trim(),
-        phone: phone.trim(),
-        item: itemText,
-        weight: totalWeight > 0 ? totalWeight : null,
-        charge: chargeNum,
-        advance: advanceNum,
-        remarks: remarks.trim(),
-      });
-      setOrder(saved);
+      let saved: RepairOrder | null = null;
+      for (let attempt = 0; attempt < 3 && !saved; attempt++) {
+        const receiptNo = await getNextRepairReceiptNo(new Date());
+        try {
+          saved = await createRepairOrder({
+            receiptNo,
+            customerName: name.trim(),
+            phone: phone.trim(),
+            item: itemText,
+            weight: totalWeight > 0 ? totalWeight : null,
+            charge: chargeNum,
+            advance: advanceNum,
+            remarks: remarksText,
+          });
+        } catch (e: any) {
+          // 23505 = duplicate receipt no (another device saved at the same time): try the next number
+          if (e?.code !== '23505' || attempt === 2) throw e;
+        }
+      }
+      if (saved) setOrder(saved);
     } catch (e: any) {
       showError('Could not save repair', e?.message ?? 'Unknown error');
     } finally {
@@ -310,15 +349,20 @@ export default function RepairServiceScreen() {
   };
 
   // ---------------------------------------------------------
-  // Collect balance & deliver
+  // Collect balance & deliver (collected amount is editable)
   // ---------------------------------------------------------
+  const openCollectSheet = () => {
+    setCollectTouched(false);
+    setCollectOpen(true);
+  };
+
   const handleDeliver = async () => {
     if (!order || collecting) return;
     setCollecting(true);
     try {
       const updated = await deliverRepairOrder(order.id, {
-        amount: balanceDue,
-        mode: balanceDue > 0 ? collectMode : null,
+        amount: collectAmount,
+        mode: collectAmount > 0 ? collectMode : null,
       });
       setOrder(updated);
       setCollectOpen(false);
@@ -443,6 +487,7 @@ export default function RepairServiceScreen() {
     setPhone('');
     setItem('');
     setWeight('');
+    setItemRemark('');
     setCharge('');
     setAdvance('');
     setRemarks('');
@@ -513,18 +558,11 @@ export default function RepairServiceScreen() {
             <Line k="Repair Charge" v={money(receipt.charge)} />
             <Line k="Advance Paid" v={money(receipt.advance)} />
             {receipt.finalPaid ? <Line k="Paid on Delivery" v={money(receipt.finalPaid)} /> : null}
+            {discount > 0 ? <Line k="Discount" v={money(discount)} bold /> : null}
             <View style={styles.balanceRow}>
               <Text style={styles.balanceLabel}>Balance Due</Text>
               <Text style={styles.balanceValue}>{money(balanceDue)}</Text>
             </View>
-
-            {receipt.remarks ? (
-              <>
-                <View style={styles.dash} />
-                <Text style={styles.kText}>Remarks</Text>
-                <Text style={styles.remarksText}>{receipt.remarks}</Text>
-              </>
-            ) : null}
 
             <View style={styles.dash} />
             <Text style={styles.footNote}>
@@ -535,6 +573,14 @@ export default function RepairServiceScreen() {
                   : 'Please bring this receipt when collecting your item.'}
             </Text>
           </View>
+
+          {/* Remarks: shown on screen only, never printed / shared */}
+          {order.remarks?.trim() ? (
+            <View style={styles.notesCard}>
+              <Text style={styles.notesTitle}>Remarks</Text>
+              <Text style={styles.notesText}>{order.remarks}</Text>
+            </View>
+          ) : null}
 
           {/* Step 1: repair finished -> mark as ready */}
           {order.status === 'received' && (
@@ -574,7 +620,7 @@ export default function RepairServiceScreen() {
 
           {/* Step 3: customer came back: collect balance + hand over the jewel */}
           {!delivered && (
-            <Pressable style={styles.deliverBtn} onPress={() => setCollectOpen(true)}>
+            <Pressable style={styles.deliverBtn} onPress={openCollectSheet}>
               <Check size={18} color="#FFFFFF" strokeWidth={3} />
               <Text style={styles.primaryBtnText}>
                 {balanceDue > 0 ? `Collect ${money(balanceDue)} & deliver` : 'Mark as delivered'}
@@ -632,7 +678,10 @@ export default function RepairServiceScreen() {
           onRequestClose={() => setCollectOpen(false)}
         >
           <Pressable style={styles.modalBackdrop} onPress={() => !collecting && setCollectOpen(false)}>
-            <Pressable style={[styles.modalSheet, { paddingBottom: sheetBottomPad }]} onPress={() => { }}>
+            <Pressable
+              style={[styles.modalSheet, { paddingBottom: sheetBottomPad + kbHeight }]}
+              onPress={() => { }}
+            >
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>
                   {balanceDue > 0 ? 'Collect balance & deliver' : 'Deliver item'}
@@ -646,27 +695,54 @@ export default function RepairServiceScreen() {
                 <Line k="Repair Charge" v={money(order.charge)} />
                 <Line k="Advance Paid" v={money(order.advance)} />
                 <View style={styles.balanceRow}>
-                  <Text style={styles.balanceLabel}>Balance to collect</Text>
+                  <Text style={styles.balanceLabel}>Balance (calculated)</Text>
                   <Text style={styles.balanceValue}>{money(balanceDue)}</Text>
                 </View>
               </View>
 
               {balanceDue > 0 && (
                 <>
-                  <Text style={styles.label}>Payment mode</Text>
-                  <View style={styles.chipRow}>
-                    {PAY_MODES.map((m) => (
-                      <Pressable
-                        key={m.id}
-                        style={[styles.chip, collectMode === m.id && styles.chipOn]}
-                        onPress={() => setCollectMode(m.id)}
-                      >
-                        <Text style={[styles.chipText, collectMode === m.id && styles.chipTextOn]}>
-                          {m.label}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
+                  <Text style={styles.label}>Amount collected</Text>
+                  <TextInput
+                    style={[styles.input, styles.paidInput]}
+                    value={collectInput}
+                    onChangeText={(t) => {
+                      setCollectTouched(true);
+                      setCollectInput(t.replace(/[^0-9.]/g, ''));
+                    }}
+                    placeholder="0"
+                    placeholderTextColor="#94A3B8"
+                    keyboardType="decimal-pad"
+                  />
+                  {collectTouched && collectAmount !== balanceDue ? (
+                    <Pressable onPress={() => setCollectTouched(false)} hitSlop={8}>
+                      <Text style={styles.resetLink}>
+                        {collectAmount > balanceDue
+                          ? `₹${collectAmount - balanceDue} above balance`
+                          : `₹${balanceDue - collectAmount} will be given as discount`}{' '}
+                        · Reset to balance
+                      </Text>
+                    </Pressable>
+                  ) : null}
+
+                  {collectAmount > 0 && (
+                    <>
+                      <Text style={[styles.label, { marginTop: 14 }]}>Payment mode</Text>
+                      <View style={styles.chipRow}>
+                        {PAY_MODES.map((m) => (
+                          <Pressable
+                            key={m.id}
+                            style={[styles.chip, collectMode === m.id && styles.chipOn]}
+                            onPress={() => setCollectMode(m.id)}
+                          >
+                            <Text style={[styles.chipText, collectMode === m.id && styles.chipTextOn]}>
+                              {m.label}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </>
+                  )}
                 </>
               )}
 
@@ -740,7 +816,8 @@ export default function RepairServiceScreen() {
           />
         </Field>
 
-        {/* For Repair + Weight side by side. "Add another" adds one more row of the same. */}
+        {/* For Repair + Weight side by side, with a remark underneath.
+            "Add another" adds one more row of the same. */}
         <View style={styles.field} onLayout={regField('item')}>
           <Text style={styles.label}>
             For Repair & Weight <Text style={{ color: '#C5221F' }}>*</Text>
@@ -765,6 +842,15 @@ export default function RepairServiceScreen() {
               onFocus={() => scrollToField('item')}
             />
           </View>
+          <TextInput
+            style={[styles.input, styles.remarkGrow, styles.itemRemarkInput]}
+            value={itemRemark}
+            onChangeText={setItemRemark}
+            placeholder="Remark for this item"
+            placeholderTextColor="#94A3B8"
+            multiline
+            onFocus={() => scrollToField('item')}
+          />
         </View>
 
         {extras.map((e, i) => (
@@ -795,6 +881,15 @@ export default function RepairServiceScreen() {
                 onFocus={() => scrollToField(`extra-${e.id}`)}
               />
             </View>
+            <TextInput
+              style={[styles.input, styles.remarkGrow, styles.itemRemarkInput]}
+              value={e.remark}
+              onChangeText={(t) => updateExtra(e.id, { remark: t })}
+              placeholder="Remark for this item"
+              placeholderTextColor="#94A3B8"
+              multiline
+              onFocus={() => scrollToField(`extra-${e.id}`)}
+            />
           </View>
         ))}
 
@@ -837,7 +932,7 @@ export default function RepairServiceScreen() {
           <Text style={styles.balanceCardValue}>{money(formBalance)}</Text>
         </View>
 
-        <Field label="Remarks" onLayout={regField('remarks')}>
+        <Field label="General remarks" onLayout={regField('remarks')}>
           <TextInput
             style={[styles.input, styles.inputMulti]}
             value={remarks}
@@ -941,6 +1036,9 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 12,
     textAlignVertical: 'top',
+  },
+  itemRemarkInput: {
+    marginTop: 10, // same gap as between the other inputs
   },
   addMoreBtn: {
     flexDirection: 'row',
@@ -1083,8 +1181,20 @@ const styles = StyleSheet.create({
   },
   balanceLabel: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
   balanceValue: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
-  remarksText: { fontSize: 13, color: '#0F172A', marginTop: 2 },
   footNote: { fontSize: 12, color: '#64748B', textAlign: 'center' },
+
+  // Remarks card (screen only)
+  notesCard: {
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FEEFC3',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+    gap: 6,
+  },
+  notesTitle: { fontSize: 13, fontWeight: '800', color: '#B06000' },
+  notesText: { fontSize: 13, color: '#0F172A', lineHeight: 19 },
 
   actionRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   outlineBtn: {
@@ -1155,4 +1265,6 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 13, fontWeight: '600', color: '#0F172A' },
   chipTextOn: { color: '#FFFFFF' },
   collectNote: { fontSize: 12, color: '#64748B', marginTop: 12 },
+  paidInput: { fontSize: 18, fontWeight: '800', height: 52 },
+  resetLink: { fontSize: 12, fontWeight: '600', color: '#1E3A8A', marginTop: 6 },
 });

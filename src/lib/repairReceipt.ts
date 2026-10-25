@@ -78,11 +78,14 @@ export function formatReceiptDate(d: Date = new Date()): string {
 export function estimateRepairReceiptHeightPt(data: RepairReceiptData): number {
   const extraLines =
     Math.ceil((data.item.length || 0) / 28) + Math.ceil((data.remarks.length || 0) / 32);
-  return 470 + extraLines * 14;
+  return 470 + extraLines * 14 + 14;
 }
 
 export function buildRepairReceiptHtml(data: RepairReceiptData, shop: RepairShopInfo): string {
-  const balance = Math.max(0, data.charge - data.advance - (data.finalPaid ?? 0));
+  const outstanding = Math.max(0, data.charge - data.advance - (data.finalPaid ?? 0));
+  const isDelivered = !!data.deliveredText;
+  const discount = isDelivered ? outstanding : 0; // delivered = job closed, shortfall is a discount
+  const balance = isDelivered ? 0 : outstanding;
 
   const row = (label: string, value: string, bold = false) => `
     <tr>
@@ -151,19 +154,19 @@ export function buildRepairReceiptHtml(data: RepairReceiptData, shop: RepairShop
     <table>
       ${row('Repair Charge', money(data.charge))}
       ${row('Advance Paid', money(data.advance))}
-      ${data.finalPaid ? row('Paid on Delivery', money(data.finalPaid)) : ''}
+            ${data.finalPaid ? row('Paid on Delivery', money(data.finalPaid)) : ''}
+      ${discount > 0 ? row('Discount', money(discount), true) : ''}
       <tr class="total">
         <td class="k" style="color:#111">Balance Due</td>
         <td class="v">${money(balance)}</td>
       </tr>
     </table>
 
-    ${
-      data.remarks
-        ? `<hr class="rule" />
+    ${data.remarks
+      ? `<hr class="rule" />
            <div class="label">Remarks</div>
            <div class="remarks">${escapeHtml(data.remarks)}</div>`
-        : ''
+      : ''
     }
 
     <hr class="rule" />

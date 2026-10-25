@@ -3,6 +3,8 @@
 // Cash purchase of old gold / silver ("Adagu Nagai").
 //   /invoices/purchase          -> new purchase form, saves, then shows the receipt
 //   /invoices/purchase?id=<id>  -> opens a saved purchase receipt (print / share)
+//
+// Remarks are kept per product and are NEVER printed / shared on the receipt.
 
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -58,6 +60,8 @@ import type { Metal, Purity } from '../../../src/types/settings';
 
 const money = (n: number) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
 
+// Remarks are intentionally left empty here so they never reach
+// the thermal printer, the print dialog or the shared PDF.
 function purchaseToReceipt(p: CashPurchase): PurchaseReceiptData {
   return {
     receiptNo: p.receipt_no,
@@ -69,7 +73,7 @@ function purchaseToReceipt(p: CashPurchase): PurchaseReceiptData {
     paidAmount: p.paid_amount,
     total: p.paid_amount,
     paymentLabel: purchaseModeLabel(p.payment_mode),
-    remarks: p.remarks ?? '',
+    remarks: '',
   };
 }
 
@@ -86,6 +90,8 @@ export default function CashPurchaseScreen() {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [items, setItems] = useState<PurchaseItem[]>([]);
+  // per-product remarks, keyed by item id (survives editing an item in the modal)
+  const [itemRemarks, setItemRemarks] = useState<Record<string, string>>({});
   const [payMode, setPayMode] = useState('cash');
   const [remarks, setRemarks] = useState('');
   const [paidInput, setPaidInput] = useState('');
@@ -136,6 +142,14 @@ export default function CashPurchaseScreen() {
   const receipt = purchase ? purchaseToReceipt(purchase) : null;
   const total = sumExchangeTotal(items);
   const paid = Number(paidInput) || 0;
+
+  // Remarks to show on screen only (per product + general)
+  const savedItemRemarks = purchase
+    ? purchase.items
+        .map((it, idx) => ({ idx, name: it.name, remark: (it.remark ?? '').trim() }))
+        .filter((r) => r.remark)
+    : [];
+  const hasSavedRemarks = savedItemRemarks.length > 0 || !!purchase?.remarks?.trim();
 
   // Keep "Amount paid" in sync with the net amount until the user edits it
   useEffect(() => {
@@ -204,6 +218,14 @@ export default function CashPurchaseScreen() {
     setEditingItem(it);
     setItemModalOpen(true);
   };
+  const removeItem = (itemId: string) => {
+    setItems((prev) => prev.filter((i) => i.id !== itemId));
+    setItemRemarks((prev) => {
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+  };
 
   // ---------------------------------------------------------
   // Save + create receipt
@@ -224,7 +246,7 @@ export default function CashPurchaseScreen() {
         receiptNo: generatePurchaseReceiptNo(new Date()),
         customerName: name.trim(),
         phone: phone.trim(),
-        items,
+        items: items.map((it) => ({ ...it, remark: (itemRemarks[it.id] ?? '').trim() || null })),
         totalAmount: total,
         paidAmount: paid,
         paymentMode: payMode,
@@ -348,6 +370,7 @@ export default function CashPurchaseScreen() {
     setName('');
     setPhone('');
     setItems([]);
+    setItemRemarks({});
     setPaidInput('');
     setPaidTouched(false);
     setPayMode('cash');
@@ -413,19 +436,28 @@ export default function CashPurchaseScreen() {
               <Text style={styles.totalValue}>{money(receipt.paidAmount)}</Text>
             </View>
             <Line k="Paid by" v={receipt.paymentLabel} />
-
-            {receipt.remarks ? (
-              <>
-                <View style={styles.dash} />
-                <Text style={styles.kText}>Remarks</Text>
-                <Text style={styles.remarksText}>{receipt.remarks}</Text>
-              </>
-            ) : null}
-
-            {/* <View style={styles.signBox}>
-              <Text style={styles.signText}>Customer signature</Text>
-            </View> */}
           </View>
+
+          {/* Remarks: shown on screen only, never printed / shared */}
+          {hasSavedRemarks ? (
+            <View style={styles.notesCard}>
+              <Text style={styles.notesTitle}>Remarks</Text>
+              {savedItemRemarks.map((r) => (
+                <Text key={r.idx} style={styles.notesText}>
+                  <Text style={styles.notesItem}>
+                    {r.idx + 1}. {r.name}:{' '}
+                  </Text>
+                  {r.remark}
+                </Text>
+              ))}
+              {purchase.remarks?.trim() ? (
+                <Text style={styles.notesText}>
+                  <Text style={styles.notesItem}>Note: </Text>
+                  {purchase.remarks}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
 
           <View style={styles.actionRow}>
             <Pressable style={styles.outlineBtn} onPress={handlePrint} disabled={printing}>
@@ -533,28 +565,35 @@ export default function CashPurchaseScreen() {
           </Pressable>
         ) : (
           items.map((it) => (
-            <View key={it.id} style={styles.itemCard}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.itemName} numberOfLines={1}>
-                  {it.name}
-                </Text>
-                <Text style={styles.itemMeta} numberOfLines={2}>
-                  {it.metal_name} {it.purity_name} · {it.gross_weight}g
-                  {it.stone_weight > 0 ? ` · stone ${it.stone_weight}g` : ''} · old {it.old_percent}% · ₹
-                  {it.rate_per_gram}/g
-                </Text>
+            <View key={it.id} style={styles.itemCard} onLayout={regField(`item-${it.id}`)}>
+              <View style={styles.itemCardRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.itemName} numberOfLines={1}>
+                    {it.name}
+                  </Text>
+                  <Text style={styles.itemMeta} numberOfLines={2}>
+                    {it.metal_name} {it.purity_name} · {it.gross_weight}g
+                    {it.stone_weight > 0 ? ` · stone ${it.stone_weight}g` : ''} · old {it.old_percent}% · ₹
+                    {it.rate_per_gram}/g
+                  </Text>
+                </View>
+                <Text style={styles.itemAmount}>{money(it.amount)}</Text>
+                <Pressable hitSlop={8} style={styles.iconBtn} onPress={() => openEditItem(it)}>
+                  <Pencil size={15} color="#64748B" />
+                </Pressable>
+                <Pressable hitSlop={8} style={styles.iconBtn} onPress={() => removeItem(it.id)}>
+                  <Trash2 size={15} color="#C5221F" />
+                </Pressable>
               </View>
-              <Text style={styles.itemAmount}>{money(it.amount)}</Text>
-              <Pressable hitSlop={8} style={styles.iconBtn} onPress={() => openEditItem(it)}>
-                <Pencil size={15} color="#64748B" />
-              </Pressable>
-              <Pressable
-                hitSlop={8}
-                style={styles.iconBtn}
-                onPress={() => setItems((prev) => prev.filter((i) => i.id !== it.id))}
-              >
-                <Trash2 size={15} color="#C5221F" />
-              </Pressable>
+
+              <TextInput
+                style={styles.itemRemarkInput}
+                value={itemRemarks[it.id] ?? ''}
+                onChangeText={(t) => setItemRemarks((prev) => ({ ...prev, [it.id]: t }))}
+                placeholder="Remark for this item"
+                placeholderTextColor="#94A3B8"
+                onFocus={() => scrollToField(`item-${it.id}`)}
+              />
             </View>
           ))
         )}
@@ -580,13 +619,13 @@ export default function CashPurchaseScreen() {
           {paidTouched && paid !== total ? (
             <Pressable onPress={() => setPaidTouched(false)} hitSlop={8}>
               <Text style={styles.resetLink}>
-                {paid > total ? `₹${paid - total} above` : `₹${total - paid} below`} net amount · Reset to net
+                {paid > total ? `₹${paid - total} above` : `₹${total - paid} below`} net amount
               </Text>
             </Pressable>
           ) : null}
         </Field>
 
-        <Field label="Remarks" onLayout={regField('remarks')}>
+        <Field label="General remarks" onLayout={regField('remarks')}>
           <TextInput
             style={[styles.input, styles.inputMulti]}
             value={remarks}
@@ -715,15 +754,24 @@ const styles = StyleSheet.create({
   },
   emptyItemsText: { fontSize: 13, color: '#94A3B8' },
   itemCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#E2E8F0',
     borderRadius: 14,
     padding: 12,
     marginBottom: 10,
-    gap: 8,
+  },
+  itemCardRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  itemRemarkInput: {
+    marginTop: 10,
+    height: 40,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 12,
+    fontSize: 12,
+    color: '#0F172A',
   },
   itemName: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
   itemMeta: { fontSize: 11, color: '#64748B', marginTop: 2 },
@@ -799,9 +847,20 @@ const styles = StyleSheet.create({
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
   totalLabel: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
   totalValue: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
-  remarksText: { fontSize: 13, color: '#0F172A', marginTop: 2 },
-  signBox: { marginTop: 36, borderTopWidth: 1, borderColor: '#334155', paddingTop: 4, alignItems: 'center' },
-  signText: { fontSize: 11, color: '#64748B' },
+
+  // Remarks card (screen only)
+  notesCard: {
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FEEFC3',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+    gap: 6,
+  },
+  notesTitle: { fontSize: 13, fontWeight: '800', color: '#B06000' },
+  notesText: { fontSize: 13, color: '#0F172A' },
+  notesItem: { fontWeight: '700' },
 
   actionRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   outlineBtn: {

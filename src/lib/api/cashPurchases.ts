@@ -19,6 +19,7 @@ export interface PurchaseItem {
   rate_per_gram: number;
   net_weight: number;
   amount: number;
+  remark?: string | null;    // per-product remark (internal, never printed)
 }
 
 export interface CashPurchase {
@@ -56,6 +57,7 @@ function normalize(r: any): CashPurchase {
       rate_per_gram: Number(i.rate_per_gram ?? 0),
       net_weight: Number(i.net_weight ?? 0),
       amount: Number(i.amount ?? 0),
+      remark: i.remark ?? null,
     })),
     total_amount: Number(r.total_amount ?? 0),
     paid_amount: Number(r.paid_amount ?? r.total_amount ?? 0),

@@ -1,6 +1,7 @@
 // src/lib/api/repairs.ts
 
 import { supabase } from '../supabaseClient';
+import { generateRepairReceiptNo } from '../repairReceipt';
 
 export interface RepairOrder {
   id: string;
@@ -44,6 +45,24 @@ function normalize(r: any): RepairOrder {
     delivered_at: r.delivered_at ?? null,
   };
 }
+
+// Next free receipt number for the day, e.g. REP-002-251026
+export async function getNextRepairReceiptNo(d: Date = new Date()): Promise<string> {
+  const datePart = generateRepairReceiptNo(d, 1).split('-').pop(); // "251026"
+  const { data, error } = await supabase
+    .from('repair_orders')
+    .select('receipt_no')
+    .like('receipt_no', `%-${datePart}`);
+  if (error) throw error;
+
+  let max = 0;
+  for (const r of data ?? []) {
+    const seq = parseInt(String(r.receipt_no).split('-')[1], 10);
+    if (Number.isFinite(seq) && seq > max) max = seq;
+  }
+  return generateRepairReceiptNo(d, max + 1);
+}
+
 
 export async function createRepairOrder(input: CreateRepairInput): Promise<RepairOrder> {
   const { data, error } = await supabase
