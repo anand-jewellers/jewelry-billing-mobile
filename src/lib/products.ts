@@ -304,20 +304,50 @@ export async function insertProductValueAddedCharges(rows: VacInsert[], staffId:
   if (error) throw error;
 }
 
+
 export async function getProducts() {
-  const { data, error } = await supabase
-    .from('products')
-    .select(`
-  id, product_name, product_code, net_weight, status,
-  metal_id, purity_id, category_id, subcategory_id,
-  metals(name, type), purities(name), categories(name), subcategories(name),
-  product_images(storage_path, is_primary),
-  product_diamonds(size)
-`)
-    .order('created_at', { ascending: false });
-  if (error) throw error;
-  return data;
+  const PAGE_SIZE = 1000;
+  let allProducts: any[] = [];
+  let from = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('products')
+      .select(`
+        id, product_name, product_code, net_weight, status,
+        metal_id, purity_id, category_id, subcategory_id,
+        metals(name, type),
+        purities(name),
+        categories(name),
+        subcategories(name),
+        product_images(storage_path, is_primary),
+        product_diamonds(size)
+      `)
+      .order('created_at', { ascending: false })
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) {
+      throw error;
+    }
+
+    if (!data || data.length === 0) {
+      break;
+    }
+
+    allProducts = [...allProducts, ...data];
+
+    if (data.length < PAGE_SIZE) {
+      break;
+    }
+
+    from += PAGE_SIZE;
+  }
+
+  console.log('Total products fetched:', allProducts.length);
+
+  return allProducts;
 }
+
 
 export async function setProductStatus(
   productId: string,
