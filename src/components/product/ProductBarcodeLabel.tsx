@@ -5,6 +5,7 @@ import Svg, { Rect, Path, Text as SvgText } from 'react-native-svg';
 import { colors, spacing } from '../../theme';
 import { printHtml } from '../../lib/invoicePdf';
 import { buildLabelsHtml } from '../../lib/barcodeLabelHtml';
+import { hasLabelPrinter, printLabelsBluetooth } from '../../lib/thermalPrint/labelPrinter';
 import {
   LabelData,
   buildLabelLayout,
@@ -75,9 +76,14 @@ export function ProductBarcodeLabel({
     const n = Math.max(1, Math.min(100, parseInt(copies, 10) || 1));
     try {
       setPrinting(true);
-      await printHtml(buildLabelsHtml(Array.from({ length: n }, () => data)));
+
+      if (await hasLabelPrinter()) {
+        await printLabelsBluetooth([data], n);   // one label, printer repeats it n times
+      } else {
+        await printHtml(buildLabelsHtml(Array.from({ length: n }, () => data)));
+      }
     } catch (e: any) {
-      Alert.alert('Error', e.message ?? 'Could not print barcode label');
+      Alert.alert('Error', e?.message ?? 'Could not print barcode label');
     } finally {
       setPrinting(false);
     }

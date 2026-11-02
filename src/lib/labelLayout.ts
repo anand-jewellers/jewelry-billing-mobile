@@ -34,14 +34,14 @@ const MIN_MODULE_DOTS = 2;     // 0.25mm
 const MAX_MODULE_DOTS = 4;     // 0.5mm
 
 // ---- Left block: barcode, digits, then "purity | huid" underneath ----
-const BARS_X = 6.2;            // quiet zone left of the bars
-const QUIET_R = 1.2;           // quiet zone right of the bars
+const BARS_X = 6.0;            // quiet zone left of the bars
+const QUIET_R = 1.5;           // quiet zone right of the bars
 const MAX_BARS_MM = 24;        // barcode width cap
-const BAR_TOP = 3;
+const BAR_TOP = 2.9;
 const BAR_H = 6.2;             // bars end at y = 8.2
-const DIGITS_Y = 11.5;         // barcode number baseline
-const DIGITS_SIZE = 2.5;
-const ID_Y = 14;             // "18K | 23JO9P" baseline
+const DIGITS_Y = 11;         // barcode number baseline
+const DIGITS_SIZE = 2.3;
+const ID_Y = 12.8;             // "18K | 23JO9P" baseline
 const ID_MAX_SIZE = 2.0;
 
 // ---- Right block: item details ----
@@ -59,10 +59,20 @@ export interface LabelText {
   anchor: 'start' | 'middle';
 }
 
+export interface LabelBars {
+  pattern: string;   // CODE128 bits, '1' = bar
+  xMm: number;
+  topMm: number;
+  heightMm: number;
+  moduleMm: number;
+}
+
 export interface LabelLayout {
   barsPath: string;
   texts: LabelText[];
   moduleMm: number;
+  // Raw bar data so the thermal-printer path can draw bars in whole dots.
+  bars: LabelBars | null;
 }
 
 function encodeCode128(value: string): string | null {
@@ -90,12 +100,6 @@ interface Row {
 
 /**
  * SINGLE place that turns a product record (from getProductById) into label data.
- * Both the product detail screen and the bulk-print screen must use this,
- * so the two labels can never drift apart.
- * Returns null when the product has no barcode.
- */
-/**
- * SINGLE place that turns a product record (from getProductById) into label data.
  * Mirrors exactly what the product detail screen computes, so the single-print
  * and bulk-print labels are identical.
  * Returns null when the product has no barcode.
@@ -117,7 +121,7 @@ export function productToLabelData(p: any): LabelData | null {
   return {
     barcode: String(p.barcode),
     productCode: p.product_code ?? null,
-    productName: p.product_name ?? null,   // change to p.product_name if that's your column
+    productName: p.product_name ?? null,
     purity: p.purities?.name ?? '',
     huid: p.huid ?? null,
     category: p.categories?.name ?? '',
@@ -170,10 +174,8 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
   const texts: LabelText[] = [];
 
   // ---------- LEFT BLOCK ----------
-  // Barcode number under the bars
   texts.push({ x: cx, y: DIGITS_Y, size: DIGITS_SIZE, text: code, anchor: 'middle' });
 
-  // "purity | huid" at the bottom of the barcode
   const purity = String(l.purity ?? '').trim();
   const huidText = l.huid ? String(l.huid).trim().toUpperCase() : '';
   const idLine = huidText ? `${purity} | ${huidText}` : purity;
@@ -183,11 +185,9 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
   }
 
   // ---------- RIGHT BLOCK ----------
-  const rows: Row[] = [];   // <-- this line was missing
+  const rows: Row[] = [];
   const code2 = String(l.productCode ?? '').trim().toUpperCase();
-  // Product name replaces category; falls back to category if the name is empty
   const nameText = String(l.productName || l.category || '').trim().toUpperCase();
-  // Keep it short when a code sits beside it, so the font doesn't shrink
   const cat = nameText.slice(0, code2 ? 10 : 24);
   if (cat && code2) rows.push({ left: cat, right: code2 });
   else if (cat) rows.push({ left: cat });
@@ -211,7 +211,6 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
   const avail = x0 + PRINT_W_MM - textX - RIGHT_PAD_MM;
   const maxRowH = Math.min(MAX_ROW_H, (LABEL_H_MM - 1.2) / rows.length);
 
-  // Column widths in characters, so the "|" lines up on every paired row
   const pairs = rows.filter((r) => r.right);
   const singles = rows.filter((r) => !r.right);
   const maxL = Math.max(0, ...pairs.map((r) => r.left.length));
@@ -220,16 +219,13 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
   const pairChars = pairs.length ? maxL + maxR + 3 : 0;
   const widest = Math.max(pairChars, maxSingle, 1);
 
-  // Font size is unchanged: capped by row height AND available width
   const size = r2(Math.min(maxRowH * 0.8, avail / (widest * CHAR_W)));
-  // Line pitch now follows the font size, so rows sit closer together
   const rowH = Math.min(maxRowH, size * LINE_RATIO);
   const cw = size * CHAR_W;
   const pipeX = textX + (maxL + 1) * cw;
   const rightX = textX + (maxL + 2) * cw;
 
-  // Block is still centred vertically on the label
-  const RIGHT_TOP_MARGIN_MM = 3;
+  const RIGHT_TOP_MARGIN_MM = 4;
   const top = RIGHT_TOP_MARGIN_MM;
   rows.forEach((row, i) => {
     const y = top + i * rowH + rowH * 0.78;
@@ -240,5 +236,12 @@ export function buildLabelLayout(l: LabelData): LabelLayout {
     }
   });
 
-  return { barsPath, texts, moduleMm };
+  return {
+    barsPath,
+    texts,
+    moduleMm,
+    bars: pattern
+      ? { pattern, xMm: barsX, topMm: BAR_TOP, heightMm: BAR_H, moduleMm }
+      : null,
+  };
 }

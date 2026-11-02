@@ -1,5 +1,3 @@
-// src\lib\thermalPrint\printerStore.ts
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export interface SavedPrinter {
@@ -8,17 +6,22 @@ export interface SavedPrinter {
   type: 'BLUETOOTH' | 'WIFI' | 'ETHERNET' | 'USB';
 }
 
-const KEY = 'thermal_printer_config';
+export type PrinterKind = 'bill' | 'label';
 
-export async function getSavedPrinter(): Promise<SavedPrinter | null> {
-  const raw = await AsyncStorage.getItem(KEY);
+const KEYS: Record<PrinterKind, string> = {
+  bill: 'thermal_printer_config',   // unchanged, so your saved bill printer keeps working
+  label: 'label_printer_config',
+};
+
+export async function getSavedPrinter(kind: PrinterKind = 'bill'): Promise<SavedPrinter | null> {
+  const raw = await AsyncStorage.getItem(KEYS[kind]);
   return raw ? JSON.parse(raw) : null;
 }
 
-export async function saveSavedPrinter(p: SavedPrinter): Promise<void> {
-  await AsyncStorage.setItem(KEY, JSON.stringify(p));
+export async function saveSavedPrinter(p: SavedPrinter, kind: PrinterKind = 'bill'): Promise<void> {
+  await AsyncStorage.setItem(KEYS[kind], JSON.stringify(p));
 }
 
-export async function clearSavedPrinter(): Promise<void> {
-  await AsyncStorage.removeItem(KEY);
+export async function clearSavedPrinter(kind: PrinterKind = 'bill'): Promise<void> {
+  await AsyncStorage.removeItem(KEYS[kind]);
 }

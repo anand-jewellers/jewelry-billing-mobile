@@ -21,6 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { PageGuard } from '../../../src/components/PageGuard';
 import { ComponentGuard } from '../../../src/components/ComponentGuard';
 import { useStaff } from '../../../src/context/StaffContext';
+import { hasLabelPrinter, printLabelsBluetooth } from '../../../src/lib/thermalPrint/labelPrinter';
 import {
   Search,
   X,
@@ -405,7 +406,12 @@ function ProductListScreenInner() {
         return;
       }
 
-      await printHtml(buildLabelsHtml(labels));
+      // await printHtml(buildLabelsHtml(labels));
+      if (await hasLabelPrinter()) {
+        await printLabelsBluetooth(labels);
+      } else {
+        await printHtml(buildLabelsHtml(labels));
+      }
 
       if (skipped.length) {
         Alert.alert('Some products skipped', `No barcode saved for: ${skipped.join(', ')}`);

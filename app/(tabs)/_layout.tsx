@@ -18,6 +18,7 @@ import { AppHeader } from '../../src/components/AppHeader';
 import { useStaff } from '../../src/context/StaffContext';
 import type { PageKey } from '../../src/types/settings';
 import DailyRatePrompt from '../../src/components/DailyRatePrompt';
+import { LabelRasterHost } from '../../src/components/print/LabelRasterHost';
 
 const ACTIVE_COLOR = '#1E3A8A';
 const DESKTOP_BREAKPOINT = 768;
@@ -369,6 +370,7 @@ export default function TabsLayout() {
         <View style={styles.tabsContainer}>
           <Tabs screenOptions={screenOptions}>{screens}</Tabs>
           <DailyRatePrompt />
+          <LabelRasterHost />
         </View>
       </View>
     </View>

@@ -167,18 +167,31 @@ export interface ShareableProductWithImage extends ShareableProduct {
   imageUrl?: string | null;
 }
 
-// Max products sent in one go (one photo + caption each).
+// Max photos for the goldsmith order share (NOT the product share).
 const MAX_SHARE_IMAGES = 10;
+
+// Products per WhatsApp send. Selections larger than this are sent in
+// several batches (one WhatsApp send per batch). WhatsApp allows about 30
+// attachments per share, so keep this at 30 or below.
+const SHARE_BATCH_SIZE = 15;
 
 function buildProductLines(p: ShareableProduct, imageUrl?: string | null, indent = ''): string[] {
   const lines: string[] = [];
+  const code = productCodeOf(p);
+  if (code) lines.push(`${indent}Code: ${code}`);
   if (p.metals?.name) lines.push(`${indent}Metal: ${p.metals.name}`);
   if (p.purities?.name) lines.push(`${indent}Purity: ${p.purities.name}`);
   if (p.net_weight != null) lines.push(`${indent}Weight: ${Number(p.net_weight).toFixed(3)} g`);
-  // Only used by the text-only builders below. The attachment flow always
-  // passes imageUrl = null, so no URL appears in the caption.
   if (imageUrl) lines.push(`${indent}${imageUrl}`);
   return lines;
+}
+
+// Product code shown on the photo and in the caption.
+// Adjust the field names to match your ShareableProduct type.
+function productCodeOf(p: any): string | null {
+  const raw = p?.product_code ?? p?.code ?? p?.sku ?? p?.barcode ?? null;
+  const s = raw == null ? '' : String(raw).trim();
+  return s || null;
 }
 
 // Shop name on top, review link, then website at the bottom.
@@ -189,12 +202,16 @@ function wrapWithShopInfo(body: string, shop?: ShopShareInfo | null): string {
   return `${header}${withReview(body, shop?.reviewUrl)}${footer}`;
 }
 
+// startNumber lets later batches keep counting (16., 17., ...).
 export function buildMultiProductShareMessage(
   products: ShareableProductWithImage[],
-  shop?: ShopShareInfo | null
+  shop?: ShopShareInfo | null,
+  startNumber = 1
 ): string {
   const blocks = products.map((p, i) => {
-    const lines = [`${i + 1}. *${p.product_name}*`, ...buildProductLines(p, p.imageUrl, '   ')];
+    // Same label as on the photo: product code, or serial number if there is no code
+    const label = productCodeOf(p) ?? String(startNumber + i);
+    const lines = [`${label}. *${p.product_name}*`, ...buildProductLines(p, p.imageUrl, '   ')];
     return lines.join('\n');
   });
   return wrapWithShopInfo(blocks.join('\n\n'), shop);
@@ -415,7 +432,18 @@ async function shareOneProduct(
   // Company logo in the top-right corner (falls back to the plain photo on any problem)
   let fileUri = file.uri;
   let fileMime = file.mime;
+
+  const code = productCodeOf(product);
+  if (code) {
+    const r = await stampNumberOnImage(fileUri, code);
+    if (r.ok) {
+      fileUri = r.uri;
+      fileMime = 'image/jpeg';
+    }
+  }
+
   if (ENABLE_LOGO_WATERMARK) {
+    // ... existing logo code
     const logo = await prepareLogoFile(shop);
     if (logo) {
       const r = await stampLogoOnImage(fileUri, logo);
@@ -471,7 +499,7 @@ type StampResult = { uri: string; ok: boolean; note?: string };
 // Stamps a big number (top-left) on a local image using react-native-image-marker v2.
 // Tries the possible `position` shapes until one works. If all fail, returns the
 // original photo plus the real error text.
-async function stampNumberOnImage(uri: string, n: number): Promise<StampResult> {
+async function stampNumberOnImage(uri: string, label: string): Promise<StampResult> {
   const Marker = MarkerMod?.default ?? MarkerMod;
   if (!Marker?.markText) {
     return {
@@ -483,12 +511,17 @@ async function stampNumberOnImage(uri: string, n: number): Promise<StampResult> 
 
   const size = await Promise.race([getImageSize(uri), sleep(3000).then(() => null)]);
   const base = Math.min(size?.width ?? 1000, size?.height ?? 1000);
-  const fontSize = Math.max(48, Math.round(base * 0.16));
+
+  // Big for short labels, smaller for long codes so the text stays in the
+  // top-left ~55% of the photo (the logo sits in the top-right).
+  const text = label;
+  const maxByWidth = ((size?.width ?? 1000) * 0.55) / (0.6 * Math.max(1, text.length));
+  const fontSize = Math.max(24, Math.round(Math.min(base * 0.16, maxByWidth)));
   const pad = Math.round(fontSize * 0.3);
   const margin = Math.round(fontSize * 0.35);
-  const text = `${n}`;
 
   const bgTypes = MarkerMod?.TextBackgroundType ?? Marker?.TextBackgroundType;
+  // ... rest unchanged
   const bgType = bgTypes?.stretchX ?? 'stretchX';
   const fmt = (MarkerMod?.ImageFormat ?? Marker?.ImageFormat)?.jpg;
   const PositionEnum = MarkerMod?.Position ?? Marker?.Position;
@@ -702,26 +735,34 @@ function debugToast(msg: string) {
   if (Platform.OS === 'android') ToastAndroid.show(msg.slice(0, 120), ToastAndroid.LONG);
 }
 
-// Sends ALL selected products in ONE WhatsApp send: every photo attached
+// Sends one batch of products in ONE WhatsApp send: every photo attached
 // together (numbered top-left, company logo top-right), plus one caption
-// listing the products in the same order as the photos (1., 2., 3.).
-// One tap, one Send.
+// listing the products in the same order as the photos.
+//
+// startNumber is the number of the first product in this batch, so photo
+// badges and caption lines keep counting across batches (16, 17, ...).
 async function shareProductsTogether(
   list: ShareableProductWithImage[],
   shop: ShopShareInfo | null | undefined,
-  phone: string | null
+  phone: string | null,
+  startNumber = 1
 ): Promise<void> {
   const caption = buildMultiProductShareMessage(
     list.map((p) => ({ ...p, imageUrl: null })), // no image URLs in the text
-    shop
+    shop,
+    startNumber
   );
 
   // Each photo keeps its product's position in the list, so the badge number
-  // always matches the caption (1., 2., 3.) even if some products have no photo.
+  // always matches the caption even if some products have no photo.
   const withImages = list
-    .map((p, index) => ({ url: p.imageUrl, number: index + 1 }))
-    .filter((x): x is { url: string; number: number } => !!x.url);
-  const urls = withImages.map((x) => x.url);
+    .map((p, index) => ({
+      url: p.imageUrl,
+      number: startNumber + index,
+      label: productCodeOf(p) ?? String(startNumber + index), // code, else serial
+    }))
+    .filter((x): x is { url: string; number: number; label: string } => !!x.url);
+  const urls = withImages.map((x) => x.url);   // <- add this back
 
   // ---- Web: browser share sheet with all photos ----
   if (Platform.OS === 'web') {
@@ -765,7 +806,7 @@ async function shareProductsTogether(
           let cur = d.uri;
 
           if (ENABLE_NUMBER_STAMP) {
-            const r = await stampNumberOnImage(cur, withImages[i].number);
+            const r = await stampNumberOnImage(cur, withImages[i].label); // was .number
             if (r.ok) cur = r.uri;
             else numberNote = numberNote ?? r.note;
           }
@@ -779,7 +820,7 @@ async function shareProductsTogether(
         if (numberNote) Alert.alert('Numbering failed', numberNote);
         return out;
       })(),
-      sleep(30000).then(() => null), // never let stamping block the share
+      sleep(60000).then(() => null), // never let stamping block the share
     ]);
 
     if (results && results.length === plainFiles.length) {
@@ -812,31 +853,34 @@ async function shareProductsTogether(
 }
 
 /**
- * Shares products ONE BY ONE from a SINGLE tap: photo + its own details,
- * then the next photo + its details, and so on.
+ * Shares the selected products from a SINGLE tap.
+ *
+ * mode 'together' (default): photos go out in batches of SHARE_BATCH_SIZE.
+ *   Each batch is ONE WhatsApp send (all its photos + one numbered caption).
+ *   With 15 per batch, 25 products = 2 sends (1-15, 16-25). After the user
+ *   sends a batch and comes back to the app, a "Batch 2 of 2" prompt opens
+ *   the next one. Numbers keep counting across batches.
+ *
+ * mode 'oneByOne': photo + its own details, then the next product, and so on.
  *
  * WhatsApp never lets an app press "Send" for the user, so the user still
- * taps Send inside WhatsApp for each product. What the app does
- * automatically: when the user comes back from WhatsApp, the next product
- * opens by itself.
+ * taps Send inside WhatsApp for each send. What the app does automatically:
+ * when the user comes back from WhatsApp, the next batch / product opens.
  *
- * This function resolves as soon as the FIRST product has been handed to
+ * This function resolves as soon as the FIRST send has been handed to
  * WhatsApp, so the caller's loading spinner stops right away. The remaining
- * products continue in the background.
+ * sends continue in the background.
  *
- * - Android: each product opens the customer's chat (when opts.phone is
- *   given). Tap Send, press back, the next one opens.
- * - iPhone: one notice at the start; for each product choose WhatsApp,
- *   paste the caption (already copied), Send, and come back.
- * - Web: a confirm box is shown between products (browsers need a fresh
- *   tap per share).
+ * - Android: opens the customer's chat when opts.phone is given.
+ * - iPhone: one notice at the start; choose WhatsApp, paste the caption
+ *   (already copied), Send, and come back.
+ * - Web: a confirm box is shown between sends (browsers need a fresh tap).
  *
  * Every photo carries the company logo in its top-right corner.
  *
  * opts.phone        customer's number, opens that chat directly on Android.
- * opts.confirmEach  true = show a "Share next?" prompt between products.
- * opts.mode         'together' (default): ALL photos in one WhatsApp send with
- *                   one numbered caption. 'oneByOne': separate sends, as above.
+ * opts.confirmEach  true = show a "Share next?" prompt between products (oneByOne).
+ * opts.mode         'together' (default) or 'oneByOne'.
  */
 export async function shareProductsWithImages(
   products: ShareableProductWithImage[],
@@ -845,7 +889,7 @@ export async function shareProductsWithImages(
 ): Promise<void> {
   if (!products.length) return;
 
-  const list = products.slice(0, MAX_SHARE_IMAGES);
+  const list = products; // all selected products, no cap
   const total = list.length;
   const phone = normalizeWhatsAppPhone(opts?.phone ?? null);
   const isWeb = Platform.OS === 'web';
@@ -860,10 +904,13 @@ export async function shareProductsWithImages(
 
   // iPhone: one notice up front (WhatsApp there ignores the attached caption)
   if (Platform.OS === 'ios' && list.some((p) => p.imageUrl)) {
+    const batched = together && total > SHARE_BATCH_SIZE;
     const ok = await confirmStep(
       total > 1 ? `Sharing ${total} products` : 'Details copied',
       together
-        ? 'All photos open in WhatsApp together. Choose WhatsApp, long-press the caption box and tap Paste to add the details, then Send.'
+        ? batched
+          ? `Products open in WhatsApp in batches of ${SHARE_BATCH_SIZE}. For each batch: choose WhatsApp, long-press the caption box and tap Paste to add the details, then Send and come back to the app.`
+          : 'All photos open in WhatsApp together. Choose WhatsApp, long-press the caption box and tap Paste to add the details, then Send.'
         : total > 1
           ? 'Products open in WhatsApp one by one. For each: choose WhatsApp, long-press the caption box and tap Paste, then Send and come back to the app.'
           : 'Choose WhatsApp, then long-press the caption box and tap Paste.',
@@ -872,11 +919,70 @@ export async function shareProductsWithImages(
     if (!ok) return;
   }
 
+  // ---------------------------------------------------------
+  // TOGETHER: batches of SHARE_BATCH_SIZE, one WhatsApp send per batch
+  // ---------------------------------------------------------
   if (together) {
-    await shareProductsTogether(list, shop, phone);
+    // Small selection: a single send, no batching
+    if (total <= SHARE_BATCH_SIZE) {
+      await shareProductsTogether(list, shop, phone, 1);
+      return;
+    }
+
+    const batches: ShareableProductWithImage[][] = [];
+    for (let i = 0; i < total; i += SHARE_BATCH_SIZE) {
+      batches.push(list.slice(i, i + SHARE_BATCH_SIZE));
+    }
+
+    let release: () => void = () => { };
+    const firstBatchLaunched = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const runBatches = async () => {
+      try {
+        for (let b = 0; b < batches.length; b++) {
+          const batch = batches[b];
+          const start = b * SHARE_BATCH_SIZE + 1;
+          const end = start + batch.length - 1;
+
+          if (b > 0) {
+            const ok = await confirmStep(
+              `Batch ${b + 1} of ${batches.length}`,
+              `Products ${start}–${end} are next.`,
+              'Share'
+            );
+            if (!ok) return;
+          }
+
+          // Start watching BEFORE launching so the app->WhatsApp->app trip is never missed
+          const watcher = watchAwayAndBack();
+          await shareProductsTogether(batch, shop, phone, start);
+          if (b === 0) release(); // stop the caller's spinner after the first launch
+
+          if (b < batches.length - 1) {
+            const backInApp = await watcher.wait();
+            if (!backInApp) return; // WhatsApp never opened, or user took too long
+            await sleep(400);
+          } else {
+            watcher.cancel();
+          }
+        }
+      } catch (e) {
+        console.warn('Batch share stopped', e);
+      } finally {
+        release();
+      }
+    };
+
+    void runBatches();
+    await firstBatchLaunched;
     return;
   }
 
+  // ---------------------------------------------------------
+  // ONE BY ONE (mode: 'oneByOne', or a single product)
+  // ---------------------------------------------------------
   let releaseCaller: () => void = () => { };
   const firstLaunched = new Promise<void>((resolve) => {
     releaseCaller = resolve;
