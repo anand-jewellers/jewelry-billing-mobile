@@ -387,7 +387,7 @@ export default function OrderDetailScreen() {
           <Button label={updating ? 'Updating…' : 'Mark as Ready'} onPress={markReady} disabled={updating} />
         )}
 
-        {order.status === 'ready' && (
+        {order.status === 'ready' && !order.invoice_id && (
           <>
             <Button label="Create Invoice" onPress={goToCreateInvoice} />
 

@@ -8,15 +8,21 @@ import { DateFilter, DateFilterValue } from '../../src/components/ui/DateFilter'
 import { colors, spacing } from '../../src/theme';
 import { listMetals, listPurities, listCurrentRates } from '../../src/lib/api/settings';
 import { getDashboardSummary } from '../../src/lib/api/invoices';
-import { resolveRange, getSalesReport, ReportSummary } from '../../src/lib/api/reports';
+import {
+  resolveRange,
+  getSalesReport,
+  countRepairsInRange,
+  countOrdersInRange,
+  ReportSummary,
+} from '../../src/lib/api/reports';
 import { downloadSalesReportPdf } from '../../src/lib/pdfReport';
 import type { Metal, Purity, CurrentMetalRate } from '../../src/types/settings';
 import { PaymentBreakdownChart } from '../../src/components/ui/PaymentBreakdownChart';
 import { PageGuard } from '../../src/components/PageGuard';
 import { ComponentGuard } from '../../src/components/ComponentGuard';
 import { useStaff } from '../../src/context/StaffContext';
-import { countPendingRepairs } from '../../src/lib/api/repairs';
-import { countOpenOrders } from '../../src/lib/api/customerOrders';
+// import { countPendingRepairs } from '../../src/lib/api/repairs';
+// import { countOpenOrders } from '../../src/lib/api/customerOrders';
 
 // ---- Navigation targets (change these if your routes are named differently) ----
 const ROUTE_INVOICES = '/invoices';
@@ -198,8 +204,8 @@ function DashboardScreenInner() {
   // ---- Static counts, not date-dependent ----
   const [totalCustomers, setTotalCustomers] = useState(0);
   const [totalProducts, setTotalProducts] = useState(0);
-  const [pendingRepairs, setPendingRepairs] = useState(0);
-  const [openOrders, setOpenOrders] = useState(0);
+  const [repairCount, setRepairCount] = useState(0);
+  const [orderCount, setOrderCount] = useState(0);
 
   // ---- Date filter drives everything below ----
   const [filter, setFilter] = useState<DateFilterValue>({ mode: 'today' });
@@ -233,8 +239,6 @@ function DashboardScreenInner() {
         setTotalProducts(s.totalProducts);
       })
       .catch(() => { });
-    countPendingRepairs().then(setPendingRepairs).catch(() => { });
-    countOpenOrders().then(setOpenOrders).catch(() => { });
   }, [canStats]);
 
   const loadReport = useCallback(
@@ -245,15 +249,22 @@ function DashboardScreenInner() {
       }
       setReportLoading(true);
       const range = resolveRange(value);
-      getSalesReport(range)
-        .then((r) => {
+
+      Promise.all([
+        getSalesReport(range),
+        canStats ? countRepairsInRange(range) : Promise.resolve(0),
+        canStats ? countOrdersInRange(range) : Promise.resolve(0),
+      ])
+        .then(([r, reps, ords]) => {
           setReport(r);
+          setRepairCount(reps);
+          setOrderCount(ords);
           setReportError(null);
         })
         .catch((e) => setReportError(e.message ?? 'Could not load dashboard data.'))
         .finally(() => setReportLoading(false));
     },
-    [needsReport]
+    [needsReport, canStats]
   );
 
   useFocusEffect(
@@ -265,8 +276,8 @@ function DashboardScreenInner() {
   );
 
   function handleFilterChange(value: DateFilterValue) {
-  setFilter(value);
-}
+    setFilter(value);
+  }
 
   async function handleDownload() {
     if (!report) return;
@@ -345,13 +356,13 @@ function DashboardScreenInner() {
     {
       icon: 'construct-outline',
       label: 'Repair',
-      value: String(pendingRepairs),
+      value: reportLoading ? '…' : String(repairCount),
       route: ROUTE_REPAIRS_LIST,
     },
     {
       icon: 'clipboard-outline',
       label: 'Orders',
-      value: String(openOrders),
+      value: reportLoading ? '…' : String(orderCount),
       route: ROUTE_ORDERS,
     },
   ];

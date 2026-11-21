@@ -1,6 +1,6 @@
 // src/components/invoice/BarcodeScannerModal.tsx
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Modal, View, Text, TextInput, StyleSheet, Pressable, Platform } from 'react-native';
+import { Modal, View, Text, TextInput, StyleSheet, Pressable, Platform, Keyboard } from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, Zap, ZapOff } from 'lucide-react-native';
@@ -17,7 +17,10 @@ const CONFIRM_WINDOW_MS = 900;     // the same value must be read twice within t
 const CAMERA_START_DELAY_MS = 250; // let the Modal finish animating before the camera starts
 const USB_KEY_GAP_MS = 100;        // scanners type much faster than a human; a longer gap restarts the buffer
 const USB_MIN_LENGTH = 3;          // ignore very short bursts
-const MANUAL_BAR_LIFT = 56;        // extra space above the bottom inset (increase for more margin)
+const MANUAL_BAR_LIFT = 56;        // extra space above the bottom inset when the keyboard is closed
+const KEYBOARD_GAP = 20;           // space between the input bar and the keyboard
+const FRAME_LIFT = 20;             // extra upward shift of the scan box while typing
+const MANUAL_BAR_HEIGHT = 48;      // approximate height of the input bar
 
 export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
   const isWeb = Platform.OS === 'web';
@@ -27,6 +30,12 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
   const [manualCode, setManualCode] = useState('');
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
+
+  // Keyboard handling
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [overlap, setOverlap] = useState(0); // how many px the keyboard covers our container
+  const containerRef = useRef<View>(null);
+  const keyboardTopRef = useRef<number | null>(null); // screen Y where the keyboard starts
 
   const lockRef = useRef(false);
   const lastReadRef = useRef<{ value: string; at: number } | null>(null);
@@ -64,6 +73,45 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
     }
     return clearStartTimer;
   }, [visible]);
+
+  // ---- Keyboard: measure how much of our container the keyboard really covers ----
+  const recomputeOverlap = useCallback(() => {
+    const top = keyboardTopRef.current;
+    if (top == null) {
+      setOverlap(0);
+      return;
+    }
+    containerRef.current?.measureInWindow((_x, y, _w, h) => {
+      setOverlap(Math.max(0, Math.round(y + h - top)));
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!visible || isWeb) return;
+
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const showSub = Keyboard.addListener(showEvent, (e) => {
+      keyboardTopRef.current = e.endCoordinates.screenY;
+      setKeyboardOpen(true);
+      recomputeOverlap();
+      setTimeout(recomputeOverlap, 150); // re-measure after Android finishes resizing the window
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      keyboardTopRef.current = null;
+      setKeyboardOpen(false);
+      setOverlap(0);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+      keyboardTopRef.current = null;
+      setKeyboardOpen(false);
+      setOverlap(0);
+    };
+  }, [visible, isWeb, recomputeOverlap]);
 
   // ---- USB physical scanner (web desktop) ----
   useEffect(() => {
@@ -145,6 +193,7 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
     const code = manualCode.trim();
     if (!code) return;
     setManualCode('');
+    Keyboard.dismiss();
     onScanned(code);
   };
 
@@ -177,6 +226,8 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
     );
   }
 
+  const typing = !isWeb && keyboardOpen;
+
   return (
     <Modal
       visible
@@ -185,7 +236,12 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
       onShow={startCamera}          // start the camera only after the Modal is on screen
       onRequestClose={onClose}
     >
-      <View style={styles.container}>
+      <View
+        ref={containerRef}
+        collapsable={false}         // required so measureInWindow works on Android
+        onLayout={recomputeOverlap} // re-measure if the window resizes
+        style={styles.container}
+      >
         {!isWeb && cameraOn && (
           <CameraView
             key={cameraKey}
@@ -200,7 +256,17 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
           />
         )}
 
-        <View style={styles.frame} pointerEvents="none">
+        {/* Scan box + hint: moves up while the keyboard is open */}
+        <View
+          style={[
+            styles.frame,
+            typing && {
+              paddingBottom: overlap + KEYBOARD_GAP + MANUAL_BAR_HEIGHT, // keep clear of the input bar
+              transform: [{ translateY: -FRAME_LIFT }],                  // extra 20px lift
+            },
+          ]}
+          pointerEvents="none"
+        >
           {isWeb ? (
             <Text style={styles.hint}>
               Scan the label with your USB scanner{'\n'}or type the product code below
@@ -225,8 +291,18 @@ export function BarcodeScannerModal({ visible, onClose, onScanned }: Props) {
         </View>
 
         {/* Fallback: type the code if the camera can't decode the printed label.
-            Lifted above the Android navigation bar using the safe-area inset. */}
-        <View style={[styles.manualBar, { bottom: insets.bottom + MANUAL_BAR_LIFT }]}>
+            Closed keyboard: lifted above the Android navigation bar by the safe-area inset.
+            Open keyboard: sits KEYBOARD_GAP px above the keyboard. */}
+        <View
+          style={[
+            styles.manualBar,
+            {
+              bottom: typing
+                ? overlap + KEYBOARD_GAP
+                : insets.bottom + MANUAL_BAR_LIFT,
+            },
+          ]}
+        >
           <TextInput
             style={styles.manualInput}
             placeholder="Or type the product code"

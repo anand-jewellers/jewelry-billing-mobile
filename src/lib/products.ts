@@ -14,7 +14,11 @@ export async function getMetals() {
 
 export async function getPurities(metalId: string) {
   const { data, error } = await supabase
-    .from('purities').select('*').eq('metal_id', metalId).eq('is_active', true).order('name');
+    .from('purities')
+    .select('*')
+    .eq('metal_id', metalId)
+    .eq('is_active', true)
+    .order('created_at', { ascending: false }); // newest first: 916, SADHA, 18K like the purity master
   if (error) throw error;
   return data;
 }

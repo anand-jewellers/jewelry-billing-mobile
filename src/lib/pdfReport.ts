@@ -139,8 +139,8 @@ const w3 = (n: number) => (n > 0 ? `${Number(n.toFixed(3))} g` : '');
 // Column names, shown under every section title
 const COLUMN_HEAD = `
     <tr class="colHead">
-      <th>Metal</th><th>Bill No</th><th>Product Name</th><th class="num">WT</th>
-      <th>LOC (Remarks)</th><th>Old Metal</th><th class="num">Old WT</th><th class="num">Paid Amount</th>
+      <th>Metal</th><th>Bill No</th><th>Product Name</th><th class="num">Weight</th>
+      <th>LOC (Remarks)</th><th>Old Metal</th><th class="num">Old WT</th><th class="num">Paid Amount</th><th>Payment Mode</th>
     </tr>`;
 
 function lineRow(l: ReportLine): string {
@@ -166,6 +166,7 @@ function lineRow(l: ReportLine): string {
       <td>${esc(l.oldMetal)}</td>
       <td class="num">${esc(l.oldWeight)}</td>
       <td class="num strong">${paid}</td>
+      <td>${esc(l.payMode)}</td>
     </tr>`;
 }
 
@@ -179,7 +180,7 @@ function sectionHtml(report: FullReport, s: (typeof SECTIONS)[number]): string {
   const label = s.kind === 'cp' ? 'Total paid out' : 'Total received';
 
   return `
-    <tr class="sectionRow"><td colspan="8" style="background:${s.color}">${esc(s.title)}</td></tr>
+    <tr class="sectionRow"><td colspan="9" style="background:${s.color}">${esc(s.title)}</td></tr>
     ${COLUMN_HEAD}
     ${rows.map(lineRow).join('')}
     <tr class="subtotal">
@@ -189,6 +190,7 @@ function sectionHtml(report: FullReport, s: (typeof SECTIONS)[number]): string {
       <td></td>
       <td class="num">${w3(oldWt)}</td>
       <td class="num">${s.kind === 'cp' ? `<span class="out">- ${inr(sum)}</span>` : inr(sum)}</td>
+      <td></td>
     </tr>`;
 }
 
@@ -206,7 +208,7 @@ function buildReportHtml(report: FullReport, shop: ShopDetails, logoSrc: string)
   const showDateRange = report.range.label !== formattedRange;
 
   // A blank gap row between the bill sections (INV / REP / ORD / CP)
-  const gapRow = `<tr class="gapRow"><td colspan="8"></td></tr>`;
+  const gapRow = `<tr class="gapRow"><td colspan="9"></td></tr>`;
   const body = SECTIONS.map((s) => sectionHtml(report, s))
     .filter(Boolean)
     .join(gapRow);
@@ -219,7 +221,7 @@ function buildReportHtml(report: FullReport, shop: ShopDetails, logoSrc: string)
       <style>
         @page { size: A4 portrait; margin: 0; }
         * { box-sizing: border-box; font-family: -apple-system, Helvetica, Arial, sans-serif; }
-        html, body { margin: 0; padding: 0; }
+        html, body { width: 210mm; margin: 0; padding: 0; }
         body { padding: 0 7mm; color: #1a1a2e; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
         .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
@@ -251,8 +253,8 @@ function buildReportHtml(report: FullReport, shop: ShopDetails, logoSrc: string)
         .card .cv { font-size: 14px; font-weight: 700; margin-top: 1px; }
         table.data tr.gapRow td { height: 18px; }
         .pageBottom { height: 10mm; }
-        col.cMetal { width: 9%; } col.cBill { width: 18%; } col.cProd { width: 19%; } col.cWt { width: 8%; }
-        col.cLoc { width: 17%; } col.cOld { width: 10%; } col.cOldWt { width: 8%; } col.cPaid { width: 11%; }
+        col.cMetal { width: 8%; } col.cBill { width: 15%; } col.cProd { width: 18%; } col.cWt { width: 8%; }
+col.cLoc { width: 15%; } col.cOld { width: 9%; } col.cOldWt { width: 8%; } col.cPaid { width: 11%; } col.cMode { width: 8%; }
 
         tr.sectionRow td { color: #fff; font-weight: 700; font-size: 10px; padding: 5px 6px; border: none; }
         tr.sectionRow, tr.colHead { break-after: avoid; page-break-after: avoid; }
@@ -271,10 +273,10 @@ function buildReportHtml(report: FullReport, shop: ShopDetails, logoSrc: string)
       <table class="data">
         <colgroup>
           <col class="cMetal" /><col class="cBill" /><col class="cProd" /><col class="cWt" />
-          <col class="cLoc" /><col class="cOld" /><col class="cOldWt" /><col class="cPaid" />
+<col class="cLoc" /><col class="cOld" /><col class="cOldWt" /><col class="cPaid" /><col class="cMode" />
         </colgroup>
         <thead>
-          <tr class="headRow"><td colspan="8">
+          <tr class="headRow"><td colspan="9">
             <div class="header">
               <div class="companyBlock">
                 ${logoSrc ? `<img class="companyLogo" src="${logoSrc}" />` : ''}
@@ -293,10 +295,11 @@ function buildReportHtml(report: FullReport, shop: ShopDetails, logoSrc: string)
           </td></tr>
         </thead>
         <tfoot>
-          <tr class="spacerRow"><td colspan="8"><div class="pageBottom"></div></td></tr>
+          <tr class="spacerRow"><td colspan="9"><div class="pageBottom"></div></td></tr>
         </tfoot>
         <tbody>
-          <tr class="countsRow"><td colspan="8">
+          <tr class="countsRow"><td colspan="9
+          ">
             <div class="cards">
               <div class="card" style="background:#1a2a5e"><div class="cl">Invoices</div><div class="cv">${t.invoiceCount}</div></div>
               <div class="card" style="background:#b45309"><div class="cl">Repairs</div><div class="cv">${t.repairCount}</div></div>
@@ -304,7 +307,7 @@ function buildReportHtml(report: FullReport, shop: ShopDetails, logoSrc: string)
               <div class="card" style="background:#b91c1c"><div class="cl">Cash purchases</div><div class="cv">${t.purchaseCount}</div></div>
             </div>
           </td></tr>
-          ${body || '<tr><td colspan="8" style="text-align:center;color:#999">No entries in this period</td></tr>'}
+          ${body || '<tr><td colspan="9" style="text-align:center;color:#999">No entries in this period</td></tr>'}
         </tbody>
       </table>
 
@@ -355,10 +358,10 @@ export async function downloadSalesReportPdf(
   if (Platform.OS === 'web') {
     const iframe = document.createElement('iframe');
     iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
+    iframe.style.left = '-10000px';   // off-screen, but with a real size
+    iframe.style.top = '0';
+    iframe.style.width = '210mm';
+    iframe.style.height = '297mm';
     iframe.style.border = 'none';
     document.body.appendChild(iframe);
 

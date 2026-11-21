@@ -89,6 +89,55 @@ export async function searchProducts(query: string): Promise<Product[]> {
   return data ?? [];
 }
 
+// Product NAMES only, for the name dropdown in the item sheet.
+// Returns nothing for an empty query. Names that START with the typed
+// text come first, then names that merely contain it. Max `limit` names.
+export async function searchProductNames(query: string, limit = 5): Promise<string[]> {
+  const safe = query.trim().replace(/[,()%]/g, '');
+  if (!safe) return [];
+
+  const seen = new Set<string>();
+  const names: string[] = [];
+
+  const collect = (rows: any[] | null) => {
+    for (const row of rows ?? []) {
+      const name = String(row.product_name ?? '').trim();
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      names.push(name);
+      if (names.length >= limit) return;
+    }
+  };
+
+  // 1) names starting with the typed text
+  const starts = await supabase
+    .from('products')
+    .select('product_name')
+    .is('deleted_at', null)
+    .ilike('product_name', `${safe}%`)
+    .order('product_name')
+    .limit(40);
+  if (starts.error) throw starts.error;
+  collect(starts.data);
+
+  // 2) fill the rest with names that contain it
+  if (names.length < limit) {
+    const contains = await supabase
+      .from('products')
+      .select('product_name')
+      .is('deleted_at', null)
+      .ilike('product_name', `%${safe}%`)
+      .order('product_name')
+      .limit(40);
+    if (contains.error) throw contains.error;
+    collect(contains.data);
+  }
+
+  return names.slice(0, limit);
+}
+
+
 // ---------------------------------------------------------
 // Rates / making charges / tax
 // ---------------------------------------------------------
@@ -189,7 +238,7 @@ export interface CreateInvoiceInput {
   paymentSplits: PaymentSplitEntry[];
   exchangeItems: ExchangeItem[];
   exchangeTotal: number;
-  remark: string; // NEW — mandatory internal-reference note
+  remark: string | null; // NEW — mandatory internal-reference note
 }
 
 export type PaymentStatus = 'paid' | 'partial' | 'unpaid';
@@ -293,7 +342,7 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice>
     // NEW — this requires a matching `p_remark text default null` parameter
     // on the create_invoice_with_items RPC, and a `remark` column on
     // `invoices`, before it actually persists.
-    p_remark: input.remark.trim(),
+    p_remark: input.remark?.trim() || null,
   });
 
   if (error) throw error;

@@ -12,6 +12,7 @@ import {
   StyleSheet,
   Animated,
   Platform,
+  Keyboard,
 } from 'react-native';
 import { colors } from '../../src/theme';
 import { AppHeader } from '../../src/components/AppHeader';
@@ -27,7 +28,7 @@ const SIDEBAR_COLLAPSED_WIDTH = 72;
 const SIDEBAR_ANIM_MS = 180;
 const HOVER_OUT_DELAY_MS = 150; // small delay so the bar never flickers
 const SIDEBAR_STORAGE_KEY = 'sidebarPinned';
-const BAR_CONTENT_HEIGHT = 60; // was 52: more room so icon + label never clip
+const BAR_CONTENT_HEIGHT = 60; // icon + label always have room
 const BAR_MIN_BOTTOM_PADDING = 10; // keeps labels clear of the Android nav bar
 
 // Remember the pinned/collapsed choice on web
@@ -44,7 +45,7 @@ function savePinned(value: boolean) {
   if (Platform.OS !== 'web') return;
   try {
     window.localStorage.setItem(SIDEBAR_STORAGE_KEY, value ? '1' : '0');
-  } catch {}
+  } catch { }
 }
 
 type IconName = keyof typeof Ionicons.glyphMap;
@@ -53,7 +54,7 @@ interface NavItemConfig {
   name: string;
   route: string;
   title: string; // used by the desktop sidebar
-  tabLabel: string; // short label used by the mobile bottom bar
+  tabLabel: string; // short label used by the bottom bar
   pageKey: PageKey;
   iconActive: IconName;
   iconInactive: IconName;
@@ -71,8 +72,8 @@ function TabIcon({ name, focused }: { name: IconName; focused: boolean }) {
   return <Ionicons name={name} size={22} color={focused ? ACTIVE_COLOR : colors.textMuted} />;
 }
 
-// Bottom-bar label: single line, never truncated, ignores the phone's font-size
-// setting so 5 tabs always fit on small screens.
+// Bottom-bar label: single line, ignores the phone's font-size setting so
+// the 5 tabs always fit.
 function TabLabel({ label, focused }: { label: string; focused: boolean }) {
   return (
     <Text
@@ -89,7 +90,79 @@ function TabLabel({ label, focused }: { label: string; focused: boolean }) {
   );
 }
 
-// Custom vertical sidebar for desktop view.
+// Our own bottom tab bar (phones AND tablets).
+// The built-in bar changes its layout on wide screens and was cutting the
+// labels ("Produc..."). Here every tab is an equal-width column with the icon
+// on top and the full label underneath, on every screen size.
+function BottomTabBar({ state, navigation }: any) {
+  const insets = useSafeAreaInsets();
+  const { hasAccess } = useStaff();
+  const bottomPadding = Math.max(insets.bottom, BAR_MIN_BOTTOM_PADDING);
+
+  // Same behaviour as tabBarHideOnKeyboard (Android)
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  if (keyboardVisible) return null;
+
+  return (
+    <View
+      style={[
+        styles.bottomBar,
+        { height: BAR_CONTENT_HEIGHT + bottomPadding, paddingBottom: bottomPadding },
+      ]}
+    >
+      {state.routes.map((route: any, index: number) => {
+        const item = NAV_ITEMS.find((n) => n.name === route.name);
+        if (!item || !hasAccess(item.pageKey)) return null;
+
+        const focused = state.index === index;
+
+        const onPress = () => {
+          const event = navigation.emit({
+            type: 'tabPress',
+            target: route.key,
+            canPreventDefault: true,
+          });
+          if (!focused && !event.defaultPrevented) {
+            navigation.navigate(route.name, route.params);
+          }
+        };
+
+        const onLongPress = () => {
+          navigation.emit({ type: 'tabLongPress', target: route.key });
+        };
+
+        return (
+          <Pressable
+            key={route.key}
+            onPress={onPress}
+            onLongPress={onLongPress}
+            accessibilityRole="button"
+            accessibilityState={focused ? { selected: true } : {}}
+            accessibilityLabel={item.title}
+            style={styles.tabButton}
+          >
+            <TabIcon name={focused ? item.iconActive : item.iconInactive} focused={focused} />
+            <TabLabel label={item.tabLabel} focused={focused} />
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+// Custom vertical sidebar for desktop view (web only).
 // - Collapsed = icons only. Hovering opens it over the content, leaving closes it.
 // - The pin button (visible only while the bar is open) keeps it open / collapsed
 //   and is remembered on web. It sits INSIDE the bar, so it can't cause hover flicker.
@@ -278,11 +351,11 @@ function resetCustomersStack(navigation: any) {
 }
 
 export default function TabsLayout() {
-  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { hasAccess, currentStaff } = useStaff();
-  const isDesktop = width >= DESKTOP_BREAKPOINT;
-  const bottomPadding = Math.max(insets.bottom, BAR_MIN_BOTTOM_PADDING);
+  // Sidebar only in a wide browser window. Phones and tablets (Android/iOS)
+  // always use the bottom tab bar, whatever their screen width.
+  const isDesktop = Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
 
   // "10110"-style string: changes only when permissions actually change,
   // so the screen list below isn't rebuilt on unrelated re-renders.
@@ -292,32 +365,14 @@ export default function TabsLayout() {
     () => ({
       headerShown: false, // AppHeader is rendered once, above the Tabs
       freezeOnBlur: true, // don't re-render hidden tabs
-      tabBarHideOnKeyboard: true, // bar no longer jumps above the keyboard
-      tabBarActiveTintColor: ACTIVE_COLOR,
-      tabBarInactiveTintColor: colors.textMuted,
-      tabBarStyle: isDesktop
-        ? { display: 'none' as const }
-        : {
-            backgroundColor: colors.surface,
-            borderTopColor: colors.border,
-            borderTopWidth: 1,
-            height: BAR_CONTENT_HEIGHT + bottomPadding,
-            paddingBottom: bottomPadding,
-            paddingTop: 8,
-            paddingHorizontal: 0,
-            elevation: 0,
-            shadowOpacity: 0,
-          },
-      // equal-width tabs, no side padding, so labels get the full 1/5 of the width
-      tabBarItemStyle: {
-        paddingHorizontal: 0,
-        paddingVertical: 0,
-        justifyContent: 'center' as const,
-        alignItems: 'center' as const,
-      },
-      tabBarIconStyle: { marginBottom: 2 },
     }),
-    [isDesktop, bottomPadding]
+    []
+  );
+
+  // Our own bottom bar; on desktop the sidebar is used instead, so render nothing.
+  const renderTabBar = useCallback(
+    (props: any) => (isDesktop ? null : <BottomTabBar {...props} />),
+    [isDesktop]
   );
 
   const screens = useMemo(
@@ -330,26 +385,22 @@ export default function TabsLayout() {
             title: item.title,
             // null removes the tab button; undefined keeps the default
             href: accessKey[index] === '1' ? undefined : null,
-            tabBarLabel: ({ focused }) => <TabLabel label={item.tabLabel} focused={focused} />,
-            tabBarIcon: ({ focused }) => (
-              <TabIcon name={focused ? item.iconActive : item.iconInactive} focused={focused} />
-            ),
           }}
           listeners={
             item.name === 'customers'
               ? ({ navigation }: any) => ({
-                  // leaving the Customers tab: reset it to the list
-                  blur: () => resetCustomersStack(navigation),
-                  // tapping Customers while already inside it (e.g. on Orders): reset too
-                  // preventDefault stops the stack's own "pop to top" from running
-                  // on top of our reset (that was causing the POP_TO_TOP error)
-                  tabPress: (e: any) => {
-                    if (navigation.isFocused()) {
-                      e.preventDefault();
-                      resetCustomersStack(navigation);
-                    }
-                  },
-                })
+                // leaving the Customers tab: reset it to the list
+                blur: () => resetCustomersStack(navigation),
+                // tapping Customers while already inside it (e.g. on Orders): reset too
+                // preventDefault stops the stack's own "pop to top" from running
+                // on top of our reset (that was causing the POP_TO_TOP error)
+                tabPress: (e: any) => {
+                  if (navigation.isFocused()) {
+                    e.preventDefault();
+                    resetCustomersStack(navigation);
+                  }
+                },
+              })
               : undefined
           }
         />
@@ -368,7 +419,9 @@ export default function TabsLayout() {
       <View style={styles.contentContainer}>
         <AppHeader />
         <View style={styles.tabsContainer}>
-          <Tabs screenOptions={screenOptions}>{screens}</Tabs>
+          <Tabs screenOptions={screenOptions} tabBar={renderTabBar}>
+            {screens}
+          </Tabs>
           <DailyRatePrompt />
           <LabelRasterHost />
         </View>
@@ -448,12 +501,26 @@ const styles = StyleSheet.create({
   navItemLabel: { fontSize: 14, fontWeight: '500' },
   navItemLabelActive: { fontWeight: '700', color: ACTIVE_COLOR },
 
-  // ---- Mobile bottom bar ----
+  // ---- Bottom bar (phones + tablets) ----
+  bottomBar: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
+    paddingTop: 8,
+  },
+  tabButton: {
+    flex: 1, // equal width for every tab
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
   tabLabel: {
     fontSize: 10.5,
     fontWeight: '500',
     textAlign: 'center',
-    marginTop: 2,
+    alignSelf: 'stretch', // label gets the full tab width
   },
   tabLabelActive: { fontWeight: '700' },
 });

@@ -611,7 +611,7 @@ export function buildInvoiceHtml(
     <div class="pay">
       <div class="modes">${modeCells}</div>
       <div>
-        <div class="bill">Bill Amount: ${fixed2(f.netBillAmount)}</div>
+        <div class="bill">${f.netBillAmount < 0 ? 'Nett (C.R)' : 'Bill Amount'}: ${fixed2(f.netBillAmount)}</div>
         ${netBalance > 0 ? `<div class="balance">Balance Due: ${fixed2(netBalance)}</div>` : ''}
       </div>
     </div>
@@ -956,6 +956,9 @@ export function buildThermalReceiptHtml(
     <!-- Per-product breakdown, one after another -->
     ${productBlocks}
 
+    <div class="tight-dash">------</div>
+    ${row('NEW TOTAL', fixed2(f.grand + f.discount))}
+
     <!-- Old Items Section (still shown in full — it's separate from the products above) -->
     ${exchangeBlocks}
 
@@ -969,7 +972,7 @@ export function buildThermalReceiptHtml(
     <!-- Discount (only when one is given) — shown before the final amount -->
     ${f.discount > 0 ? `${dashedSep}${row('Discount', `-${fixed2(f.discount)}`)}` : ''}
     ${dashedSep}
-    ${row('Nett RS', fixed2(f.netBillAmount), 'nett-rs')}
+    ${row(f.netBillAmount < 0 ? 'Nett (C.R)' : 'Nett RS', fixed2(f.netBillAmount), 'nett-rs')}
     ${dashedSep}
     ${paymentSectionHtml}
 

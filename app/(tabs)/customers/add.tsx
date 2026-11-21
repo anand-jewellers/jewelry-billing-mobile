@@ -1,10 +1,10 @@
 // app/(tabs)/customers/add.tsx
 
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, TextInput, StyleSheet, ScrollView, TouchableOpacity, Pressable, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Plus, Trash2 } from 'lucide-react-native';
-import { Button, Input } from '../../../src/components/ui';
+import { Input } from '../../../src/components/ui';
 import { DateField } from '../../../src/components/ui/DateFilter';
 import { SelectField, SelectOption } from '../../../src/components/ui/SelectField';
 import { ErrorModal } from '../../../src/components/ui/ErrorModal';
@@ -22,12 +22,33 @@ import {
 import { getCurrentRate } from '../../../src/lib/api/invoices';
 import { shareOrderWithGoldsmithOnWhatsApp } from '../../../src/lib/whatsappShare';
 import { getMetals, getPurities, getCategories } from '../../../src/lib/products';
-import { listMetals, listPurities, createCategory, createPurity } from '../../../src/lib/api/settings';
+import { listMetals, listPurities, createCategory } from '../../../src/lib/api/settings';
 import { useKeyboardHeight } from '../../../src/lib/useKeyboardHeight';
 import { useNotifications } from '../../../src/context/NotificationContext';
 import { formatDisplayDate } from '../../../src/lib/dateUtils';
 import type { ExchangeItem } from '../../../src/types/invoices';
 import type { Metal, Purity } from '../../../src/types/settings';
+
+// Defaults applied when a 91.6 (22k) purity is selected.
+// Both stay editable. Making charge follows the minimum weight of the order.
+const DEFAULT_VA_PERCENT = 13;
+const MAKING_PER_GRAM = 100; // 4 g -> 400, 5 g -> 500, 6 g -> 600
+
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+// A purity "is 91.6" when its name says so (916, 91.6, 22k) or its
+// percentage is ~91.6. This way any naming the shop uses is recognised.
+function isPurity916(name?: string | null, percentage?: number | null): boolean {
+  if (name && /916|91\.6|22\s*k/i.test(name)) return true;
+  const pct = Number(percentage);
+  return Number.isFinite(pct) && Math.abs(pct - 91.6) < 0.15;
+}
+
+// Purity option = dropdown-style option + the percentage kept for the 91.6 check.
+type PurityOption = SelectOption & { percentage: number | null };
+
+// What a fresh order starts with (Gold + its 91.6 purity), filled in once master data loads.
+type OrderDefaults = { metalId: string | null; purityId: string | null };
 
 // ===========================================================
 // One order "draft" — everything the cashier fills in for ONE order
@@ -46,6 +67,10 @@ interface OrderDraft {
   vacPercent: string;
   makingChargeFixed: string;
   stoneChargeFixed: string;
+  // Set once the cashier types their own VA % / making charge, so the
+  // 91.6 auto-fill stops overwriting it.
+  vaEdited: boolean;
+  makingEdited: boolean;
   images: PickedImage[];
   goldsmithName: string;
   goldsmithPhone: string;
@@ -55,12 +80,12 @@ interface OrderDraft {
 
 const genKey = () => Math.random().toString(36).slice(2, 10);
 
-function newDraft(): OrderDraft {
+function newDraft(defaults?: OrderDefaults): OrderDraft {
   return {
     key: genKey(),
     categoryId: null,
-    metalId: null,
-    purityId: null,
+    metalId: defaults?.metalId ?? null,
+    purityId: defaults?.purityId ?? null,
     weightMin: '',
     weightMax: '',
     stoneWeight: '',
@@ -69,6 +94,8 @@ function newDraft(): OrderDraft {
     vacPercent: '',
     makingChargeFixed: '',
     stoneChargeFixed: '',
+    vaEdited: false,
+    makingEdited: false,
     images: [],
     goldsmithName: '',
     goldsmithPhone: '',
@@ -79,18 +106,20 @@ function newDraft(): OrderDraft {
 
 // An order is only created when at least one of its fields has been touched.
 // Once touched, the full validation applies.
-function isTouched(d: OrderDraft): boolean {
+// Values filled in automatically (default Gold + 91.6, auto VA % and making
+// charge) do NOT count, so a customer can still be saved without an order.
+function isTouched(d: OrderDraft, defaults: OrderDefaults): boolean {
   return (
     !!d.categoryId ||
-    !!d.metalId ||
-    !!d.purityId ||
+    d.metalId !== defaults.metalId ||
+    d.purityId !== defaults.purityId ||
     d.weightMin.trim() !== '' ||
     d.weightMax.trim() !== '' ||
     d.stoneWeight.trim() !== '' ||
     d.orderNotes.trim() !== '' ||
     !!d.dueDate ||
-    d.vacPercent.trim() !== '' ||
-    d.makingChargeFixed.trim() !== '' ||
+    (d.vaEdited && d.vacPercent.trim() !== '') ||
+    (d.makingEdited && d.makingChargeFixed.trim() !== '') ||
     d.stoneChargeFixed.trim() !== '' ||
     d.goldsmithName.trim() !== '' ||
     d.goldsmithPhone.trim() !== '' ||
@@ -108,6 +137,45 @@ interface PreparedOrder {
   min: number;
   max: number | null;
   advance: number | null;
+}
+
+// ---------- Small radio group (radio + text only, no background) ----------
+function RadioGroup({
+  options,
+  value,
+  onChange,
+  disabled,
+  emptyText,
+}: {
+  options: { id: string; label: string }[];
+  value: string | null;
+  onChange: (id: string) => void;
+  disabled?: boolean;
+  emptyText?: string;
+}) {
+  if (options.length === 0) {
+    return <Text style={styles.helperText}>{emptyText ?? 'No options'}</Text>;
+  }
+  return (
+    <View style={[styles.radioWrap, disabled && { opacity: 0.5 }]}>
+      {options.map((o) => {
+        const on = o.id === value;
+        return (
+          <Pressable
+            key={o.id}
+            style={styles.radioItem}
+            onPress={() => !disabled && onChange(o.id)}
+            hitSlop={6}
+          >
+            <View style={[styles.radioOuter, on && styles.radioOuterOn]}>
+              {on && <View style={styles.radioInner} />}
+            </View>
+            <Text style={[styles.radioLabel, on && styles.radioLabelOn]}>{o.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 }
 
 // ===========================================================
@@ -130,8 +198,11 @@ export default function AddCustomerScreen() {
   const [categories, setCategories] = useState<SelectOption[]>([]);
   const [metals, setMetals] = useState<SelectOption[]>([]);
   // Purities per metal id (each order can use a different metal)
-  const [purityByMetal, setPurityByMetal] = useState<Record<string, SelectOption[]>>({});
+  const [purityByMetal, setPurityByMetal] = useState<Record<string, PurityOption[]>>({});
   const [loadingMeta, setLoadingMeta] = useState(true);
+
+  // Gold + its 91.6 purity: what every new order starts with.
+  const defaultsRef = useRef<OrderDefaults>({ metalId: null, purityId: null });
 
   // Full master records — needed by the Old Gold Exchange modal (same as the invoice screen)
   const [exchangeMetals, setExchangeMetals] = useState<Metal[]>([]);
@@ -155,7 +226,8 @@ export default function AddCustomerScreen() {
     setErrorVisible(true);
   }
 
-  const anyOrder = orders.some(isTouched);
+  const touchedOrders = orders.filter((o) => isTouched(o, defaultsRef.current));
+  const anyOrder = touchedOrders.length > 0;
 
   // ---------------------------------------------------------
   // Draft helpers
@@ -165,30 +237,41 @@ export default function AddCustomerScreen() {
     setOrders((prev) => prev.map((o) => (o.key === key ? { ...o, ...patch } : o)));
 
   const addOrder = () => {
-    setOrders((prev) => [...prev, newDraft()]);
+    setOrders((prev) => [...prev, newDraft(defaultsRef.current)]);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 200);
   };
 
   const removeOrder = (key: string) => setOrders((prev) => prev.filter((o) => o.key !== key));
 
-  async function loadPuritiesFor(metalId: string) {
-    if (purityByMetal[metalId]) return;
+  // Loads (and caches) the purities of a metal, in the same order as the purity master.
+  async function loadPuritiesFor(metalId: string): Promise<PurityOption[]> {
+    if (purityByMetal[metalId]) return purityByMetal[metalId];
     try {
       const p = await getPurities(metalId);
-      setPurityByMetal((prev) => ({
-        ...prev,
-        [metalId]: (p ?? []).map((x: any) => ({ id: x.id, label: x.name })),
+      const list: PurityOption[] = (p ?? []).map((x: any) => ({
+        id: x.id,
+        label: x.name,
+        percentage: x.purity_percentage ?? null,
       }));
+      setPurityByMetal((prev) => ({ ...prev, [metalId]: list }));
+      return list;
     } catch (e: any) {
       console.warn('Could not load purities:', e);
       showError(e?.message ?? 'Failed to load purities');
+      return [];
     }
   }
 
-  const handleMetalChange = (key: string, metalId: string | null) => {
-    // Purity depends on metal, so reset it
+  const handleMetalChange = async (key: string, metalId: string | null) => {
+    // Purity depends on metal, so reset it, then pick the 91.6 one once loaded
     patchOrder(key, { metalId, purityId: null });
-    if (metalId) void loadPuritiesFor(metalId);
+    if (!metalId) return;
+
+    const list = await loadPuritiesFor(metalId);
+    const def = list.find((p) => isPurity916(p.label, p.percentage))?.id ?? null;
+    setOrders((prev) =>
+      prev.map((o) => (o.key === key && o.metalId === metalId && !o.purityId ? { ...o, purityId: def } : o))
+    );
   };
 
   // Asks whether to send the design to the goldsmith right after the order is saved
@@ -207,7 +290,7 @@ export default function AddCustomerScreen() {
   }
 
   // ---------------------------------------------------------
-  // Load master data
+  // Load master data, then start the first order with Gold + 91.6
   // ---------------------------------------------------------
 
   useEffect(() => {
@@ -219,10 +302,22 @@ export default function AddCustomerScreen() {
           listMetals(),
           listPurities(),
         ]);
+        const metalOptions: SelectOption[] = (m ?? []).map((x: any) => ({ id: x.id, label: x.name }));
         setCategories((c ?? []).map((x: any) => ({ id: x.id, label: x.name })));
-        setMetals((m ?? []).map((x: any) => ({ id: x.id, label: x.name })));
+        setMetals(metalOptions);
         setExchangeMetals(fullMetals ?? []);
         setExchangePurities(fullPurities ?? []);
+
+        // Gold + 91.6 become the starting selection of every order.
+        const gold = metalOptions.find((x) => /^gold$/i.test(x.label.trim()));
+        if (gold) {
+          const list = await loadPuritiesFor(gold.id);
+          const purityId = list.find((p) => isPurity916(p.label, p.percentage))?.id ?? null;
+          defaultsRef.current = { metalId: gold.id, purityId };
+          setOrders((prev) =>
+            prev.map((o) => (!o.metalId ? { ...o, metalId: gold.id, purityId } : o))
+          );
+        }
       } catch (e: any) {
         console.warn('Could not load order master data:', e);
         showError(e?.message ?? 'Could not load order master data.');
@@ -233,7 +328,38 @@ export default function AddCustomerScreen() {
   }, []);
 
   // ---------------------------------------------------------
-  // Inline "Add New" handlers
+  // 91.6 defaults, per order:
+  //   Value added % -> 13 (cleared again for other purities)
+  //   Making charge -> ₹100 per gram of the minimum weight (4 g = 400, 5 g = 500)
+  // Each stops auto-updating as soon as the cashier types their own value.
+  // ---------------------------------------------------------
+  useEffect(() => {
+    setOrders((prev) => {
+      let changed = false;
+      const next = prev.map((d) => {
+        const purity = (d.metalId ? purityByMetal[d.metalId] : undefined)?.find((p) => p.id === d.purityId);
+        const is916 = isPurity916(purity?.label, purity?.percentage);
+        let nd = d;
+
+        if (!d.vaEdited) {
+          const va = is916 ? String(DEFAULT_VA_PERCENT) : '';
+          if (d.vacPercent !== va) nd = { ...nd, vacPercent: va };
+        }
+        if (!d.makingEdited) {
+          const minW = parseFloat(d.weightMin) || 0;
+          const mc = is916 && minW > 0 ? String(round2(minW * MAKING_PER_GRAM)) : '';
+          if (d.makingChargeFixed !== mc) nd = { ...nd, makingChargeFixed: mc };
+        }
+
+        if (nd !== d) changed = true;
+        return nd;
+      });
+      return changed ? next : prev;
+    });
+  }, [orders, purityByMetal]);
+
+  // ---------------------------------------------------------
+  // Inline "Add New" handler (category only; purities are managed in Settings)
   // Errors are thrown so the dropdown component can handle them itself.
   // ---------------------------------------------------------
 
@@ -241,17 +367,6 @@ export default function AddCustomerScreen() {
     const created = await createCategory({ name: newName });
     const opt: SelectOption = { id: created.id, label: created.name };
     setCategories((prev) => [...prev, opt].sort((a, b) => a.label.localeCompare(b.label)));
-    return opt;
-  }
-
-  async function handleAddPurity(metalId: string | null, newName: string): Promise<SelectOption> {
-    if (!metalId) throw new Error('Select a metal first');
-    const created = await createPurity({ metal_id: metalId, name: newName, purity_percentage: null });
-    const opt: SelectOption = { id: created.id, label: created.name };
-    setPurityByMetal((prev) => ({
-      ...prev,
-      [metalId]: [...(prev[metalId] ?? []), opt].sort((a, b) => a.label.localeCompare(b.label)),
-    }));
     return opt;
   }
 
@@ -271,7 +386,7 @@ export default function AddCustomerScreen() {
 
     // Validate EVERY touched order before saving anything, so the customer
     // is never saved with only some of the orders.
-    const touched = orders.filter(isTouched);
+    const touched = touchedOrders;
 
     if (exchangeItems.length > 0 && touched.length === 0) {
       showError(
@@ -371,8 +486,8 @@ export default function AddCustomerScreen() {
               'order',
               'New jewel order',
               `${order.order_number} for ${name.trim()}: ${p.categoryName}, ${p.metalName} (${p.purityName}), ${weightText}` +
-                (d.dueDate ? `, due ${formatDisplayDate(d.dueDate)}` : '') +
-                (withExchange && exchangeTotal > 0 ? `, old gold ₹${exchangeTotal.toLocaleString('en-IN')}` : '')
+              (d.dueDate ? `, due ${formatDisplayDate(d.dueDate)}` : '') +
+              (withExchange && exchangeTotal > 0 ? `, old gold ₹${exchangeTotal.toLocaleString('en-IN')}` : '')
             );
           } catch (notifyErr) {
             console.warn('Failed to send order notification', notifyErr);
@@ -412,9 +527,9 @@ export default function AddCustomerScreen() {
     ? 'Saving…'
     : !anyOrder
       ? 'Save Customer'
-      : orders.filter(isTouched).length > 1
-        ? `Save Customer & ${orders.filter(isTouched).length} Orders`
-        : 'Save Customer & Order';
+      : touchedOrders.length > 1
+        ? `Save Customer & ${touchedOrders.length} Orders`
+        : 'Save Order';
 
   return (
     <>
@@ -432,7 +547,6 @@ export default function AddCustomerScreen() {
         <Input label="Address (optional)" value={address} onChangeText={setAddress} placeholder="Address" />
 
         {/* One old gold exchange for the whole customer — same component the invoice screen uses */}
-        {/* <Text style={styles.exchangeTitle}>Old Gold Exchange</Text> */}
         <ExchangeGoldSection
           items={exchangeItems}
           onChange={(list, sum) => {
@@ -443,19 +557,6 @@ export default function AddCustomerScreen() {
           purities={exchangePurities}
           fetchRate={getCurrentRate}
         />
-
-        {/* <View style={styles.orderHeader}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.toggleTitle}>Jewel Order Details</Text>
-            <Text style={styles.toggleSubtitle}>
-              Customer is ordering a jewel — capture category, metal, weight and goldsmith details. Leave
-              blank to save the customer only. Tap + to add another order for this customer.
-            </Text>
-          </View>
-          <TouchableOpacity style={styles.plusBtn} onPress={addOrder} hitSlop={8} accessibilityLabel="Add another order">
-            <Plus size={20} color="#fff" strokeWidth={3} />
-          </TouchableOpacity>
-        </View> */}
 
         {orders.map((draft, index) => (
           <OrderForm
@@ -469,19 +570,41 @@ export default function AddCustomerScreen() {
             onPatch={(patch) => patchOrder(draft.key, patch)}
             onMetalChange={(metalId) => handleMetalChange(draft.key, metalId)}
             onAddCategory={handleAddCategory}
-            onAddPurity={(n) => handleAddPurity(draft.metalId, n)}
             onRemove={() => removeOrder(draft.key)}
             onNotesFocus={() => setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 300)}
           />
         ))}
 
-        <TouchableOpacity style={styles.addAnotherBtn} onPress={addOrder}>
-          <Plus size={16} color={colors.primary} />
-          <Text style={styles.addAnotherText}>Add another order for this customer</Text>
-        </TouchableOpacity>
+        <View style={styles.footerRow}>
+          <Pressable
+            style={[styles.footerBtn, styles.footerBtnOutline, saving && styles.footerBtnDisabled]}
+            onPress={addOrder}
+            disabled={saving}
+          >
+            <Plus size={18} color={colors.white} />
+            <Text style={[styles.footerBtnText, { color: '#fff' }]} numberOfLines={1}>
+              Another Order
+            </Text>
+          </Pressable>
 
-        <View style={{ marginTop: spacing.lg }}>
-          <Button label={saveLabel} onPress={handleSave} disabled={saving || (anyOrder && loadingMeta)} />
+          <Pressable
+            style={[
+              styles.footerBtn,
+              styles.footerBtnFilled,
+              (saving || (anyOrder && loadingMeta)) && styles.footerBtnDisabled,
+            ]}
+            onPress={handleSave}
+            disabled={saving || (anyOrder && loadingMeta)}
+          >
+            <Text
+              style={[styles.footerBtnText, { color: '#fff' }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.8}
+            >
+              {saveLabel}
+            </Text>
+          </Pressable>
         </View>
       </ScrollView>
 
@@ -509,7 +632,6 @@ function OrderForm({
   onPatch,
   onMetalChange,
   onAddCategory,
-  onAddPurity,
   onRemove,
   onNotesFocus,
 }: {
@@ -518,11 +640,10 @@ function OrderForm({
   total: number;
   categories: SelectOption[];
   metals: SelectOption[];
-  purityOptions: SelectOption[];
+  purityOptions: PurityOption[];
   onPatch: (patch: Partial<OrderDraft>) => void;
   onMetalChange: (metalId: string | null) => void;
   onAddCategory: (name: string) => Promise<SelectOption>;
-  onAddPurity: (name: string) => Promise<SelectOption>;
   onRemove: () => void;
   onNotesFocus: () => void;
 }) {
@@ -552,15 +673,22 @@ function OrderForm({
         onAddNew={onAddCategory}
       />
 
+      {/* Metal & purity: radio buttons, Gold + 91.6 selected by default */}
       <Text style={styles.sectionTitle}>Metal & Purity</Text>
-      <SelectField label="Metal" value={d.metalId} options={metals} onChange={(id) => onMetalChange(id as string)} />
-      <SelectField
-        label="Purity"
-        value={d.purityId}
+      <Text style={styles.label}>Metal</Text>
+      <RadioGroup
+        options={metals}
+        value={d.metalId}
+        onChange={(id) => onMetalChange(id)}
+        emptyText="No metals found"
+      />
+      <Text style={[styles.label, styles.radioLabelGap]}>Purity</Text>
+      <RadioGroup
         options={purityOptions}
-        onChange={(id) => onPatch({ purityId: id as string })}
+        value={d.purityId}
+        onChange={(id) => onPatch({ purityId: id })}
         disabled={!d.metalId}
-        onAddNew={onAddPurity}
+        emptyText={d.metalId ? 'No purities for this metal' : 'Select a metal first'}
       />
 
       <Text style={styles.sectionTitle}>Weight Range (grams)</Text>
@@ -603,7 +731,7 @@ function OrderForm({
             placeholderTextColor={colors.textMuted}
             keyboardType="decimal-pad"
             value={d.vacPercent}
-            onChangeText={(t) => onPatch({ vacPercent: t })}
+            onChangeText={(t) => onPatch({ vacPercent: t, vaEdited: true })}
           />
         </View>
         <View style={styles.rowInput}>
@@ -614,7 +742,7 @@ function OrderForm({
             placeholderTextColor={colors.textMuted}
             keyboardType="decimal-pad"
             value={d.makingChargeFixed}
-            onChangeText={(t) => onPatch({ makingChargeFixed: t })}
+            onChangeText={(t) => onPatch({ makingChargeFixed: t, makingEdited: true })}
           />
         </View>
       </View>
@@ -696,27 +824,6 @@ function OrderForm({
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   title: { fontSize: 18, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.md },
-  orderHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 14,
-    padding: spacing.md,
-    marginTop: spacing.lg,
-  },
-  plusBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  toggleTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
-  toggleSubtitle: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   orderSection: {
     marginTop: spacing.md,
     padding: spacing.md,
@@ -741,7 +848,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   addAnotherText: { color: colors.primary, fontWeight: '700', fontSize: 14 },
-  exchangeTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary, marginTop: spacing.lg, marginBottom: spacing.sm },
   sectionTitleFirst: { fontSize: 14, fontWeight: '700', color: colors.textPrimary, marginTop: spacing.sm, marginBottom: spacing.sm },
   sectionTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary, marginTop: spacing.md, marginBottom: spacing.sm },
   label: { fontSize: 12, fontWeight: '600', color: colors.textMuted, marginBottom: 6 },
@@ -771,4 +877,56 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipText: { fontSize: 13, fontWeight: '600', color: colors.textPrimary },
   chipTextActive: { color: '#fff' },
+
+  // Radio buttons (small, no background)
+  helperText: { color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm, fontStyle: 'italic' },
+  radioWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 18,
+    rowGap: 8,
+    marginBottom: spacing.sm,
+  },
+  radioLabelGap: { marginTop: spacing.xs },
+  radioItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 2,
+  },
+  radioOuter: {
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterOn: { borderColor: colors.primary },
+  radioInner: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.primary },
+  radioLabel: { fontSize: 13, color: colors.textMuted, fontWeight: '500' },
+  radioLabelOn: { color: colors.textPrimary, fontWeight: '700' },
+  // Bottom buttons: same line, equal width, same size and style
+  footerRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.lg,
+  },
+  footerBtn: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+  },
+  footerBtnOutline: { backgroundColor: colors.primary },
+  footerBtnFilled: { backgroundColor: colors.primary },
+  footerBtnText: { fontSize: 15, fontWeight: '700' },
+  footerBtnDisabled: { opacity: 0.6 },
 });

@@ -14,34 +14,37 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Plus, X } from 'lucide-react-native';
+import { Plus, X, Check, Search } from 'lucide-react-native';
 import { SelectField, SelectOption } from '../ui/SelectField';
 import { MultiSelectField } from '../ui/MultiSelectField';
 import { colors, spacing } from '../../theme';
 import { useKeyboardHeight } from '../../lib/useKeyboardHeight';
-import { ErrorModal } from '../ui';
 import {
-  getProductByCode,
   getCurrentRate,
   getDefaultTaxSetting,
   getMakingChargeRule,
+  searchProductNames,
 } from '../../lib/api/invoices';
 import { getStoneNames } from '../../lib/products';
-import { createCategory, createPurity, createStoneName } from '../../lib/api/settings';
+import { createStoneName } from '../../lib/api/settings';
 import {
   recalcItem,
   recalcVaLineAmount,
-  buildInvoiceItemFromProduct,
   isDiamondCharge,
   parseCarat,
   diamondChargeAmount,
   DIAMOND_CHARGE_PREFIX,
 } from '../../lib/invoiceCalc';
-import type { InvoiceItem, ValueAddedChargeLine, Product } from '../../types/invoices';
+import type { InvoiceItem, ValueAddedChargeLine } from '../../types/invoices';
 import type { Metal, Purity, Category, TaxSetting, ValueAddedChargeType, CalculationType } from '../../types/settings';
 
 const VA_CHARGE = 'Value Added Charge';
 const STONE_CHARGE = 'Stone Charge';
+
+// Defaults applied for a manual entry when a 91.6 (22k) purity is selected.
+// Both stay editable by the cashier.
+const DEFAULT_VA_PERCENT = 13;
+const MAKING_PER_GRAM = 100; // 4 g -> 400, 5 g -> 500, 6 g -> 600
 
 interface Props {
   visible: boolean;
@@ -51,10 +54,14 @@ interface Props {
   categories: Category[];
   taxSettings: TaxSetting[];
   vaChargeTypes: ValueAddedChargeType[];
+  billGstEnabled?: boolean;
   onClose: () => void;
+  // Save: add the item and close the sheet.
   onSave: (item: InvoiceItem) => void;
-  // Called after a new category / purity is created from inside the sheet,
-  // so the parent can add it to its own lists.
+  // Add New: add the item and keep the sheet open with a fresh form.
+  // The "Add New" button only shows when this is passed (new items only).
+  onSaveAndNext?: (item: InvoiceItem) => void;
+  // Kept so the parent does not break; the sheet no longer creates these.
   onCategoryAdded?: (category: Category) => void;
   onPurityAdded?: (purity: Purity) => void;
 }
@@ -66,6 +73,23 @@ interface Props {
 type DiamondRow = { key: string; size: string; rate: string; fixedCharge: number | null };
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+// A purity "is 91.6" when its name says so (916, 91.6, 22k) or its
+// percentage is ~91.6. This way any naming the shop uses is recognised.
+function isPurity916(p?: Purity | null): boolean {
+  if (!p) return false;
+  const name = String(p.name ?? '');
+  if (/916|91\.6|22\s*k/i.test(name)) return true;
+  const pct = Number((p as any).purity_percentage);
+  return Number.isFinite(pct) && Math.abs(pct - 91.6) < 0.15;
+}
+
+// Piece-rate purities (e.g. "GOLD - PR", "SILVER - PR"): no weight / VA / making,
+// the cashier just types the total amount.
+export function isPiecePurity(p?: Purity | null): boolean {
+  if (!p) return false;
+  return /\bPR\b|piece\s*rate/i.test(String(p.name ?? ''));
+}
 
 function diamondRowsFromLines(lines: ValueAddedChargeLine[]): DiamondRow[] {
   return (lines ?? [])
@@ -93,6 +117,8 @@ function blankState() {
     categoryId: null as string | null,
     grossWeight: '',
     stoneWeight: '0',
+    // No input any more. Only carried over from an existing item so its
+    // net weight and total never change when it is opened and re-saved.
     otherWeight: '0',
     quantity: '1',
     rate: '',
@@ -103,15 +129,24 @@ function blankState() {
     diamonds: [] as DiamondRow[],
     itemDiscount: '0',
     taxSettingId: null as string | null,
+    gstEnabled: true,
     huid: '',
     stoneIds: [] as string[], // multi-select stones
     stoneAmounts: {} as Record<string, string>, // ₹ per stone id (used when 2+ stones)
     stoneName: null as string | null, // only used to restore multi-stone names on edit
     extraCharges: [] as ValueAddedChargeLine[], // other lines the sheet has no input for
+    pieceAmount: '', // total amount for piece-rate purities
   };
 }
 
 type SheetState = ReturnType<typeof blankState>;
+
+const netWeightOf = (s: SheetState) => {
+  const gross = parseFloat(s.grossWeight) || 0;
+  const stone = parseFloat(s.stoneWeight) || 0;
+  const other = parseFloat(s.otherWeight) || 0;
+  return Math.max(+(gross - stone - other).toFixed(3), 0);
+};
 
 // Stone charge:
 // 2+ stones with typed per-stone amounts -> sum of those amounts.
@@ -151,11 +186,13 @@ function stateFromItem(item: InvoiceItem): SheetState {
     diamonds: diamondRowsFromLines(item.value_added_charges ?? []),
     itemDiscount: String(item.item_discount ?? 0),
     taxSettingId: item.tax_setting_id ?? null,
+    gstEnabled: item.gst_enabled !== false,
     huid: item.huid ?? '',
     stoneIds: item.stone_id && !hasMultiNames ? [item.stone_id] : [],
     stoneAmounts: {},
     stoneName: hasMultiNames ? savedStoneName : null,
     extraCharges: otherExtraLines(item.value_added_charges ?? []),
+    pieceAmount: item.total_amount != null ? String(item.total_amount) : '',
   };
 }
 
@@ -164,6 +201,86 @@ function makingLabel(type: CalculationType): string {
   if (t === 'per_gram') return 'Making (₹/g)';
   if (t === 'percentage') return 'Making (%)';
   return 'Making (₹)';
+}
+
+// ---------- Small radio group (radio + text only, no background) ----------
+function RadioGroup({
+  options,
+  value,
+  onChange,
+  disabled,
+  emptyText,
+}: {
+  options: { id: string; label: string }[];
+  value: string | null;
+  onChange: (id: string) => void;
+  disabled?: boolean;
+  emptyText?: string;
+}) {
+  if (options.length === 0) {
+    return <Text style={styles.emptyHint}>{emptyText ?? 'No options'}</Text>;
+  }
+  return (
+    <View style={[styles.radioWrap, disabled && { opacity: 0.5 }]}>
+      {options.map((o) => {
+        const on = o.id === value;
+        return (
+          <Pressable
+            key={o.id}
+            style={styles.radioItem}
+            onPress={() => !disabled && onChange(o.id)}
+            hitSlop={6}
+          >
+            <View style={[styles.radioOuter, on && styles.radioOuterOn]}>
+              {on && <View style={styles.radioInner} />}
+            </View>
+            <Text style={[styles.radioLabel, on && styles.radioLabelOn]}>{o.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+// ---------- One row of the product-name dropdown ----------
+// The part of the name that matches what was typed is shown in bold.
+function NameSuggestionRow({
+  name,
+  query,
+  last,
+  onPress,
+}: {
+  name: string;
+  query: string;
+  last: boolean;
+  onPress: () => void;
+}) {
+  const q = query.trim().toLowerCase();
+  const at = q ? name.toLowerCase().indexOf(q) : -1;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.dropRow,
+        !last && styles.dropRowBorder,
+        pressed && styles.dropRowPressed,
+      ]}
+    >
+      <Search size={15} color={colors.textMuted} />
+      <Text style={styles.dropText} numberOfLines={1}>
+        {at >= 0 ? (
+          <>
+            {name.slice(0, at)}
+            <Text style={styles.dropTextMatch}>{name.slice(at, at + q.length)}</Text>
+            {name.slice(at + q.length)}
+          </>
+        ) : (
+          name
+        )}
+      </Text>
+    </Pressable>
+  );
 }
 
 // ---------- Small layout helper ----------
@@ -199,45 +316,154 @@ export function JewelryItemSheet({
   vaChargeTypes,
   onClose,
   onSave,
-  onCategoryAdded,
-  onPurityAdded,
+  onSaveAndNext,
+  billGstEnabled = true,
 }: Props) {
   const [state, setState] = useState<SheetState>(blankState());
   const [saving, setSaving] = useState(false);
 
-  // Optional Product ID lookup (the Product Name itself is plain text input).
-  const [productCode, setProductCode] = useState('');
-  const [lookupBusy, setLookupBusy] = useState(false);
-  const [lookupMsg, setLookupMsg] = useState<string | null>(null);
+  // Validation message shown above the footer buttons.
+  const [formError, setFormError] = useState<string | null>(null);
+  // How many items were added with "Add New" during this open session.
+  const [addedCount, setAddedCount] = useState(0);
+  // Bumped whenever the form is reset for the next product, so the
+  // auto-fill effects run again even if metal / purity did not change.
+  const [formKey, setFormKey] = useState(0);
 
+  const scrollRef = useRef<ScrollView>(null);
 
-  const linkedProductRef = useRef<Product | null>(null);
-  const [soldError, setSoldError] = useState<string | null>(null);
-
-  // Once the cashier types their own rate / making charge, auto-fill
+  // Once the cashier types their own rate / making charge / VA %, auto-fill
   // must stop overwriting it (even if they later change metal/purity).
   const rateEditedRef = useRef(false);
   const makingEditedRef = useRef(false);
+  const vaEditedRef = useRef(false);
+
+  // ---------------------------------------------------------
+  // Product name dropdown (names only, from the products table).
+  //
+  // Nothing is shown until the cashier TYPES something. `nameQuery` holds
+  // only what was typed by hand, so opening an item for edit, picking a
+  // suggestion or clearing the field never triggers a search.
+  // ---------------------------------------------------------
+  const [nameFocused, setNameFocused] = useState(false);
+  const [nameQuery, setNameQuery] = useState('');
+  const [nameResults, setNameResults] = useState<string[]>([]);
+  const [nameNoMatch, setNameNoMatch] = useState(false);
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearNameDropdown = () => {
+    setNameQuery('');
+    setNameResults([]);
+    setNameNoMatch(false);
+  };
+
+  useEffect(() => {
+    const q = nameQuery.trim();
+    if (!visible || !nameFocused || !q) {
+      setNameResults([]);
+      setNameNoMatch(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const list = await searchProductNames(q, 5);
+        if (cancelled) return;
+        const typed = q.toLowerCase();
+        // Hide a result that is exactly what was typed, there is nothing to pick.
+        setNameResults(list.filter((n) => n.toLowerCase() !== typed).slice(0, 5));
+        setNameNoMatch(list.length === 0);
+      } catch (e) {
+        console.warn('[JewelryItemSheet] product name search failed:', e);
+        if (!cancelled) {
+          setNameResults([]);
+          setNameNoMatch(false);
+        }
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [visible, nameFocused, nameQuery]);
+
+  useEffect(
+    () => () => {
+      if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
+    },
+    []
+  );
+
+  const handleNameChange = (v: string) => {
+    setState((s) => ({ ...s, name: v }));
+    setNameQuery(v);
+  };
+
+  const handleNameFocus = () => {
+    if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
+    setNameFocused(true);
+  };
+
+  // Small delay so a tap on a dropdown row still registers before it hides.
+  const handleNameBlur = () => {
+    blurTimerRef.current = setTimeout(() => setNameFocused(false), 200);
+  };
+
+  const selectSuggestedName = (name: string) => {
+    setState((s) => ({ ...s, name }));
+    clearNameDropdown();
+    setNameFocused(false);
+    Keyboard.dismiss();
+  };
+
+  const clearName = () => {
+    setState((s) => ({ ...s, name: '' }));
+    clearNameDropdown();
+  };
+
+  const showNameDropdown =
+    nameFocused && nameQuery.trim().length > 0 && (nameResults.length > 0 || nameNoMatch);
+
+  // ---------------------------------------------------------
+  // Default metal / purity helpers
+  // ---------------------------------------------------------
+
+  // Default purity for a metal: the first one that means 91.6
+  // (named 916, 91.6, 22k ... or with a ~91.6 percentage).
+  const defaultPurityFor = (metalId: string | null): string | null => {
+    if (!metalId) return null;
+    return (purities ?? []).find((p) => p.metal_id === metalId && isPurity916(p))?.id ?? null;
+  };
+
+  const newItemDefaults = () => {
+    const gold = (metals ?? []).find((m) => /^gold$/i.test(m.name.trim()));
+    return { metalId: gold?.id ?? null, purityId: defaultPurityFor(gold?.id ?? null) };
+  };
+
+  // ---------------------------------------------------------
+  // Piece-rate purity (GOLD - PR / SILVER - PR): only name + total amount.
+  // ---------------------------------------------------------
+  const isPiece = isPiecePurity((purities ?? []).find((p) => p.id === state.purityId));
 
   // ---------------------------------------------------------
   // Diamond detection: metal OR category whose name contains "diamond".
-  // e.g. Metal: Gold + Category: Diamond still shows the diamond rows.
   //
   // The section also stays visible whenever diamond rows already exist
   // (scanned product / edit mode), so an existing diamond charge is never
   // hidden from the cashier while still being added to the total.
+  // Never shown for piece-rate purities.
   // ---------------------------------------------------------
   const selectedMetalName = (metals ?? []).find((m) => m.id === state.metalId)?.name ?? '';
   const selectedCategoryName = (categories ?? []).find((c) => c.id === state.categoryId)?.name ?? '';
   const isDiamond = /diamond/i.test(selectedMetalName) || /diamond/i.test(selectedCategoryName);
-  const showDiamonds = isDiamond || state.diamonds.length > 0;
+  const showDiamonds = !isPiece && (isDiamond || state.diamonds.length > 0);
 
   // ---------------------------------------------------------
   // Keyboard handling.
   //
   // On Android the window may ALREADY shrink when the keyboard opens
   // (adjustResize). Lifting the sheet by the full keyboard height on top
-  // of that lifts it twice and squashes it (the gap in the screenshot).
+  // of that lifts it twice and squashes it.
   //
   // So we measure the overlay: `baseH` is its tallest height (keyboard
   // closed), `overlayH` its current height. The difference is what the
@@ -310,56 +536,81 @@ export function JewelryItemSheet({
 
   // ---------------------------------------------------------
   // Reset / populate every time the sheet opens.
-  // MUST stay above the auto-fill effect so it runs first.
+  // MUST stay above the auto-fill effects so it runs first.
   // ---------------------------------------------------------
   useEffect(() => {
     if (!visible) return;
 
     rateEditedRef.current = false;
     makingEditedRef.current = false;
-    setLookupMsg(null);
-    setSoldError(null);
+    vaEditedRef.current = false;
+    setNameFocused(false);
+    clearNameDropdown();
+    setFormError(null);
+    setAddedCount(0);
 
     if (initial) {
-      setState(stateFromItem(initial));
-      setProductCode(initial.product_code ?? '');
-      linkedProductRef.current = initial.product_id ? ({ id: initial.product_id } as Product) : null;
+      const base = stateFromItem(initial);
+      // A piece-rate item is stored WITH tax on top. While the bill's GST is off,
+      // show the tax-free amount the cashier typed instead.
+      const initialIsPiece = isPiecePurity((purities ?? []).find((p) => p.id === initial.purity_id));
+      setState({
+        ...base,
+        gstEnabled: billGstEnabled,
+        pieceAmount:
+          initialIsPiece && !billGstEnabled && initial.taxable_amount != null
+            ? String(initial.taxable_amount)
+            : base.pieceAmount,
+      });
     } else {
-      setState(blankState());
-      setProductCode('');
-      linkedProductRef.current = null;
+      setState({ ...blankState(), ...newItemDefaults(), gstEnabled: billGstEnabled });
     }
   }, [visible, initial]);
 
+  // A validation message goes away as soon as the cashier changes anything.
+  useEffect(() => {
+    setFormError((prev) => (prev ? null : prev));
+  }, [state]);
+
   // ---------------------------------------------------------
-  // Auto-fill rate, making charge and default GST for MANUAL
-  // entries (no `initial`, no linked product).
+  // Auto-fill rate, default GST, and (for non-91.6 purities) the making
+  // charge rule, for MANUAL entries (no `initial`).
+  // For 91.6 purities the making charge comes from the weight-based
+  // default in the next effect.
+  // Piece-rate purities skip the rate and making rule entirely.
   // ---------------------------------------------------------
   useEffect(() => {
-    if (!visible || initial || linkedProductRef.current) return;
+    if (!visible || initial) return;
 
     const { metalId, purityId, categoryId } = state;
     if (!metalId || !purityId) return;
+
+    const selectedPurity = (purities ?? []).find((p) => p.id === purityId);
+    const purityIs916 = isPurity916(selectedPurity);
+    const purityIsPiece = isPiecePurity(selectedPurity);
 
     let cancelled = false;
 
     (async () => {
       try {
         const [liveRate, taxSetting] = await Promise.all([
-          getCurrentRate(metalId, purityId).catch(() => 0),
+          purityIsPiece ? Promise.resolve(0) : getCurrentRate(metalId, purityId).catch(() => 0),
           getDefaultTaxSetting().catch(() => null),
         ]);
 
-        let makingRule = await getMakingChargeRule(metalId, purityId, categoryId ?? null).catch((e) => {
-          console.warn('[JewelryItemSheet] making rule (with category) failed:', e);
-          return null;
-        });
-
-        if (!makingRule && categoryId) {
-          makingRule = await getMakingChargeRule(metalId, purityId, null).catch((e) => {
-            console.warn('[JewelryItemSheet] making rule (no category) failed:', e);
+        let makingRule: any = null;
+        if (!purityIs916 && !purityIsPiece) {
+          makingRule = await getMakingChargeRule(metalId, purityId, categoryId ?? null).catch((e) => {
+            console.warn('[JewelryItemSheet] making rule (with category) failed:', e);
             return null;
           });
+
+          if (!makingRule && categoryId) {
+            makingRule = await getMakingChargeRule(metalId, purityId, null).catch((e) => {
+              console.warn('[JewelryItemSheet] making rule (no category) failed:', e);
+              return null;
+            });
+          }
         }
 
         if (cancelled) return;
@@ -368,13 +619,20 @@ export function JewelryItemSheet({
           // Ignore results that no longer match what's selected
           if (s.metalId !== metalId || s.purityId !== purityId) return s;
 
+          // Piece-rate: no rate / making, only keep the default GST setting.
+          if (purityIsPiece) {
+            return { ...s, taxSettingId: s.taxSettingId ?? taxSetting?.id ?? null };
+          }
+
+          const keepMaking = makingEditedRef.current || purityIs916;
+
           return {
             ...s,
             rate: rateEditedRef.current ? s.rate : liveRate ? String(liveRate) : '',
-            makingType: makingEditedRef.current
+            makingType: keepMaking
               ? s.makingType
               : ((makingRule?.calculation_type ?? 'fixed') as CalculationType),
-            makingChargeFixed: makingEditedRef.current
+            makingChargeFixed: keepMaking
               ? s.makingChargeFixed
               : makingRule?.value != null
                 ? String(makingRule.value)
@@ -390,116 +648,42 @@ export function JewelryItemSheet({
     return () => {
       cancelled = true;
     };
-  }, [visible, initial, state.metalId, state.purityId, state.categoryId]);
+  }, [visible, initial, state.metalId, state.purityId, state.categoryId, formKey]);
 
   // ---------------------------------------------------------
-  // Fetch a product by its Product ID (exact code), then fill the form.
-  // The Product Name is plain text input and is never searched.
+  // 91.6 defaults for MANUAL entries:
+  //   VA %   -> 13 (cleared again for other purities)
+  //   Making -> ₹100 per net gram, follows the weight (4 g = 400, 5 g = 500)
+  // Both stop auto-updating as soon as the cashier types their own value.
+  // Reads everything from the latest state so it is never stale.
   // ---------------------------------------------------------
-  const handleFetchByCode = async () => {
-    const code = productCode.trim();
-    if (!code) return;
-    Keyboard.dismiss();
-    setLookupBusy(true);
-    setLookupMsg(null);
-    try {
-      const found = await getProductByCode(code);
-      if ((found as any).status === 'sold') {
-        setSoldError('This product has already been sold.');
-        setLookupMsg(null);
-        setProductCode('');   // don't leave the sold code sitting in the field
-        return;               // nothing is filled in, so no details are shown
+  useEffect(() => {
+    if (!visible || initial) return;
+
+    setState((s) => {
+      const purityIs916 = isPurity916((purities ?? []).find((p) => p.id === s.purityId));
+      let next = s;
+
+      if (!vaEditedRef.current) {
+        const va = purityIs916 ? String(DEFAULT_VA_PERCENT) : '';
+        if (s.vacPercent !== va) next = { ...next, vacPercent: va };
       }
-      await applyProduct(found as Product);
-      setLookupMsg('Product details filled.');
-    } catch (e: any) {
-      setLookupMsg(e?.message ?? 'Could not fetch product.');
-    } finally {
-      setLookupBusy(false);
-    }
-  };
 
-  const applyProduct = async (found: Product) => {
-    if (!found) return;
-    linkedProductRef.current = found; // set immediately so auto-fill never fires
+      if (purityIs916 && !makingEditedRef.current) {
+        const net = netWeightOf(s);
+        const mc = net > 0 ? String(round2(net * MAKING_PER_GRAM)) : '';
+        if (next.makingChargeFixed !== mc || next.makingType !== 'fixed') {
+          next = { ...next, makingType: 'fixed' as CalculationType, makingChargeFixed: mc };
+        }
+      }
 
-    try {
-      const full = found as any;
-      linkedProductRef.current = full;
-
-      const [rate, makingRule, taxSetting] = await Promise.all([
-        full.metal_id && full.purity_id
-          ? getCurrentRate(full.metal_id, full.purity_id).catch(() => 0)
-          : Promise.resolve(0),
-        full.metal_id && full.purity_id
-          ? getMakingChargeRule(full.metal_id, full.purity_id, full.category_id ?? null).catch(() => null)
-          : Promise.resolve(null),
-        getDefaultTaxSetting().catch(() => null),
-      ]);
-
-      const item = buildInvoiceItemFromProduct(full, rate, makingRule, taxSetting);
-      const va = item.value_added_charges.find((c) => c.name === VA_CHARGE);
-      const stone = item.value_added_charges.find((c) => c.name === STONE_CHARGE);
-
-      // Prefill stones if the product fetch returns them (harmless if it doesn't).
-      const productStones: any[] = Array.isArray(full.stones) ? full.stones : [];
-      const productStoneIds: string[] = productStones
-        .map((x: any) => x.stone_id ?? x.id)
-        .filter(Boolean);
-
-      setState((s) => ({
-        ...s,
-        name: item.name,
-        metalId: item.metal_id,
-        purityId: item.purity_id,
-        categoryId: item.category_id,
-        grossWeight: String(item.gross_weight),
-        stoneWeight: String(item.stone_weight),
-        otherWeight: String(item.other_weight),
-        rate: item.metal_rate ? String(item.metal_rate) : '',
-        makingType: item.making_charge_type,
-        makingChargeFixed: item.making_charge_value != null ? String(item.making_charge_value) : '',
-        vacPercent: va ? String(va.value) : '',
-        stoneChargeFixed: stone ? String(stone.amount) : '',
-        diamonds: diamondRowsFromLines(item.value_added_charges),
-        itemDiscount: String(item.item_discount ?? 0),
-        taxSettingId: item.tax_setting_id ?? s.taxSettingId,
-        huid: item.huid ?? '',
-        stoneIds: productStoneIds,
-        stoneAmounts:
-          productStones.length >= 2
-            ? Object.fromEntries(
-              productStones.map((x: any) => [x.stone_id ?? x.id, String(x.amount ?? 0)])
-            )
-            : {},
-        stoneName: null,
-        extraCharges: otherExtraLines(item.value_added_charges),
-      }));
-    } catch (err) {
-      console.error('Failed to populate product details:', err);
-    }
-  };
-
-  // ---------------------------------------------------------
-  // Inline "Add New" for Category / Purity / Stone
-  // ---------------------------------------------------------
-  const handleAddCategory = async (name: string): Promise<SelectOption> => {
-    const created = await createCategory({ name });
-    onCategoryAdded?.(created as Category);
-    return { id: created.id, label: created.name };
-  };
-
-  const handleAddPurity = async (name: string): Promise<SelectOption> => {
-    if (!state.metalId) throw new Error('Select a metal first');
-    const created = await createPurity({
-      metal_id: state.metalId,
-      name,
-      purity_percentage: null,
+      return next;
     });
-    onPurityAdded?.(created as Purity);
-    return { id: created.id, label: created.name };
-  };
+  }, [visible, initial, purities, state.purityId, state.grossWeight, state.stoneWeight, formKey]);
 
+  // ---------------------------------------------------------
+  // Inline "Add New" for Stone
+  // ---------------------------------------------------------
   const handleAddStone = async (name: string): Promise<SelectOption> => {
     const created = await createStoneName({ name });
     const opt: SelectOption = { id: created.id, label: created.name };
@@ -533,18 +717,50 @@ export function JewelryItemSheet({
   // Live computed preview
   // ---------------------------------------------------------
   const derived = useMemo(() => {
-    const gross = parseFloat(state.grossWeight) || 0;
-    const stone = parseFloat(state.stoneWeight) || 0;
-    const other = parseFloat(state.otherWeight) || 0;
-    const netWeight = Math.max(+(gross - stone - other).toFixed(3), 0);
+    // Piece-rate: the typed amount is the final (GST-inclusive) total.
+    if (isPiece) {
+      const total = Math.max(parseFloat(state.pieceAmount) || 0, 0);
+      const pieceTax = state.gstEnabled
+        ? taxSettings.find((t) => t.id === state.taxSettingId) ?? null
+        : null;
+      const pct = Number(pieceTax?.tax_percentage) || 0;
+      const taxableBase = round2(total / (1 + pct / 100));
+
+      // Reuse recalcItem only to get the CGST/SGST/IGST split and tax amount.
+      const pieceCalc = recalcItem({
+        netWeight: 1,
+        rate: taxableBase,
+        quantity: 1,
+        makingType: 'fixed',
+        makingValue: 0,
+        vaCharges: [],
+        itemDiscount: 0,
+        taxSetting: pieceTax,
+      });
+
+      return {
+        netWeight: 0,
+        quantity: 1,
+        vaLinesWithAmount: [] as ValueAddedChargeLine[],
+        ...pieceCalc,
+        metal_value: taxableBase,
+        making_charge_amount: 0,
+        taxable_amount: round2(total - pieceCalc.tax_amount),
+        total_amount: total, // exactly what the cashier typed
+      };
+    }
+
+    const netWeight = netWeightOf(state);
     const quantity = Math.max(parseFloat(state.quantity) || 1, 1);
     const rate = parseFloat(state.rate) || 0;
     const makingValue = parseFloat(state.makingChargeFixed) || 0;
     const itemDiscount = parseFloat(state.itemDiscount) || 0;
 
-    // "Apply GST" now lives on the invoice screen (bill-wide), so the item
-    // always carries its own tax setting; the invoice strips it if GST is off.
-    const taxSetting = taxSettings.find((t) => t.id === state.taxSettingId) ?? null;
+    // Per-item "Apply GST". When off, the item is calculated with no tax,
+    // but taxSettingId is kept so ticking it again restores the same setting.
+    const taxSetting = state.gstEnabled
+      ? taxSettings.find((t) => t.id === state.taxSettingId) ?? null
+      : null;
 
     const synthesizedVaLines: ValueAddedChargeLine[] = [];
     const vacValue = parseFloat(state.vacPercent) || 0;
@@ -607,44 +823,56 @@ export function JewelryItemSheet({
     });
 
     return { netWeight, quantity, vaLinesWithAmount: synthesizedVaLines, ...calc };
-  }, [state, taxSettings, vaChargeTypes, showDiamonds]);
+  }, [state, taxSettings, vaChargeTypes, showDiamonds, isPiece]);
 
   // ---------------------------------------------------------
-  // Save
+  // Validate + build the item (shared by Save and Add New)
   // ---------------------------------------------------------
-  const handleSave = () => {
-    if (!state.name.trim() || !state.metalId || !state.purityId || derived.netWeight <= 0) return;
-    setSaving(true);
-    Keyboard.dismiss();
+  const validate = (): string | null => {
+    if (!state.name.trim()) return 'Enter the product name.';
+    if (!state.metalId) return 'Select a metal.';
+    if (!state.purityId) return 'Select a purity.';
+    if (isPiece) {
+      if (derived.total_amount <= 0) return 'Enter the total amount.';
+    } else if (derived.netWeight <= 0) {
+      return 'Enter the gross weight.';
+    }
+    return null;
+  };
 
+  const buildItem = (): InvoiceItem => {
     const stoneLabels = state.stoneIds
       .map((id) => stoneOptions.find((o) => o.id === id)?.label)
       .filter(Boolean) as string[];
 
-    onSave({
+    return {
       id: initial?.id ?? `local-${Date.now()}`,
-      product_id: initial?.product_id ?? linkedProductRef.current?.id ?? null,
-      product_code: initial?.product_code ?? linkedProductRef.current?.product_code ?? null,
+      product_id: initial?.product_id ?? null,
+      product_code: initial?.product_code ?? null,
       name: state.name.trim(),
       metal_id: state.metalId,
       purity_id: state.purityId,
       category_id: state.categoryId,
       quantity: derived.quantity,
-      gross_weight: parseFloat(state.grossWeight) || 0,
-      stone_weight: parseFloat(state.stoneWeight) || 0,
-      other_weight: parseFloat(state.otherWeight) || 0,
+      gross_weight: isPiece ? 0 : parseFloat(state.grossWeight) || 0,
+      stone_weight: isPiece ? 0 : parseFloat(state.stoneWeight) || 0,
+      other_weight: isPiece ? 0 : parseFloat(state.otherWeight) || 0,
       net_weight: derived.netWeight,
-      metal_rate: parseFloat(state.rate) || 0,
+      metal_rate: isPiece ? 0 : parseFloat(state.rate) || 0,
       making_charge_type: state.makingType,
-      making_charge_value: parseFloat(state.makingChargeFixed) || 0,
+      making_charge_value: isPiece ? 0 : parseFloat(state.makingChargeFixed) || 0,
       value_added_charges: derived.vaLinesWithAmount,
-      item_discount: parseFloat(state.itemDiscount) || 0,
+      item_discount: isPiece ? 0 : parseFloat(state.itemDiscount) || 0,
       tax_setting_id: state.taxSettingId,
-      gst_enabled: true, // bill-wide GST toggle on the invoice screen decides at billing time
-      huid: state.huid || null,
+      gst_enabled: state.gstEnabled, // bill-wide GST toggle on the invoice screen decides at billing time
+      huid: isPiece ? null : state.huid || null,
       // With several stones: first id + all names joined by comma.
-      stone_id: state.stoneIds[0] ?? null,
-      stone_name: stoneLabels.length ? stoneLabels.join(', ') : state.stoneName ?? null,
+      stone_id: isPiece ? null : state.stoneIds[0] ?? null,
+      stone_name: isPiece
+        ? null
+        : stoneLabels.length
+          ? stoneLabels.join(', ')
+          : state.stoneName ?? null,
       metal_value: derived.metal_value,
       making_charge_amount: derived.making_charge_amount,
       taxable_amount: derived.taxable_amount,
@@ -654,8 +882,50 @@ export function JewelryItemSheet({
       igst_percentage: derived.igst_percentage,
       tax_amount: derived.tax_amount,
       total_amount: derived.total_amount,
-    });
+    } as InvoiceItem;
+  };
+
+  // ---------------------------------------------------------
+  // Save (adds the item and closes the sheet)
+  // ---------------------------------------------------------
+  const handleSave = () => {
+    const err = validate();
+    if (err) {
+      setFormError(err);
+      return;
+    }
+    setSaving(true);
+    Keyboard.dismiss();
+    onSave(buildItem());
     setSaving(false);
+  };
+
+  // ---------------------------------------------------------
+  // Add New (adds the item, then clears the form for the next product)
+  // ---------------------------------------------------------
+  const resetForNext = () => {
+    rateEditedRef.current = false;
+    makingEditedRef.current = false;
+    vaEditedRef.current = false;
+    setNameFocused(false);
+    clearNameDropdown();
+    setState({ ...blankState(), ...newItemDefaults(), gstEnabled: state.gstEnabled });
+    setFormKey((k) => k + 1);
+    setAddedCount((n) => n + 1);
+    setFormError(null);
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  };
+
+  const handleAddNew = () => {
+    if (!onSaveAndNext) return;
+    const err = validate();
+    if (err) {
+      setFormError(err);
+      return;
+    }
+    Keyboard.dismiss();
+    onSaveAndNext(buildItem());
+    resetForNext();
   };
 
   const handleCancel = () => {
@@ -671,6 +941,11 @@ export function JewelryItemSheet({
   };
 
   const multiStone = state.stoneIds.length >= 2;
+  const hiddenOtherWeight = parseFloat(state.otherWeight) || 0;
+
+  // "Add New" is only for new entries. When editing an existing item
+  // it would overwrite that item, so it is hidden.
+  const canAddNew = !initial && !!onSaveAndNext;
 
   return (
     <Modal
@@ -689,268 +964,309 @@ export function JewelryItemSheet({
             <View style={styles.handle} />
           </View>
 
-          {/* Header: title on the left, Cancel + Save always visible on top */}
+          {/* Header: title on the left, close (X) on the right */}
           <View style={styles.header}>
             <Text style={styles.headerTitle} numberOfLines={1}>
-              {initial ? 'Edit Item' : 'Add Item'}
+              {initial
+                ? 'Edit Item'
+                : addedCount > 0
+                  ? `Add Item · ${addedCount} added`
+                  : 'Add Item'}
             </Text>
-            <View style={styles.headerActions}>
-              <Pressable style={styles.cancelBtn} onPress={handleCancel} hitSlop={6}>
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.saveBtn, saving && styles.btnDisabled]}
-                onPress={handleSave}
-                disabled={saving}
-                hitSlop={6}
-              >
-                <Text style={styles.saveBtnText}>{saving ? 'Saving…' : 'Save'}</Text>
-              </Pressable>
-            </View>
+            <Pressable style={styles.closeBtn} onPress={handleCancel} hitSlop={8}>
+              <X size={20} color={colors.textPrimary} />
+            </Pressable>
           </View>
 
           <ScrollView
+            ref={scrollRef}
+            style={styles.scroll}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{
               paddingHorizontal: spacing.lg,
               paddingTop: spacing.xs,
-              paddingBottom: (kbHeight > 0 ? 0 : insets.bottom) + spacing.xl,
+              paddingBottom: spacing.lg,
             }}
           >
             {/* ---------------- Product ---------------- */}
-            <Section title="Product" hint="Product ID is optional">
-              <Text style={styles.label}>Product ID (optional)</Text>
-              <View style={styles.lookupRow}>
-                <TextInput
-                  style={[styles.input, { flex: 1 }]}
-                  placeholder="e.g. JWL-000001"
-                  placeholderTextColor={colors.textMuted}
-                  autoCapitalize="characters"
-                  autoCorrect={false}
-                  returnKeyType="search"
-                  value={productCode}
-                  onChangeText={(t) => {
-                    setProductCode(t);
-                    setLookupMsg(null);
-                  }}
-                  onSubmitEditing={handleFetchByCode}
-                />
-                <Pressable
-                  style={[
-                    styles.fetchBtn,
-                    (lookupBusy || !productCode.trim()) && styles.btnDisabled,
-                  ]}
-                  onPress={handleFetchByCode}
-                  disabled={lookupBusy || !productCode.trim()}
-                >
-                  <Text style={styles.fetchBtnText}>{lookupBusy ? '…' : 'Fetch'}</Text>
-                </Pressable>
-              </View>
-              {lookupMsg ? <Text style={styles.computedHint}>{lookupMsg}</Text> : null}
-
+            <Section title="Product">
               <Text style={styles.label}>Product Name *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="e.g. Gold Chain"
-                placeholderTextColor={colors.textMuted}
-                value={state.name}
-                onChangeText={(v) => setState((s) => ({ ...s, name: v }))}
-              />
+              <View style={styles.nameWrap}>
+                <TextInput
+                  style={[styles.input, styles.nameInput]}
+                  placeholder="Type a product name"
+                  placeholderTextColor={colors.textMuted}
+                  value={state.name}
+                  onChangeText={handleNameChange}
+                  onFocus={handleNameFocus}
+                  onBlur={handleNameBlur}
+                  autoCorrect={false}
+                  returnKeyType="done"
+                />
+                {state.name.length > 0 && (
+                  <Pressable style={styles.clearBtn} onPress={clearName} hitSlop={8}>
+                    <X size={16} color={colors.textMuted} />
+                  </Pressable>
+                )}
+              </View>
+
+              {/* Dropdown: only after typing, max 5 matching product names */}
+              {showNameDropdown && (
+                <View style={styles.dropdown}>
+                  {nameResults.length > 0 ? (
+                    nameResults.map((n, i) => (
+                      <NameSuggestionRow
+                        key={n}
+                        name={n}
+                        query={nameQuery}
+                        last={i === nameResults.length - 1}
+                        onPress={() => selectSuggestedName(n)}
+                      />
+                    ))
+                  ) : (
+                    <View style={styles.dropEmpty}>
+                      <Text style={styles.dropEmptyText}>
+                        No matching product. “{nameQuery.trim()}” will be used as typed.
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
             </Section>
 
-            {/* ---------------- Classification ---------------- */}
-            <Section title="Metal, Purity & Category">
-              <SelectField
-                label="Metal"
-                value={state.metalId}
+            {/* ---------------- Metal & Purity ---------------- */}
+            <Section title="Metal & Purity">
+              <Text style={styles.label}>Metal</Text>
+              <RadioGroup
                 options={(metals ?? []).map((m) => ({ id: m.id, label: m.name }))}
-                onChange={(id) => setState((s) => ({ ...s, metalId: id, purityId: null }))}
+                value={state.metalId}
+                onChange={(id) =>
+                  setState((s) => ({ ...s, metalId: id, purityId: defaultPurityFor(id) }))
+                }
               />
-              <SelectField
-                label="Purity"
-                value={state.purityId}
+
+              <Text style={styles.label}>Purity</Text>
+              <RadioGroup
                 options={(purities ?? [])
                   .filter((p) => p.metal_id === state.metalId)
                   .map((p) => ({ id: p.id, label: p.name }))}
+                value={state.purityId}
                 onChange={(id) => setState((s) => ({ ...s, purityId: id }))}
                 disabled={!state.metalId}
-                onAddNew={handleAddPurity}
-              />
-              <SelectField
-                label="Category"
-                value={state.categoryId}
-                options={(categories ?? []).map((c) => ({ id: c.id, label: c.name }))}
-                onChange={(id) => setState((s) => ({ ...s, categoryId: id }))}
-                onAddNew={handleAddCategory}
+                emptyText={state.metalId ? 'No purities for this metal' : 'Select a metal first'}
               />
             </Section>
+
+            {/* ---------------- Piece rate: only the total amount ---------------- */}
+            {isPiece && (
+              <Section title="Total Amount" hint="piece rate, no weight">
+                <Text style={styles.label}>Total Amount (₹) *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="0"
+                  placeholderTextColor={colors.textMuted}
+                  keyboardType="decimal-pad"
+                  value={state.pieceAmount}
+                  onChangeText={(v) => setState((s) => ({ ...s, pieceAmount: v }))}
+                />
+                <Text style={styles.computedHint}>
+                  {state.gstEnabled
+                    ? 'Amount includes GST (tax is taken out of it).'
+                    : 'GST off: this amount is the final total.'}
+                </Text>
+              </Section>
+            )}
+
+            {/* ---------------- Piece rate: GST on/off ---------------- */}
+            {isPiece && (
+              <Section title="Tax">
+                <Pressable
+                  style={styles.gstToggle}
+                  onPress={() => setState((s) => ({ ...s, gstEnabled: !s.gstEnabled }))}
+                  hitSlop={8}
+                >
+                  <View style={[styles.checkbox, state.gstEnabled && styles.checkboxOn]}>
+                    {state.gstEnabled && <Check size={14} color="#fff" strokeWidth={3} />}
+                  </View>
+                  <Text style={styles.gstLabel}>Apply GST</Text>
+                </Pressable>
+
+                <SelectField
+                  label="GST Setting"
+                  value={state.taxSettingId}
+                  options={(taxSettings ?? []).map((t) => ({
+                    id: t.id,
+                    label: `${t.tax_name} (${t.tax_percentage}%)`,
+                  }))}
+                  onChange={(id) => setState((s) => ({ ...s, taxSettingId: id }))}
+                  disabled={!state.gstEnabled}
+                />
+
+                {state.gstEnabled && derived.tax_percentage > 0 && (
+                  <Text style={styles.computedHint}>
+                    {derived.cgst_percentage > 0 || derived.sgst_percentage > 0
+                      ? `CGST ${derived.cgst_percentage}% + SGST ${derived.sgst_percentage}%`
+                      : `IGST ${derived.igst_percentage}%`}
+                    {' · '}Tax: ₹{derived.tax_amount.toLocaleString('en-IN')}
+                  </Text>
+                )}
+              </Section>
+            )}
 
             {/* ---------------- Weight & Rate ---------------- */}
-            <Section title="Weight & Rate" hint="weights in grams">
-              <View style={styles.row}>
-                <View style={styles.col}>
-                  <Text style={styles.label}>Gross (g)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0.000"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
-                    value={state.grossWeight}
-                    onChangeText={(v) => setState((s) => ({ ...s, grossWeight: v }))}
-                  />
+            {!isPiece && (
+              <Section title="Weight & Rate" hint="weights in grams">
+                <View style={styles.row}>
+                  <View style={styles.col}>
+                    <Text style={styles.label}>Gross (g)</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="0.000"
+                      placeholderTextColor={colors.textMuted}
+                      keyboardType="decimal-pad"
+                      value={state.grossWeight}
+                      onChangeText={(v) => setState((s) => ({ ...s, grossWeight: v }))}
+                    />
+                  </View>
+                  <View style={styles.col}>
+                    <Text style={styles.label}>Stone (g)</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="0.000"
+                      placeholderTextColor={colors.textMuted}
+                      keyboardType="decimal-pad"
+                      value={state.stoneWeight}
+                      onChangeText={(v) => setState((s) => ({ ...s, stoneWeight: v }))}
+                    />
+                  </View>
                 </View>
-                <View style={styles.col}>
-                  <Text style={styles.label}>Stone (g)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0.000"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
-                    value={state.stoneWeight}
-                    onChangeText={(v) => setState((s) => ({ ...s, stoneWeight: v }))}
-                  />
-                </View>
-                <View style={styles.col}>
-                  <Text style={styles.label}>Other (g)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0.000"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
-                    value={state.otherWeight}
-                    onChangeText={(v) => setState((s) => ({ ...s, otherWeight: v }))}
-                  />
-                </View>
-              </View>
 
-              <View style={styles.weightBadge}>
-                <Text style={styles.weightBadgeLabel}>Calculated Net Weight</Text>
-                <Text style={styles.weightBadgeVal}>{derived.netWeight} g</Text>
-              </View>
+                <View style={styles.weightBadge}>
+                  <Text style={styles.weightBadgeLabel}>Calculated Net Weight</Text>
+                  <Text style={styles.weightBadgeVal}>{derived.netWeight} g</Text>
+                </View>
+                {hiddenOtherWeight > 0 && (
+                  <Text style={styles.computedHint}>
+                    Includes {hiddenOtherWeight} g other weight already on this item.
+                  </Text>
+                )}
 
-              <View style={styles.row}>
-                <View style={[styles.col, { flex: 0.6 }]}>
-                  <Text style={styles.label}>Quantity</Text>
-                  <TextInput
-                    style={styles.input}
-                    keyboardType="number-pad"
-                    value={state.quantity}
-                    onChangeText={(v) => setState((s) => ({ ...s, quantity: v }))}
-                  />
-                </View>
-                <View style={[styles.col, { flex: 1.4 }]}>
-                  <Text style={styles.label}>Rate per gram (₹)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
-                    value={state.rate}
-                    onChangeText={(v) => {
-                      rateEditedRef.current = true;
-                      setState((s) => ({ ...s, rate: v }));
-                    }}
-                  />
-                </View>
-              </View>
-            </Section>
+                <Text style={styles.label}>Rate per gram (₹)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="0"
+                  placeholderTextColor={colors.textMuted}
+                  keyboardType="decimal-pad"
+                  value={state.rate}
+                  onChangeText={(v) => {
+                    rateEditedRef.current = true;
+                    setState((s) => ({ ...s, rate: v }));
+                  }}
+                />
+              </Section>
+            )}
 
             {/* ---------------- Charges ---------------- */}
-            <Section title="Charges">
-              <Text style={styles.label}>Stones</Text>
-              <MultiSelectField
-                options={stoneOptions}
-                values={state.stoneIds}
-                onChange={(ids: string[]) =>
-                  setState((s) => ({ ...s, stoneIds: ids, stoneName: null }))
-                }
-                placeholder="Select stones (optional)"
-                onAddNew={handleAddStone}
-              />
+            {!isPiece && (
+              <Section title="Charges">
+                <Text style={styles.label}>Stones</Text>
+                <MultiSelectField
+                  options={stoneOptions}
+                  values={state.stoneIds}
+                  onChange={(ids: string[]) =>
+                    setState((s) => ({ ...s, stoneIds: ids, stoneName: null }))
+                  }
+                  placeholder="Select stones (optional)"
+                  onAddNew={handleAddStone}
+                />
 
-              {/* One amount per stone, only when 2+ are selected */}
-              {multiStone &&
-                state.stoneIds.map((id) => {
-                  const label = stoneOptions.find((o) => o.id === id)?.label ?? 'Stone';
-                  return (
-                    <View key={id}>
-                      <Text style={styles.label}>{label} amount (₹)</Text>
-                      <TextInput
-                        style={styles.input}
-                        placeholder="0"
-                        placeholderTextColor={colors.textMuted}
-                        keyboardType="decimal-pad"
-                        value={state.stoneAmounts[id] ?? ''}
-                        onChangeText={(v) =>
-                          setState((s) => ({ ...s, stoneAmounts: { ...s.stoneAmounts, [id]: v } }))
-                        }
-                      />
-                    </View>
-                  );
-                })}
+                {/* One amount per stone, only when 2+ are selected */}
+                {multiStone &&
+                  state.stoneIds.map((id) => {
+                    const label = stoneOptions.find((o) => o.id === id)?.label ?? 'Stone';
+                    return (
+                      <View key={id}>
+                        <Text style={styles.label}>{label} amount (₹)</Text>
+                        <TextInput
+                          style={styles.input}
+                          placeholder="0"
+                          placeholderTextColor={colors.textMuted}
+                          keyboardType="decimal-pad"
+                          value={state.stoneAmounts[id] ?? ''}
+                          onChangeText={(v) =>
+                            setState((s) => ({ ...s, stoneAmounts: { ...s.stoneAmounts, [id]: v } }))
+                          }
+                        />
+                      </View>
+                    );
+                  })}
 
-              <View style={[styles.row, { marginTop: spacing.xs }]}>
-                <View style={styles.col}>
-                  <Text style={styles.label}>VA (%)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
-                    value={state.vacPercent}
-                    onChangeText={(v) => setState((s) => ({ ...s, vacPercent: v }))}
-                  />
-                </View>
-                <View style={styles.col}>
-                  <Text style={styles.label}>{makingLabel(state.makingType)}</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
-                    value={state.makingChargeFixed}
-                    onChangeText={(v) => {
-                      makingEditedRef.current = true;
-                      setState((s) => ({ ...s, makingChargeFixed: v }));
-                    }}
-                  />
-                </View>
-                <View style={styles.col}>
-                  <Text style={styles.label}>{multiStone ? 'Stone total (₹)' : 'Stone (₹)'}</Text>
-                  {multiStone ? (
-                    <View style={[styles.input, styles.inputLocked]}>
-                      <Text style={styles.lockedText}>{stoneChargeOf(state).toFixed(2)}</Text>
-                    </View>
-                  ) : (
+                <View style={[styles.row, { marginTop: spacing.xs }]}>
+                  <View style={styles.col}>
+                    <Text style={styles.label}>VA (%)</Text>
                     <TextInput
                       style={styles.input}
                       placeholder="0"
                       placeholderTextColor={colors.textMuted}
                       keyboardType="decimal-pad"
-                      value={state.stoneChargeFixed}
-                      onChangeText={(v) => setState((s) => ({ ...s, stoneChargeFixed: v }))}
+                      value={state.vacPercent}
+                      onChangeText={(v) => {
+                        vaEditedRef.current = true;
+                        setState((s) => ({ ...s, vacPercent: v }));
+                      }}
                     />
-                  )}
+                  </View>
+                  <View style={styles.col}>
+                    <Text style={styles.label}>{makingLabel(state.makingType)}</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="0"
+                      placeholderTextColor={colors.textMuted}
+                      keyboardType="decimal-pad"
+                      value={state.makingChargeFixed}
+                      onChangeText={(v) => {
+                        makingEditedRef.current = true;
+                        setState((s) => ({ ...s, makingChargeFixed: v }));
+                      }}
+                    />
+                  </View>
+                  <View style={styles.col}>
+                    <Text style={styles.label}>{multiStone ? 'Stone total (₹)' : 'Stone (₹)'}</Text>
+                    {multiStone ? (
+                      <View style={[styles.input, styles.inputLocked]}>
+                        <Text style={styles.lockedText}>{stoneChargeOf(state).toFixed(2)}</Text>
+                      </View>
+                    ) : (
+                      <TextInput
+                        style={styles.input}
+                        placeholder="0"
+                        placeholderTextColor={colors.textMuted}
+                        keyboardType="decimal-pad"
+                        value={state.stoneChargeFixed}
+                        onChangeText={(v) => setState((s) => ({ ...s, stoneChargeFixed: v }))}
+                      />
+                    )}
+                  </View>
                 </View>
 
-              </View>
-
-              {/* Any other charge lines carried over from the scanned product */}
-              {state.extraCharges.length > 0 && (
-                <View style={{ marginTop: spacing.xs }}>
-                  {state.extraCharges.map((c) => (
-                    <Text key={c.id} style={styles.computedHint}>
-                      {c.name}: ₹{c.amount.toLocaleString('en-IN')}
-                    </Text>
-                  ))}
-                </View>
-              )}
-            </Section>
+                {/* Any other charge lines carried over from the scanned product */}
+                {state.extraCharges.length > 0 && (
+                  <View style={{ marginTop: spacing.xs }}>
+                    {state.extraCharges.map((c) => (
+                      <Text key={c.id} style={styles.computedHint}>
+                        {c.name}: ₹{c.amount.toLocaleString('en-IN')}
+                      </Text>
+                    ))}
+                  </View>
+                )}
+              </Section>
+            )}
 
             {/* ---------------- Diamonds ----------------
                 Shown when the Metal OR Category is Diamond
-                (or when the item already carries diamond lines). */}
+                (or when the item already carries diamond lines).
+                Never for piece-rate purities. */}
             {showDiamonds && (
               <Section title="Diamonds" hint="size (ct) × rate per carat">
                 {state.diamonds.length === 0 && (
@@ -962,7 +1278,7 @@ export function JewelryItemSheet({
                   return (
                     <View key={d.key} style={styles.diamondBlock}>
                       <View style={styles.diamondRow}>
-                        <View style={styles.col}>
+                        <View style={styles.colFlex}>
                           <Text style={styles.label}>Size (ct)</Text>
                           <TextInput
                             style={styles.input}
@@ -972,7 +1288,7 @@ export function JewelryItemSheet({
                             onChangeText={(v) => updateDiamondRow(d.key, { size: v })}
                           />
                         </View>
-                        <View style={styles.col}>
+                        <View style={styles.colFlex}>
                           <Text style={styles.label}>Rate (₹/ct)</Text>
                           <TextInput
                             style={styles.input}
@@ -1004,89 +1320,134 @@ export function JewelryItemSheet({
             )}
 
             {/* ---------------- Tax & Discounts ---------------- */}
-            <Section title="Tax & Discount">
-              <SelectField
-                label="GST Setting"
-                value={state.taxSettingId}
-                options={(taxSettings ?? []).map((t) => ({
-                  id: t.id,
-                  label: `${t.tax_name} (${t.tax_percentage}%)`,
-                }))}
-                onChange={(id) => setState((s) => ({ ...s, taxSettingId: id }))}
-              />
+            {!isPiece && (
+              <Section title="Tax & Discount">
+                <Pressable
+                  style={styles.gstToggle}
+                  onPress={() => setState((s) => ({ ...s, gstEnabled: !s.gstEnabled }))}
+                  hitSlop={8}
+                >
+                  <View style={[styles.checkbox, state.gstEnabled && styles.checkboxOn]}>
+                    {state.gstEnabled && <Check size={14} color="#fff" strokeWidth={3} />}
+                  </View>
+                  <Text style={styles.gstLabel}>Apply GST</Text>
+                </Pressable>
 
-              {derived.tax_percentage > 0 && (
-                <Text style={styles.computedHint}>
-                  {derived.cgst_percentage > 0 || derived.sgst_percentage > 0
-                    ? `CGST ${derived.cgst_percentage}% + SGST ${derived.sgst_percentage}%`
-                    : `IGST ${derived.igst_percentage}%`}
-                  {' · '}Tax: ₹{derived.tax_amount.toLocaleString('en-IN')}
-                </Text>
-              )}
+                <SelectField
+                  label="GST Setting"
+                  value={state.taxSettingId}
+                  options={(taxSettings ?? []).map((t) => ({
+                    id: t.id,
+                    label: `${t.tax_name} (${t.tax_percentage}%)`,
+                  }))}
+                  onChange={(id) => setState((s) => ({ ...s, taxSettingId: id }))}
+                  disabled={!state.gstEnabled}
+                />
 
-              <View style={[styles.row, { marginTop: spacing.xs }]}>
-                <View style={styles.col}>
-                  <Text style={styles.label}>Discount (₹)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="0"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
-                    value={state.itemDiscount}
-                    onChangeText={(v) => setState((s) => ({ ...s, itemDiscount: v }))}
-                  />
+                {state.gstEnabled && derived.tax_percentage > 0 && (
+                  <Text style={styles.computedHint}>
+                    {derived.cgst_percentage > 0 || derived.sgst_percentage > 0
+                      ? `CGST ${derived.cgst_percentage}% + SGST ${derived.sgst_percentage}%`
+                      : `IGST ${derived.igst_percentage}%`}
+                    {' · '}Tax: ₹{derived.tax_amount.toLocaleString('en-IN')}
+                  </Text>
+                )}
+
+                <View style={[styles.row, { marginTop: spacing.xs }]}>
+                  <View style={styles.col}>
+                    <Text style={styles.label}>Discount (₹)</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="0"
+                      placeholderTextColor={colors.textMuted}
+                      keyboardType="decimal-pad"
+                      value={state.itemDiscount}
+                      onChangeText={(v) => setState((s) => ({ ...s, itemDiscount: v }))}
+                    />
+                  </View>
+                  <View style={styles.col}>
+                    <Text style={styles.label}>HUID (optional)</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="HUID"
+                      placeholderTextColor={colors.textMuted}
+                      autoCapitalize="characters"
+                      value={state.huid}
+                      onChangeText={(v) => setState((s) => ({ ...s, huid: v }))}
+                    />
+                  </View>
                 </View>
-                <View style={styles.col}>
-                  <Text style={styles.label}>HUID (optional)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="HUID"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    value={state.huid}
-                    onChangeText={(v) => setState((s) => ({ ...s, huid: v }))}
-                  />
-                </View>
-              </View>
-            </Section>
+              </Section>
+            )}
 
             {/* ---------------- Summary ---------------- */}
-            <View style={styles.summaryCard}>
-              <View style={styles.totalPreview}>
-                <Text style={styles.totalPreviewLabel}>Taxable Amount</Text>
-                <Text style={styles.totalPreviewValue}>₹{derived.taxable_amount.toLocaleString('en-IN')}</Text>
+            {!isPiece && (
+              <View style={styles.summaryCard}>
+                <View style={styles.totalPreview}>
+                  <Text style={styles.totalPreviewLabel}>Taxable Amount</Text>
+                  <Text style={styles.totalPreviewValue}>₹{derived.taxable_amount.toLocaleString('en-IN')}</Text>
+                </View>
+                <View style={[styles.totalPreview, styles.totalPreviewBorder]}>
+                  <Text style={styles.totalPreviewLabelBold}>Total Amount</Text>
+                  <Text style={styles.totalPreviewValueBold}>₹{derived.total_amount.toLocaleString('en-IN')}</Text>
+                </View>
               </View>
-              <View style={[styles.totalPreview, styles.totalPreviewBorder]}>
-                <Text style={styles.totalPreviewLabelBold}>Total Amount</Text>
-                <Text style={styles.totalPreviewValueBold}>₹{derived.total_amount.toLocaleString('en-IN')}</Text>
-              </View>
-            </View>
+            )}
           </ScrollView>
+
+          {/* ---------------- Footer: Add New + Save (always visible) ---------------- */}
+          <View
+            style={[
+              styles.footer,
+              { paddingBottom: (kbHeight > 0 ? 0 : insets.bottom) + spacing.sm },
+            ]}
+          >
+            {formError ? <Text style={styles.formError}>{formError}</Text> : null}
+
+            <View style={styles.footerRow}>
+              {canAddNew && (
+                <Pressable
+                  style={[styles.footerBtn, styles.addNewBtn, saving && styles.btnDisabled]}
+                  onPress={handleAddNew}
+                  disabled={saving}
+                >
+                  <Plus size={18} color={colors.primary} />
+                  <Text style={styles.addNewBtnText}>Add New</Text>
+                </Pressable>
+              )}
+
+              <Pressable
+                style={[styles.footerBtn, styles.saveBtn, saving && styles.btnDisabled]}
+                onPress={handleSave}
+                disabled={saving}
+              >
+                <Text style={styles.saveBtnText}>{saving ? 'Saving…' : 'Save'}</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
-        <ErrorModal
-          visible={!!soldError}
-          title="Already sold"
-          message={soldError}
-          onClose={() => setSoldError(null)}
-        />
       </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  // Sheet shell
+  // Sheet shell (centred with a max width, so it also looks right on tablets)
   overlay: {
     flex: 1,
     justifyContent: 'flex-end',
+    alignItems: 'center',
     backgroundColor: 'rgba(15, 23, 42, 0.45)',
   },
   sheet: {
+    width: '100%',
+    maxWidth: 640,
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     overflow: 'hidden',
   },
+  scroll: { flexShrink: 1 },
   handleWrap: { alignItems: 'center', paddingTop: 8 },
   handle: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#CBD5E1' },
   header: {
@@ -1107,30 +1468,47 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.textPrimary,
   },
-  headerActions: {
-    flexDirection: 'row',
+  closeBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
+    backgroundColor: '#F1F5F9',
   },
-  cancelBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 8,
-    borderWidth: 1.5,
-    borderColor: colors.primary,
+  btnDisabled: { opacity: 0.6 },
+
+  // Footer (Add New + Save)
+  footer: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
     backgroundColor: '#FFFFFF',
   },
-  cancelBtnText: { color: colors.primary, fontWeight: '700', fontSize: 14 },
-  saveBtn: {
-    paddingHorizontal: 18,
-    paddingVertical: 9,
-    borderRadius: 8,
+  footerRow: { flexDirection: 'row', gap: 10 },
+  footerBtn: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 12,
     borderWidth: 1.5,
     borderColor: colors.primary,
-    backgroundColor: colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
-  saveBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
-  btnDisabled: { opacity: 0.6 },
+  addNewBtn: { backgroundColor: '#FFFFFF' },
+  addNewBtnText: { color: colors.primary, fontWeight: '700', fontSize: 15 },
+  saveBtn: { backgroundColor: colors.primary },
+  saveBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
+  formError: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: '#B00020',
+    marginBottom: spacing.xs,
+    textAlign: 'center',
+  },
 
   // Section cards
   card: {
@@ -1145,6 +1523,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 6,
     marginBottom: spacing.xs,
   },
   cardTitle: {
@@ -1176,24 +1556,85 @@ const styles = StyleSheet.create({
   inputLocked: { justifyContent: 'center', opacity: 0.8 },
   lockedText: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
 
-  // Product ID lookup
-  lookupRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  fetchBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 11,
-    borderRadius: 10,
-    backgroundColor: colors.primary,
+  // Product name + dropdown
+  nameWrap: { position: 'relative', justifyContent: 'center' },
+  nameInput: { paddingRight: 40 },
+  clearBtn: {
+    position: 'absolute',
+    right: 12,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
   },
-  fetchBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
+  dropdown: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
+    elevation: 3,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  dropRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    backgroundColor: '#FFFFFF',
+  },
+  dropRowBorder: { borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  dropRowPressed: { backgroundColor: '#F1F5F9' },
+  dropText: { flex: 1, fontSize: 14, color: colors.textSecondary },
+  dropTextMatch: { fontWeight: '800', color: colors.textPrimary },
+  dropEmpty: { paddingHorizontal: spacing.md, paddingVertical: 12 },
+  dropEmptyText: { fontSize: 12.5, color: colors.textMuted },
 
+  // Responsive rows: columns wrap onto the next line on narrow screens
   row: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
     marginBottom: spacing.xs,
   },
   col: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 96,
+    minWidth: 96,
   },
+  colFlex: { flex: 1 },
+
+  // Radio buttons (small, no background)
+  radioWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 18,
+    rowGap: 8,
+    marginBottom: spacing.xs,
+  },
+  radioItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 2,
+  },
+  radioOuter: {
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterOn: { borderColor: colors.primary },
+  radioInner: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.primary },
+  radioLabel: { fontSize: 13, color: colors.textSecondary, fontWeight: '500' },
+  radioLabelOn: { color: colors.textPrimary, fontWeight: '700' },
 
   // Diamond rows
   diamondBlock: { marginBottom: spacing.xs },
@@ -1275,4 +1716,18 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.primary,
   },
+  // Apply GST checkbox
+  gstToggle: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: spacing.xs },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  gstLabel: { fontSize: 14, fontWeight: '600', color: colors.textPrimary },
 });

@@ -30,6 +30,7 @@ export interface Purity {
   name: string;
   purity_percentage: number | null;
   is_active: boolean;
+  created_at?: string;
 }
 
 export interface MetalRate {

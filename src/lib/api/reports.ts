@@ -1,3 +1,5 @@
+// src\lib\api\reports.ts
+
 import { supabase } from '../supabaseClient';
 import type { DateFilterValue } from '../../components/ui/DateFilter';
 import type { PaymentMode } from '../../types/invoices';
@@ -58,6 +60,7 @@ export interface ReportInvoiceRow {
   status: string;
   customer_name: string;
   product_codes: string[];
+  payment_summary: string; // e.g. "Cash", or "Cash + UPI" for split bills
 
 }
 
@@ -123,6 +126,7 @@ export async function getSalesReport(range: ReportRange): Promise<ReportSummary>
     product_codes: (row.invoice_items ?? [])
       .map((item: any) => item.product_code)
       .filter(Boolean),
+    payment_summary: '',
   }));
 
   // For invoices paid across multiple modes, invoices.payment_mode is just
@@ -153,6 +157,16 @@ export async function getSalesReport(range: ReportRange): Promise<ReportSummary>
         splitsByInvoice.set(row.invoice_id, list);
       }
     }
+  }
+
+  const modeLabel = (m: string) => PAYMENT_MODE_META[m]?.label ?? m;
+  for (const inv of invoices) {
+    const splits = (splitsByInvoice.get(inv.id) ?? []).filter((s) => s.amount > 0);
+    inv.payment_summary = splits.length
+      ? Array.from(new Set(splits.map((s) => modeLabel(s.payment_mode)))).join(' + ')
+      : inv.payment_mode === ('split' as any)
+        ? 'Split'
+        : modeLabel(inv.payment_mode);
   }
 
   // Sum *collected* amount per payment method — this is what a "how much
@@ -192,4 +206,37 @@ export async function getSalesReport(range: ReportRange): Promise<ReportSummary>
     invoices,
     paymentBreakdown,
   };
+}
+
+function rangeToIso(range: ReportRange) {
+  return {
+    fromIso: new Date(`${range.fromDate}T00:00:00`).toISOString(),
+    toIso: new Date(`${range.toDate}T23:59:59.999`).toISOString(),
+  };
+}
+
+// Same rule as the Full Report PDF: a repair counts if it was received
+// OR delivered inside the range, so the dashboard and the PDF always agree.
+export async function countRepairsInRange(range: ReportRange): Promise<number> {
+  const { fromIso, toIso } = rangeToIso(range);
+  const { count, error } = await supabase
+    .from('repair_orders')
+    .select('id', { count: 'exact', head: true })
+    .or(
+      `and(created_at.gte.${fromIso},created_at.lte.${toIso}),` +
+        `and(delivered_at.gte.${fromIso},delivered_at.lte.${toIso})`
+    );
+  if (error) throw error;
+  return count ?? 0;
+}
+
+export async function countOrdersInRange(range: ReportRange): Promise<number> {
+  const { fromIso, toIso } = rangeToIso(range);
+  const { count, error } = await supabase
+    .from('customer_orders')
+    .select('id', { count: 'exact', head: true })
+    .gte('created_at', fromIso)
+    .lte('created_at', toIso);
+  if (error) throw error;
+  return count ?? 0;
 }

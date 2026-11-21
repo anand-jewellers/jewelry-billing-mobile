@@ -261,10 +261,12 @@ export async function completeCustomerOrderWithInvoice(
     .from('customer_orders')
     .update({ status: 'completed', invoice_id: invoiceId })
     .eq('id', orderId)
-    .select('*')
-    .single();
+    .select('*');
   if (error) throw error;
-  return data as CustomerOrder;
+  if (!data?.length) {
+    throw new Error('No order row was updated. Check the update policy on customer_orders.');
+  }
+  return data[0] as CustomerOrder;
 }
 
 let channelSeq = 0;

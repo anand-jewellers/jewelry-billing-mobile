@@ -4,6 +4,9 @@
 // Fields: product name, metal, purity, weight, stone weight, old %.
 // Amount uses the SAME calculation as the old-gold exchange on the invoice
 // (computeExchangeItem in lib/exchangeGold.ts).
+// Old % is auto-filled from the purity using the SAME defaults as
+// ExchangeGoldModal (SAADHA = SAADHA_OLD_PERCENT, others =
+// defaultOldPercentForPurity). The value stays editable.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -28,9 +31,21 @@ import {
   deductionFromOldPercent,
   displayNetWeight,
   OLD_PERCENT_STEPS,
+  SAADHA_OLD_PERCENT,
+  defaultOldPercentForPurity,
 } from '../../lib/exchangeGold';
 import type { Metal, Purity } from '../../types/settings';
 import type { PurchaseItem } from '../../lib/api/cashPurchases';
+
+const isSaadhaName = (name: string) => /saadha/i.test(name);
+
+// Default Old % for a purity row - same rule as ExchangeGoldModal
+const defaultOldFor = (p?: Purity | null): number => {
+  if (!p) return 0;
+  if (isSaadhaName(p.name)) return SAADHA_OLD_PERCENT;
+  const percent = Number((p as any).purity_percentage) || 0;
+  return defaultOldPercentForPurity(percent);
+};
 
 interface Props {
   visible: boolean;
@@ -121,16 +136,24 @@ export function PurchaseItemModal({
     }
   };
 
+  // Fill Old % with the default for the picked purity
+  const applyDefaultOld = (p?: Purity | null) => {
+    const def = defaultOldFor(p);
+    setOldPercent(def > 0 ? String(def) : '');
+  };
+
   const handleMetalChange = (id: string) => {
     setMetalId(id);
     const first = purityListFor(id)[0];
     const pid = first?.id ?? '';
     setPurityId(pid);
+    applyDefaultOld(first);
     void loadRate(id, pid);
   };
 
   const handlePurityChange = (id: string) => {
     setPurityId(id);
+    applyDefaultOld(purities.find((p) => p.id === id));
     void loadRate(metalId, id);
   };
 
@@ -146,7 +169,7 @@ export function PurchaseItemModal({
       setOldPercent(editingItem.old_percent > 0 ? String(editingItem.old_percent) : '');
       setRatePerGram(String(editingItem.rate_per_gram));
       setRateError(null);
-      return; // keep the saved rate - do not overwrite with today's
+      return; // keep the saved rate and old % - do not overwrite
     }
 
     setName('');
@@ -155,13 +178,17 @@ export function PurchaseItemModal({
     setOldPercent('');
     setRatePerGram('');
 
-    // New item: start with Gold + 22K and fetch the rate straight away
+    // New item: start with Gold + 22K (never SAADHA), default Old %, and fetch the rate
     const gold = metals.find((m) => /gold/i.test(m.name)) ?? metals[0];
     const mid = gold?.id ?? '';
     const list = purityListFor(mid);
-    const p22 = list.find((p) => p.name.trim().toLowerCase() === '22k') ?? list[0];
+    const p22 =
+      list.find((p) => !isSaadhaName(p.name) && p.name.trim().toLowerCase() === '22k') ??
+      list.find((p) => !isSaadhaName(p.name) && /22k/i.test(p.name)) ??
+      list[0];
     setMetalId(mid);
     setPurityId(p22?.id ?? '');
+    applyDefaultOld(p22);
     void loadRate(mid, p22?.id ?? '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, editingItem]);
@@ -343,7 +370,6 @@ export function PurchaseItemModal({
               </View>
             </View>
           </ScrollView>
-
 
           {/* Save button at the bottom, with margin so the nav bar never covers it */}
           <Pressable

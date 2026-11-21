@@ -28,8 +28,8 @@ import type { InvoiceDetail } from '../../../src/types/invoices';
 import { HeaderFooterModal } from '../../../src/components/invoice/HeaderFooterModal';
 import { displayNetWeight } from '../../../src/lib/exchangeGold';
 // import { getSavedPrinter } from '../../../src/lib/thermalPrint/printerStore';
-// import { getConnectedPrinter, disconnectActive } from '../../../src/lib/thermalPrint/printerService';
-// import { printThermalReceiptDirect } from '../../../src/lib/thermalPrint/escposReceipt';
+import { getConnectedPrinter, disconnectActive } from '../../../src/lib/thermalPrint/printerService';
+import { printThermalReceiptDirect } from '../../../src/lib/thermalPrint/escposReceipt';
 
 const WHATSAPP_GREEN = '#25D366';
 
@@ -58,6 +58,7 @@ export default function InvoiceDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [waSharing, setWaSharing] = useState(false);
   const [printing, setPrinting] = useState(false);
+  const [printingReceipt, setPrintingReceipt] = useState(false);
   const [printModalOpen, setPrintModalOpen] = useState(false);
 
   // Web: load the PDF library early so the share tap stays within the browser's user-gesture window
@@ -141,12 +142,37 @@ export default function InvoiceDetailScreen() {
   };
 
   const handleThermalPrint = async () => {
-    if (!invoice) return;
+    if (!invoice || printingReceipt) return;
+
+    // Bluetooth thermal printing only works in the native app.
+    // On web, keep the old browser print dialog.
+    if (Platform.OS === 'web') {
+      try {
+        const html = buildThermalReceiptHtml(invoice, shop, displayConfig);
+        await printHtml(html);
+      } catch (e: any) {
+        Alert.alert('Could not print receipt', e?.message ?? 'Unknown error');
+      }
+      return;
+    }
+
+    setPrintingReceipt(true);
     try {
-      const html = buildThermalReceiptHtml(invoice, shop, displayConfig);
-      await printHtml(html);
+      const printer = await getConnectedPrinter();
+      try {
+        await printThermalReceiptDirect(
+          printer,
+          invoice,
+          shop ?? companyToShopDetails(null),
+          displayConfig
+        );
+      } finally {
+        await disconnectActive();
+      }
     } catch (e: any) {
-      Alert.alert('Could not print receipt', e.message ?? 'Unknown error');
+      Alert.alert('Could not print receipt', e?.message ?? 'Unknown error');
+    } finally {
+      setPrintingReceipt(false);
     }
   };
 
@@ -325,9 +351,15 @@ export default function InvoiceDetailScreen() {
             <Printer size={18} color="#fff" />
             <Text style={styles.footerBtnText}>Print A4</Text>
           </Pressable>
-          <Pressable style={styles.footerBtn} onPress={handleThermalPrint}>
+          <Pressable
+            style={[styles.footerBtn, printingReceipt && styles.footerBtnDisabled]}
+            onPress={handleThermalPrint}
+            disabled={printingReceipt}
+          >
             <Receipt size={18} color="#fff" />
-            <Text style={styles.footerBtnText}>Print Receipt</Text>
+            <Text style={styles.footerBtnText}>
+              {printingReceipt ? 'Printing…' : 'Print Receipt'}
+            </Text>
           </Pressable>
         </View>
       </View>

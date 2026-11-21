@@ -18,7 +18,6 @@ import {
 import {
   createCategory,
   createSubcategory,
-  createPurity,
   createStoneName,
 } from '../../../src/lib/api/settings';
 import { uploadProductImageBase64 } from '../../../src/lib/storage';
@@ -32,6 +31,24 @@ const SAVED_POPUP_AUTO_NAV_MS = 1500;
 
 // Route to the product list screen.
 const PRODUCT_LIST_ROUTE = '/products';
+
+// Defaults applied when a 91.6 (22k) purity is selected.
+// Both stay editable.
+const DEFAULT_VA_PERCENT = 13;
+const MAKING_PER_GRAM = 100; // 4 g -> 400, 5 g -> 500, 6 g -> 600
+
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+// A purity "is 91.6" when its name says so (916, 91.6, 22k) or its
+// percentage is ~91.6. This way any naming the shop uses is recognised.
+function isPurity916(name?: string | null, percentage?: number | null): boolean {
+  if (name && /916|91\.6|22\s*k/i.test(name)) return true;
+  const pct = Number(percentage);
+  return Number.isFinite(pct) && Math.abs(pct - 91.6) < 0.15;
+}
+
+// Purity option = dropdown-style option + the percentage kept for the 91.6 check.
+type PurityOption = SelectOption & { percentage: number | null };
 
 // One row of diamond size + amount (only used when the metal is Diamond).
 type DiamondRow = { key: string; size: string; amount: string };
@@ -59,6 +76,45 @@ function Field({ label, children, style }: { label: string; children: ReactNode;
   );
 }
 
+// ---------- Small radio group (radio + text only, no background) ----------
+function RadioGroup({
+  options,
+  value,
+  onChange,
+  disabled,
+  emptyText,
+}: {
+  options: { id: string; label: string }[];
+  value: string | null;
+  onChange: (id: string) => void;
+  disabled?: boolean;
+  emptyText?: string;
+}) {
+  if (options.length === 0) {
+    return <Text style={styles.helperText}>{emptyText ?? 'No options'}</Text>;
+  }
+  return (
+    <View style={[styles.radioWrap, disabled && { opacity: 0.5 }]}>
+      {options.map((o) => {
+        const on = o.id === value;
+        return (
+          <Pressable
+            key={o.id}
+            style={styles.radioItem}
+            onPress={() => !disabled && onChange(o.id)}
+            hitSlop={6}
+          >
+            <View style={[styles.radioOuter, on && styles.radioOuterOn]}>
+              {on && <View style={styles.radioInner} />}
+            </View>
+            <Text style={[styles.radioLabel, on && styles.radioLabelOn]}>{o.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 // Exported screen: only renders the form (and runs its data loading)
 // when the user has the 'products.add' permission.
 export default function AddProductScreen() {
@@ -78,6 +134,11 @@ function AddProductScreenInner() {
   const [savedProduct, setSavedProduct] = useState<any>(null);
   const autoNavTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Once the user types their own VA % / making charge, the 91.6 auto-fill
+  // must stop overwriting it.
+  const vaEditedRef = useRef(false);
+  const makingEditedRef = useRef(false);
+
   // Error modal state. errorInfo is intentionally NOT cleared on close so the
   // message stays mounted while the modal fades out; errorVisible drives it.
   const [errorInfo, setErrorInfo] = useState<{ title: string; message: string } | null>(null);
@@ -89,7 +150,7 @@ function AddProductScreenInner() {
   }
 
   const [metals, setMetals] = useState<SelectOption[]>([]);
-  const [purities, setPurities] = useState<SelectOption[]>([]);
+  const [purities, setPurities] = useState<PurityOption[]>([]);
   const [categories, setCategories] = useState<SelectOption[]>([]);
   const [subcategories, setSubcategories] = useState<SelectOption[]>([]);
 
@@ -134,6 +195,10 @@ function AddProductScreenInner() {
   const isDiamond =
     /diamond/i.test(selectedMetalLabel) || /diamond/i.test(selectedCategoryLabel);
 
+  // Is the selected purity a 91.6 (22k) one?
+  const selectedPurity = purities.find((p) => p.id === purityId);
+  const is916 = isPurity916(selectedPurity?.label, selectedPurity?.percentage);
+
   // ---------- Stone charge logic ----------
   // 0 or 1 stone  -> single "Stone Charge ₹" field, typed by the user.
   // 2+ stones     -> one amount field per stone name; Stone Charge = their sum.
@@ -152,9 +217,14 @@ function AddProductScreenInner() {
           getCategories(),
           getStoneNames(),
         ]);
-        setMetals(m.map((x: any) => ({ id: x.id, label: x.name })));
+        const metalList = m.map((x: any) => ({ id: x.id, label: x.name }));
+        setMetals(metalList);
         setCategories(c.map((x: any) => ({ id: x.id, label: x.name })));
         setStoneOptions((stones ?? []).map((x: any) => ({ id: x.id, label: x.name })));
+
+        // Start with Gold selected (its 91.6 purity is picked by the effect below).
+        const gold = metalList.find((x: SelectOption) => /^gold$/i.test(x.label.trim()));
+        if (gold) setMetalId(gold.id);
       } catch (e: any) {
         showError(e.message ?? 'Failed to load master data');
       } finally {
@@ -163,12 +233,31 @@ function AddProductScreenInner() {
     })();
   }, []);
 
+  // Load the purities of the selected metal, then auto-select the 91.6 one.
   useEffect(() => {
-    setPurityId(null); setPurities([]);
+    setPurityId(null);
+    setPurities([]);
     if (!metalId) return;
+
+    let cancelled = false;
     getPurities(metalId)
-      .then((p) => setPurities(p.map((x: any) => ({ id: x.id, label: x.name }))))
-      .catch((e) => showError(e.message ?? 'Failed to load purities'));
+      .then((rows: any[]) => {
+        if (cancelled) return;
+        const list: PurityOption[] = rows.map((x: any) => ({
+          id: x.id,
+          label: x.name,
+          percentage: x.purity_percentage ?? null,
+        }));
+        setPurities(list);
+        setPurityId(list.find((p) => isPurity916(p.label, p.percentage))?.id ?? null);
+      })
+      .catch((e) => {
+        if (!cancelled) showError(e.message ?? 'Failed to load purities');
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [metalId]);
 
   useEffect(() => {
@@ -189,6 +278,21 @@ function AddProductScreenInner() {
   const stoneNum = parseFloat(stoneWeight) || 0;
   const otherNum = parseFloat(otherWeight) || 0;
   const netWeight = Math.max(grossNum - stoneNum - otherNum, 0);
+
+  // ---------- 91.6 defaults ----------
+  //   Value added % -> 13 (cleared again for other purities)
+  //   Making charge -> ₹100 per net gram, follows the weight (4 g = 400, 5 g = 500)
+  // Both stop auto-updating as soon as the user types their own value.
+  useEffect(() => {
+    if (!vaEditedRef.current) {
+      const va = is916 ? String(DEFAULT_VA_PERCENT) : '';
+      setVacPercent((prev) => (prev === va ? prev : va));
+    }
+    if (!makingEditedRef.current) {
+      const mc = is916 && netWeight > 0 ? String(round2(netWeight * MAKING_PER_GRAM)) : '';
+      setMakingChargeFixed((prev) => (prev === mc ? prev : mc));
+    }
+  }, [is916, netWeight]);
 
   // ---------- Diamond row helpers ----------
 
@@ -236,14 +340,6 @@ function AddProductScreenInner() {
     const created = await createSubcategory({ category_id: categoryId, name });
     const opt: SelectOption = { id: created.id, label: created.name };
     setSubcategories((prev) => [...prev, opt].sort((a, b) => a.label.localeCompare(b.label)));
-    return opt;
-  }
-
-  async function handleAddPurity(name: string): Promise<SelectOption> {
-    if (!metalId) throw new Error('Select a metal first');
-    const created = await createPurity({ metal_id: metalId, name, purity_percentage: null });
-    const opt: SelectOption = { id: created.id, label: created.name };
-    setPurities((prev) => [...prev, opt].sort((a, b) => a.label.localeCompare(b.label)));
     return opt;
   }
 
@@ -389,22 +485,25 @@ function AddProductScreenInner() {
           />
         </Card>
 
-        {/* 3. Metal & purity */}
+        {/* 3. Metal & purity (radio buttons, Gold + 91.6 selected by default) */}
         <Card title="Metal & Purity">
-          <SelectField
-            label="Metal *"
-            value={metalId}
-            options={metals}
-            onChange={setMetalId}
-          />
-          <SelectField
-            label="Purity *"
-            value={purityId}
-            options={purities}
-            onChange={setPurityId}
-            disabled={!metalId}
-            onAddNew={handleAddPurity}
-          />
+          <Field label="Metal *">
+            <RadioGroup
+              options={metals}
+              value={metalId}
+              onChange={setMetalId}
+              emptyText="No metals found"
+            />
+          </Field>
+          <Field label="Purity *">
+            <RadioGroup
+              options={purities}
+              value={purityId}
+              onChange={setPurityId}
+              disabled={!metalId}
+              emptyText={metalId ? 'No purities for this metal' : 'Select a metal first'}
+            />
+          </Field>
         </Card>
 
         {/* 4. Weight */}
@@ -539,7 +638,10 @@ function AddProductScreenInner() {
                 placeholderTextColor={colors.textMuted}
                 keyboardType="decimal-pad"
                 value={vacPercent}
-                onChangeText={setVacPercent}
+                onChangeText={(v) => {
+                  vaEditedRef.current = true;
+                  setVacPercent(v);
+                }}
               />
             </Field>
             <Field label="Making charge ₹" style={styles.col}>
@@ -549,7 +651,10 @@ function AddProductScreenInner() {
                 placeholderTextColor={colors.textMuted}
                 keyboardType="decimal-pad"
                 value={makingChargeFixed}
-                onChangeText={setMakingChargeFixed}
+                onChangeText={(v) => {
+                  makingEditedRef.current = true;
+                  setMakingChargeFixed(v);
+                }}
               />
             </Field>
           </View>
@@ -723,18 +828,32 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: spacing.sm },
   col: { flex: 1 },
 
-  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: spacing.sm },
-  chip: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.background,
+  // Radio buttons (small, no background)
+  radioWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 18,
+    rowGap: 8,
   },
-  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  chipText: { fontSize: 13, fontWeight: '600', color: colors.text },
-  chipTextActive: { color: '#fff' },
+  radioItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 2,
+  },
+  radioOuter: {
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterOn: { borderColor: colors.primary },
+  radioInner: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.primary },
+  radioLabel: { fontSize: 13, color: colors.textMuted, fontWeight: '500' },
+  radioLabelOn: { color: colors.text, fontWeight: '700' },
 
   netBanner: {
     flexDirection: 'row',

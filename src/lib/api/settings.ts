@@ -237,7 +237,11 @@ export async function deleteMetal(id: string) {
 
 // ---------- Purities ----------
 export async function listPurities(metalId?: string, includeInactive = false): Promise<Purity[]> {
-  let query = supabase.from('purities').select('*').order('name');
+  let query = supabase
+    .from('purities')
+    .select('*')
+    .order('created_at', { ascending: false }) // newest first (no semicolon here)
+    .order('name');                            // tiebreaker (semicolon only at the end)
   if (metalId) query = query.eq('metal_id', metalId);
   if (!includeInactive) query = query.eq('is_active', true);
   const { data, error } = await query;
@@ -255,7 +259,11 @@ export async function createPurity(input: {
     'purities',
     existing,
     input,
-    { name: input.name, purity_percentage: input.purity_percentage },
+    {
+      name: input.name,
+      purity_percentage: input.purity_percentage,
+      created_at: new Date().toISOString(), // makes the revived row "newest"
+    },
     'Purity',
     input.name
   )) as Purity;

@@ -34,6 +34,7 @@ export interface ReportLine {
     paid: number | null; // null = no amount on this row (multi-item bills)
     flow: 'in' | 'out';  // in = received from customer, out = paid to customer
     firstOfBill: boolean;
+    payMode: string;     // payment method of the amount in `paid` ('' = none)
 }
 
 export interface FullReport {
@@ -62,6 +63,7 @@ const w3 = (n: number) => `${plainNum(n)} g`;
 /** "CP-2026..." stays as is; "1023" becomes "REP-1023". */
 function billLabel(prefix: string, no: unknown): string {
     const s = String(no ?? '').trim();
+    if (!prefix) return s;
     if (!s) return prefix;
     return s.toUpperCase().startsWith(prefix + '-') ? s : `${prefix}-${s}`;
 }
@@ -89,6 +91,13 @@ function pickText(row: any, keys: string[]): string {
     }
     return '';
 }
+const MODE_LABELS: Record<string, string> = {
+    cash: 'Cash', upi: 'UPI', card: 'Card', bank_transfer: 'Bank Transfer', cheque: 'Cheque',
+};
+const modeText = (v: unknown) => {
+    const s = String(v ?? '').trim();
+    return s ? (MODE_LABELS[s.toLowerCase()] ?? s) : '';
+};
 
 function oldMetalLabel(ex: any): string {
     const metal = pickText(ex, ['metal_name', 'metal', 'metal_type']);
@@ -112,7 +121,7 @@ const IN_CONCURRENCY = 6;  // chunk requests running at the same time
 const PAGE_SIZE = 1000;    // Supabase max rows per request
 
 /** Run `fn` over `items` with at most `limit` running at once, keep order. */
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => PromiseLike<R>): Promise<R[]> {
     const results: R[] = new Array(items.length);
     let next = 0;
     const worker = async () => {
@@ -134,8 +143,13 @@ async function selectInChunks(
     const chunks: string[][] = [];
     for (let i = 0; i < ids.length; i += IN_CHUNK) chunks.push(ids.slice(i, i + IN_CHUNK));
 
-    const results = await mapLimit(chunks, IN_CONCURRENCY, (c) =>
-        supabase.from(table).select('*').in(column, c)
+    const results = await mapLimit<string[], { data: any[] | null; error: { message: string } | null }>(
+        chunks,
+        IN_CONCURRENCY,
+        (c) => supabase.from(table).select('*').in(column, c) as unknown as PromiseLike<{
+            data: any[] | null;
+            error: { message: string } | null;
+        }>
     );
     const failed = results.find((r) => r.error);
     return {
@@ -146,11 +160,11 @@ async function selectInChunks(
 
 /** Fetch every page of a range query (Supabase caps one response at 1000 rows). */
 async function fetchAllPages(
-    build: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>
+    build: (from: number, to: number) => PromiseLike<any>
 ): Promise<any[]> {
     const out: any[] = [];
     for (let from = 0; ; from += PAGE_SIZE) {
-        const res = await build(from, from + PAGE_SIZE - 1);
+        const res: { data: any[] | null; error: any } = await build(from, from + PAGE_SIZE - 1);
         if (res.error) throw res.error;
         const rows = res.data ?? [];
         out.push(...rows);
@@ -297,7 +311,7 @@ export async function getFullReport(range: ReportRange, prefetched?: ReportSumma
 
             lines.push({
                 kind: 'inv',
-                billNo: billLabel('', inv.invoice_number),
+                billNo: String(inv.invoice_number ?? '').trim(),
                 date: inv.invoice_date,
                 customer: inv.customer_name,
                 metal: it ? String(it.metal_name ?? it.metal ?? '').trim() || '—' : '—',
@@ -311,6 +325,7 @@ export async function getFullReport(range: ReportRange, prefetched?: ReportSumma
                 paid: i === 0 ? inv.paid_amount : null,
                 flow: 'in',
                 firstOfBill: i === 0,
+                payMode: i === 0 ? inv.payment_summary : '',
             });
         }
     }
@@ -341,6 +356,7 @@ export async function getFullReport(range: ReportRange, prefetched?: ReportSumma
             paid: advance,
             flow: 'in',
             firstOfBill: true,
+            payMode: modeText(pickText(r, ['advance_payment_mode', 'advance_mode', 'payment_mode'])),
         });
     }
 
@@ -365,6 +381,7 @@ export async function getFullReport(range: ReportRange, prefetched?: ReportSumma
             paid: finalPay,
             flow: 'in',
             firstOfBill: true,
+            payMode: modeText(r.final_payment_mode),
         });
     }
 
@@ -398,6 +415,7 @@ export async function getFullReport(range: ReportRange, prefetched?: ReportSumma
             paid: adv,
             flow: 'in',
             firstOfBill: true,
+            payMode: modeText(pickText(o, ['advance_payment_mode', 'advance_mode', 'payment_mode'])),
         });
     }
 
@@ -430,6 +448,7 @@ export async function getFullReport(range: ReportRange, prefetched?: ReportSumma
                 paid: i === 0 ? paid : null,
                 flow: 'out',
                 firstOfBill: i === 0,
+                payMode: i === 0 ? modeText(pickText(p, ['payment_mode', 'paid_mode', 'pay_mode'])) : '',
             });
         });
     }

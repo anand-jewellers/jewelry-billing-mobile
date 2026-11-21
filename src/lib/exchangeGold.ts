@@ -60,14 +60,27 @@ export function sumExchangeTotal(items: { amount: number }[]): number {
 // Purity records exist in the DB, ExchangeGoldModal filters that table down
 // to rows whose name matches one of these — this list is the FALLBACK used
 // only when no real Purity records are passed in at all.
-export const DISPLAY_PURITY_NAMES = ['22K', '925', 'REG'];
+// 18K added so it shows in the dropdown. Make sure this matches the
+// name of your 18K row in the Purity table (e.g. '18K' or '18').
+// export const DISPLAY_PURITY_NAMES = ['22K', '18K', '925', 'REG'];
 
 export const COMMON_PURITIES = [
   { id: null, label: '91.6%', percent: 91.6 },
-  { id: null, label: 'REG', percent: 91.6 }, // TODO: set REG's real percent — currently mirrors 91.6 as a placeholder
+  { id: null, label: '18K (75%)', percent: 75 },
+  { id: null, label: 'REG', percent: 91.6 }, // TODO: set REG's real percent
   { id: null, label: '925 (Silver)', percent: 92.5 },
 ];
 
-// Tested-purity ("Old %") preset steps, 60–100 in increments of 5.
-export const OLD_PERCENT_STEPS: number[] = Array.from({ length: 9 }, (_, i) => 60 + i * 5);
-// -> [60, 65, 70, 75, 80, 85, 90, 95, 100]
+// SAADHA is a local option: it uses the 22K (916) purity and rate,
+// but starts with 80% as the Old %.
+// export const SAADHA_LABEL = 'SAADHA';
+export const SAADHA_OLD_PERCENT = 80;
+
+// Default Old % when a purity is selected (the cashier can still change it)
+export function defaultOldPercentForPurity(purityPercent: number): number {
+  if (Math.abs(purityPercent - 91.6) < 0.05) return 100; // 22K / 916
+  if (Math.abs(purityPercent - 75) < 0.05) return 75;    // 18K / 750
+  return 0; // anything else: leave empty
+}
+
+export const OLD_PERCENT_STEPS: number[] = [60, 65, 70, 75, 80, 85, 90, 95, 100];

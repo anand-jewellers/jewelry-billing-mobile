@@ -1,6 +1,12 @@
 // src/components/invoice/ExchangeGoldModal.tsx
+//
+// Add / edit one old-gold item on an invoice (exchange).
+// UI + keyboard handling are the same as PurchaseItemModal:
+//   Product name, Metal, Purity, Weight, Stone/Dust, Old %, Rate, preview.
+// The default Old % per purity (incl. SAADHA = 80) is kept exactly as before.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   Modal,
   View,
@@ -10,33 +16,39 @@ import {
   Pressable,
   ScrollView,
   ActivityIndicator,
-  useWindowDimensions,
+  Keyboard,
+  Platform,
+  type LayoutChangeEvent,
 } from 'react-native';
-import { X, ChevronDown, ChevronUp } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { X, ChevronDown, ChevronUp } from 'lucide-react-native';
 import { colors, spacing, radius } from '../../theme';
 import { SelectField } from '../master';
-import { useKeyboardHeight } from '../../lib/useKeyboardHeight';
 import {
   computeExchangeItem,
   deductionFromOldPercent,
+  displayNetWeight,
   COMMON_PURITIES,
-  DISPLAY_PURITY_NAMES,
   OLD_PERCENT_STEPS,
-  type ExchangeItemInput,
+  SAADHA_OLD_PERCENT,
+  defaultOldPercentForPurity,
 } from '../../lib/exchangeGold';
 import type { ExchangeItem } from '../../types/invoices';
 import type { Metal, Purity } from '../../types/settings';
 
 // key: stable id used only by the dropdown control.
-// dbId: the REAL purity_id to save/use for rate-fetch — null for the
-// hardcoded fallback entries (91.6/REG/925) when no live Purity table rows exist.
+// dbId: the REAL purity_id to save / use for rate-fetch.
 interface PurityOption {
   key: string;
   dbId: string | null;
+  metalId: string | null;
   label: string;
   percent: number;
+  defaultOld: number; // Old % filled in when this purity is picked
+  isSaadha: boolean; // purity row named SAADHA (same 91.6 value, different shop name)
 }
+
+const isSaadhaName = (name: string) => /saadha/i.test(name);
 
 interface Props {
   visible: boolean;
@@ -57,179 +69,244 @@ export function ExchangeGoldModal({
   fetchRate,
   editingItem = null,
 }: Props) {
-  const [description, setDescription] = useState('');
+  const [name, setName] = useState('');
+  const [metalId, setMetalId] = useState('');
+  const [purityKey, setPurityKey] = useState('');
+  const [purityId, setPurityId] = useState<string | null>(null);
+  const [purityPercent, setPurityPercent] = useState('0');
   const [grossWeight, setGrossWeight] = useState('');
   const [stoneWeight, setStoneWeight] = useState('0');
-
-  const [purityKey, setPurityKey] = useState<string>('');
-  const [selectedPurityId, setSelectedPurityId] = useState<string | null>(null);
-  const [purityPercent, setPurityPercent] = useState('91.6');
-
   const [oldPercent, setOldPercent] = useState('');
   const [ratePerGram, setRatePerGram] = useState('');
   const [rateLoading, setRateLoading] = useState(false);
   const [rateError, setRateError] = useState<string | null>(null);
 
-  // Keyboard / safe-area handling
+  // ---- keyboard: keep the focused field visible (Rate is near the bottom) ----
   const insets = useSafeAreaInsets();
-  const keyboardHeight = useKeyboardHeight();
-  const { height: windowHeight } = useWindowDimensions();
+  // lifts the button above the Android nav buttons / gesture bar
+  const bottomPad = Math.max(insets.bottom, Platform.OS === 'android' ? 48 : 20) + 12;
   const scrollRef = useRef<ScrollView>(null);
+  const fieldY = useRef<Record<string, number>>({});
+  const [kbHeight, setKbHeight] = useState(0);
 
-  // When a field near the bottom gets focus, scroll so it isn't hidden
-  // behind the keyboard. The delay lets the keyboard finish opening.
-  const scrollToField = () => {
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 250);
+  // coordination refs
+  const initPendingRef = useRef(false); // defaults still need to be applied for this open
+  const rateReqRef = useRef(0); // ignores stale rate responses
+  const fetchRateRef = useRef(fetchRate);
+  fetchRateRef.current = fetchRate;
+
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const a = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates.height));
+    const b = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => {
+      a.remove();
+      b.remove();
+    };
+  }, []);
+
+  const regField = (key: string) => (e: LayoutChangeEvent) => {
+    fieldY.current[key] = e.nativeEvent.layout.y;
+  };
+  // once the keyboard is open, bring the tapped field near the top
+  const scrollToField = (key: string) => {
+    const y = fieldY.current[key];
+    if (y == null) return;
+    setTimeout(() => scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true }), 280);
   };
 
-  const keyboardOpen = keyboardHeight > 0;
-
-  // Sheet sits right above the keyboard when it is open, and is limited to
-  // the space that is left so the header never goes off the top of the screen.
-  const sheetMaxHeight = keyboardOpen
-    ? Math.max(240, windowHeight - keyboardHeight - insets.top - 12)
-    : windowHeight * 0.9;
-
-  // Only 91.6% (22K), REG, and 925 (Silver) are ever shown, whether the
-  // options come from the live Purity table or the hardcoded fallback.
-  const purityOptions: PurityOption[] = useMemo(() => {
+  // ---- all purity options (live table first, hardcoded list only as fallback) ----
+  const allPurityOptions: PurityOption[] = useMemo(() => {
     if (purities.length > 0) {
-      const filtered = purities.filter((p) =>
-        DISPLAY_PURITY_NAMES.some((n) => n.toLowerCase() === p.name.trim().toLowerCase())
-      );
-      const list = filtered.length > 0 ? filtered : purities;
-      return list.map((p) => ({
-        key: p.id,
-        dbId: p.id,
-        label: `${p.name} (${(p as any).purity_percentage ?? '?'}%)`,
-        percent: Number((p as any).purity_percentage) || 0,
-      }));
+      return purities.map((p) => {
+        const rawPercent = (p as any).purity_percentage;
+        const percent = Number(rawPercent) || 0;
+        const saadha = isSaadhaName(p.name);
+        return {
+          key: p.id,
+          dbId: p.id,
+          metalId: (p as any).metal_id ?? null,
+          label: percent > 0 ? `${p.name} (${rawPercent}%)` : p.name,
+          percent,
+          defaultOld: saadha ? SAADHA_OLD_PERCENT : defaultOldPercentForPurity(percent),
+          isSaadha: saadha,
+        };
+      });
     }
     return COMMON_PURITIES.map((p, i) => ({
       key: `fallback_${i}`,
       dbId: p.id,
+      metalId: null,
       label: p.label,
       percent: p.percent,
+      defaultOld: defaultOldPercentForPurity(p.percent),
+      isSaadha: false,
     }));
   }, [purities]);
 
-  const goldMetal = useMemo(
-    () => metals.find((m) => /gold/i.test(m.name)) ?? metals[0] ?? null,
-    [metals]
+  // Purities that belong to the chosen metal (if the purity rows carry a metal_id)
+  const purityListFor = (mid: string) => {
+    const list = allPurityOptions.filter((o) => !o.metalId || !mid || o.metalId === mid);
+    return list.length > 0 ? list : allPurityOptions;
+  };
+
+  const purityOptions = useMemo(
+    () => purityListFor(metalId).map((o) => ({ id: o.key, label: o.label })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allPurityOptions, metalId]
   );
+  const metalOptions = useMemo(() => metals.map((m) => ({ id: m.id, label: m.name })), [metals]);
 
-  // Shared by both the initial default-selection AND manual dropdown taps,
-  // so the rate always gets fetched the same way regardless of which path
-  // set the purity — this is the fix for "amount doesn't calculate until I
-  // reselect 916 a second time".
-  const applyPurityOption = async (option: PurityOption | null) => {
-    if (!option) return;
+  // Default purity for a list: 22K (never SAADHA / REG, which share 91.6), else first
+  const pickDefaultPurity = (list: PurityOption[]): PurityOption | null =>
+    list.find((o) => !o.isSaadha && /22k/i.test(o.label)) ??
+    list.find((o) => !o.isSaadha && Math.abs(o.percent - 91.6) < 0.05) ??
+    list[0] ??
+    null;
 
-    setPurityKey(option.key);
-    setSelectedPurityId(option.dbId);
-    setPurityPercent(String(option.percent));
+  // Today's rate for metal + purity (rate stays editable)
+  const loadRate = async (mid: string, pid: string | null) => {
+    const fetcher = fetchRateRef.current;
     setRateError(null);
-
-    if (!fetchRate || !goldMetal || !option.dbId) return;
-
+    if (!fetcher || !mid || !pid) return;
+    const req = ++rateReqRef.current;
     setRateLoading(true);
     try {
-      const rate = await fetchRate(goldMetal.id, option.dbId);
-      if (rate > 0) {
-        setRatePerGram(String(rate));
-      } else {
-        setRateError('No current rate found for this purity — enter it manually.');
+      const rate = await fetcher(mid, pid);
+      if (req !== rateReqRef.current) return;
+      if (rate > 0) setRatePerGram(String(rate));
+      else {
+        setRatePerGram('');
+        setRateError('No current rate found for this purity - enter it manually.');
       }
     } catch {
-      setRateError("Could not fetch today's rate — enter it manually.");
+      if (req === rateReqRef.current) {
+        setRateError("Could not fetch today's rate - enter it manually.");
+      }
     } finally {
-      setRateLoading(false);
+      if (req === rateReqRef.current) setRateLoading(false);
     }
   };
 
-  const handleSelectPurity = (key: string) => {
-    const option = purityOptions.find((o) => o.key === key);
-    if (option) void applyPurityOption(option);
+  // Picks a purity: fills purity %, the DEFAULT OLD % for that purity, then loads rate
+  const applyPurity = (option: PurityOption | null, mid: string) => {
+    if (!option) return;
+    setPurityKey(option.key);
+    setPurityId(option.dbId);
+    setPurityPercent(String(option.percent));
+    setOldPercent(option.defaultOld > 0 ? String(option.defaultOld) : '');
+    void loadRate(mid, option.dbId);
   };
 
+  const handleMetalChange = (id: string) => {
+    setMetalId(id);
+    applyPurity(pickDefaultPurity(purityListFor(id)), id);
+  };
+
+  const handlePurityChange = (key: string) => {
+    const option = allPurityOptions.find((o) => o.key === key);
+    applyPurity(option ?? null, metalId);
+  };
+
+  // 1) reset / populate plain fields each time the modal opens
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      initPendingRef.current = false;
+      return;
+    }
+    initPendingRef.current = true;
+    setRateError(null);
 
     if (editingItem) {
-      setDescription(editingItem.description);
+      setName(editingItem.description);
       setGrossWeight(String(editingItem.gross_weight));
       setStoneWeight(String(editingItem.stone_weight ?? 0));
       setPurityPercent(String(editingItem.purity_percent));
       setOldPercent(editingItem.old_percent > 0 ? String(editingItem.old_percent) : '');
-      setRatePerGram(String(editingItem.rate_per_gram));
-
-      // Editing an existing item already has a saved rate — just select the
-      // matching dropdown option without re-fetching (would overwrite what
-      // was actually billed with today's rate).
-      const match =
-        purityOptions.find((o) => o.dbId != null && o.dbId === editingItem.purity_id) ??
-        purityOptions.find((o) => o.percent === editingItem.purity_percent);
-      setPurityKey(match?.key ?? '');
-      setSelectedPurityId(match?.dbId ?? editingItem.purity_id);
-      setRateError(null);
+      setRatePerGram(String(editingItem.rate_per_gram)); // keep the saved rate
     } else {
-      setDescription('');
+      setName('');
       setGrossWeight('');
       setStoneWeight('0');
       setOldPercent('');
       setRatePerGram('');
-
-      // New item: default to 91.6% (22K) AND fetch its rate immediately,
-      // via the same path a manual tap uses — so the amount is ready to
-      // calculate as soon as weight + old% are entered, no reselection needed.
-      const def = purityOptions.find((o) => o.percent === 91.6) ?? purityOptions[0] ?? null;
-      void applyPurityOption(def);
+      setPurityKey('');
+      setPurityId(null);
     }
-    // purityOptions/goldMetal/fetchRate are stable per open; re-running this
-    // only on visible/editingItem change avoids re-triggering on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, editingItem]);
 
-  const parsedPurity = Number(purityPercent) || 0;
-  const parsedOld = Number(oldPercent) || 0;
-  const derivedDeduction = deductionFromOldPercent(parsedOld);
+  // 2) apply metal + purity once options are available (runs again if they load late)
+  useEffect(() => {
+    if (!visible || !initPendingRef.current) return;
+    if (allPurityOptions.length === 0) return;
 
-  const parsed: ExchangeItemInput = useMemo(
-    () => ({
-      gross_weight: Number(grossWeight) || 0,
-      stone_weight: Number(stoneWeight) || 0,
-      purity_percent: parsedPurity,
-      old_percent: parsedOld,
-      deduction_percent: derivedDeduction,
-      rate_per_gram: Number(ratePerGram) || 0,
-    }),
-    [grossWeight, stoneWeight, parsedPurity, parsedOld, derivedDeduction, ratePerGram]
+    const gold =
+      metals.find((m) => /gold/i.test(m.name)) ?? (metals.length === 1 ? metals[0] : metals[0]);
+    const mid = gold?.id ?? '';
+    if (metals.length > 0 && !mid) return;
+    initPendingRef.current = false;
+    setMetalId(mid);
+
+    const list = purityListFor(mid);
+
+    if (editingItem) {
+      // select the matching option WITHOUT touching the saved rate / old %
+      const match =
+        list.find((o) => o.dbId != null && o.dbId === editingItem.purity_id) ??
+        list.find((o) => !o.isSaadha && o.percent === editingItem.purity_percent);
+      setPurityKey(match?.key ?? '');
+      setPurityId(match?.dbId ?? editingItem.purity_id ?? null);
+    } else {
+      applyPurity(pickDefaultPurity(list), mid);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, editingItem, allPurityOptions, metals]);
+
+  const gross = Number(grossWeight) || 0;
+  const stone = Number(stoneWeight) || 0;
+  const old = Number(oldPercent) || 0;
+  const rate = Number(ratePerGram) || 0;
+  const purityPct = Number(purityPercent) || 0;
+  const deduction = deductionFromOldPercent(old);
+
+  const stoneExceedsGross = stone > gross && gross > 0;
+  const oldInvalid = old > 100;
+
+  const preview = useMemo(
+    () =>
+      computeExchangeItem({
+        gross_weight: gross,
+        stone_weight: stone,
+        purity_percent: purityPct,
+        old_percent: old,
+        deduction_percent: deduction,
+        rate_per_gram: rate,
+      }),
+    [gross, stone, purityPct, old, deduction, rate]
   );
 
-  const stoneExceedsGross = parsed.stone_weight > parsed.gross_weight && parsed.gross_weight > 0;
-  const oldPercentInvalid = parsedOld > 100;
-
-  const preview = useMemo(() => computeExchangeItem(parsed), [parsed]);
   const canSave =
-    description.trim().length > 0 &&
-    parsed.gross_weight > 0 &&
-    parsed.rate_per_gram > 0 &&
-    parsedOld > 0 &&
+    name.trim().length > 0 &&
+    gross > 0 &&
+    rate > 0 &&
+    old > 0 &&
     !stoneExceedsGross &&
-    !oldPercentInvalid;
+    !oldInvalid;
 
   const handleSave = () => {
     if (!canSave) return;
     onSave({
       id: editingItem?.id ?? `tmp_${Date.now()}`,
-      description: description.trim(),
-      gross_weight: parsed.gross_weight,
-      stone_weight: parsed.stone_weight,
-      purity_id: selectedPurityId,
-      purity_percent: parsed.purity_percent,
-      old_percent: parsed.old_percent,
-      deduction_percent: parsed.deduction_percent,
-      rate_per_gram: parsed.rate_per_gram,
+      description: name.trim(),
+      gross_weight: gross,
+      stone_weight: stone,
+      purity_id: purityId,
+      purity_percent: purityPct,
+      old_percent: old,
+      deduction_percent: deduction,
+      rate_per_gram: rate,
       net_weight: preview.net_weight,
       amount: preview.amount,
     });
@@ -237,27 +314,9 @@ export function ExchangeGoldModal({
   };
 
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      transparent
-      statusBarTranslucent
-      navigationBarTranslucent
-      onRequestClose={onClose}
-    >
-      {/* Backdrop is pushed up by the keyboard height so the sheet sits above it */}
-      <View style={[styles.backdrop, { paddingBottom: keyboardHeight }]}>
-        <View
-          style={[
-            styles.sheet,
-            {
-              maxHeight: sheetMaxHeight,
-              // Keyboard open: it already covers the navigation bar.
-              // Keyboard closed: keep the button clear of the navigation bar.
-              paddingBottom: keyboardOpen ? spacing.md : Math.max(insets.bottom, 24) + spacing.md,
-            },
-          ]}
-        >
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <View style={styles.backdrop}>
+        <View style={styles.sheet}>
           <View style={styles.header}>
             <Text style={styles.title}>{editingItem ? 'Edit Old Gold Item' : 'Add Old Gold Item'}</Text>
             <Pressable onPress={onClose} hitSlop={8}>
@@ -267,69 +326,84 @@ export function ExchangeGoldModal({
 
           <ScrollView
             ref={scrollRef}
+            style={{ flexShrink: 1 }}
+            contentContainerStyle={{ paddingBottom: spacing.md + kbHeight }}
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: spacing.md }}
+            keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator={false}
           >
-            <Field label="Description">
+            <Field label="Product name" onLayout={regField('name')}>
               <TextInput
                 style={styles.input}
-                placeholder="e.g. Old gold chain, broken bangle"
+                placeholder="e.g. Old chain, broken bangle"
                 placeholderTextColor={colors.textMuted}
-                value={description}
-                onChangeText={setDescription}
+                value={name}
+                onChangeText={setName}
+                onFocus={() => scrollToField('name')}
               />
             </Field>
 
-            <View style={styles.row2}>
-              <Field label="Gross Weight (g)" style={{ flex: 1 }}>
+            <Field label="">
+              <SelectField
+                label="Metal"
+                value={metalId}
+                options={metalOptions}
+                placeholder="Select metal"
+                onChange={(id) => handleMetalChange(id as string)}
+              />
+            </Field>
+
+            <Field label="">
+              <SelectField
+                label="Purity"
+                value={purityKey}
+                options={purityOptions}
+                placeholder="Select purity"
+                onChange={(id) => handlePurityChange(id as string)}
+              />
+            </Field>
+
+            <View style={styles.row2} onLayout={regField('weights')}>
+              <Field label="Weight (g)" style={{ flex: 1 }}>
                 <TextInput
                   style={styles.input}
                   keyboardType="decimal-pad"
-                  placeholder="0.00"
+                  placeholder="0.000"
                   placeholderTextColor={colors.textMuted}
                   value={grossWeight}
                   onChangeText={setGrossWeight}
+                  onFocus={() => scrollToField('weights')}
                 />
               </Field>
               <Field label="Stone (or) Dust (g)" style={{ flex: 1 }}>
                 <TextInput
                   style={[styles.input, stoneExceedsGross && styles.inputError]}
                   keyboardType="decimal-pad"
-                  placeholder="0.00"
+                  placeholder="0.000"
                   placeholderTextColor={colors.textMuted}
                   value={stoneWeight}
                   onChangeText={setStoneWeight}
+                  onFocus={() => scrollToField('weights')}
                 />
               </Field>
             </View>
             {stoneExceedsGross && (
-              <Text style={styles.errorText}>Stone weight can't exceed gross weight.</Text>
+              <Text style={styles.errorText}>Stone weight can't exceed the weight.</Text>
             )}
 
-            <Field label="">
-              <SelectField
-                label="Purity"
-                value={purityKey}
-                options={purityOptions.map((o) => ({ id: o.key, label: o.label }))}
-                onChange={(key) => handleSelectPurity(key as string)}
-              />
-            </Field>
-
-            <Field label="Old %">
+            <Field label="Old %" onLayout={regField('old')}>
               <PercentPickerField
                 value={oldPercent}
                 onChange={setOldPercent}
                 options={OLD_PERCENT_STEPS}
                 placeholder="Tap to pick or type a value"
-                invalid={oldPercentInvalid}
-                onFocus={scrollToField}
+                invalid={oldInvalid}
+                onFocus={() => scrollToField('old')}
               />
-              {oldPercentInvalid && (
-                <Text style={styles.errorText}>Old % can't exceed 100%.</Text>
-              )}
+              {oldInvalid && <Text style={styles.errorText}>Old % can't exceed 100%.</Text>}
             </Field>
 
-            <Field label="Rate / gram (₹)">
+            <Field label="Rate / gram (₹)" onLayout={regField('rate')}>
               <View style={styles.rateInputWrap}>
                 <TextInput
                   style={styles.input}
@@ -338,28 +412,38 @@ export function ExchangeGoldModal({
                   placeholderTextColor={colors.textMuted}
                   value={ratePerGram}
                   onChangeText={setRatePerGram}
-                  onFocus={scrollToField}
+                  onFocus={() => scrollToField('rate')}
                 />
-                {rateLoading && <ActivityIndicator size="small" color={colors.primary} style={styles.rateSpinner} />}
+                {rateLoading && (
+                  <ActivityIndicator size="small" color={colors.primary} style={styles.rateSpinner} />
+                )}
               </View>
               {rateError && <Text style={styles.errorText}>{rateError}</Text>}
             </Field>
 
             <View style={styles.previewCard}>
               <View style={styles.previewRow}>
+                <Text style={styles.previewLabel}>Weight after stone</Text>
+                <Text style={styles.previewValue}>
+                  {displayNetWeight({ gross_weight: gross, stone_weight: stone }).toFixed(3)} g
+                </Text>
+              </View>
+              <View style={styles.previewRow}>
+                <Text style={styles.previewLabel}>Payable weight (× old %)</Text>
+                <Text style={styles.previewValue}>{preview.net_weight.toFixed(3)} g</Text>
+              </View>
+              <View style={styles.previewRow}>
                 <Text style={styles.previewLabel}>Exchange Value</Text>
                 <Text style={styles.previewValueBold}>
-                  ₹{Math.round(preview.amount).toLocaleString('en-IN', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
+                  ₹{preview.amount.toLocaleString('en-IN')}
                 </Text>
               </View>
             </View>
           </ScrollView>
 
+          {/* Save button at the bottom, with margin so the nav bar never covers it */}
           <Pressable
-            style={[styles.saveBtn, !canSave && styles.saveBtnDisabled]}
+            style={[styles.saveBtn, { marginBottom: bottomPad }, !canSave && styles.saveBtnDisabled]}
             onPress={handleSave}
             disabled={!canSave}
           >
@@ -371,30 +455,23 @@ export function ExchangeGoldModal({
   );
 }
 
-// ===========================================================
-// Combined Old % control: a manual text field + a toggle that
-// expands a row of preset chips (60–100) directly underneath.
-// Tapping a chip fills the text field and collapses the presets;
-// typing a custom value works exactly the same as before.
-// ===========================================================
-
+// Old % : text field + toggle that opens the 60-100 preset chips
 function PercentPickerField({
   value,
   onChange,
-  options,
+  options = [],
   placeholder,
   invalid,
   onFocus,
 }: {
   value: string;
   onChange: (v: string) => void;
-  options: number[];
+  options?: number[];
   placeholder?: string;
   invalid?: boolean;
   onFocus?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-
   return (
     <View>
       <View style={styles.percentRow}>
@@ -439,9 +516,19 @@ function PercentPickerField({
   );
 }
 
-function Field({ label, children, style }: { label: string; children: React.ReactNode; style?: any }) {
+function Field({
+  label,
+  children,
+  style,
+  onLayout,
+}: {
+  label: string;
+  children: ReactNode;
+  style?: any;
+  onLayout?: (e: LayoutChangeEvent) => void;
+}) {
   return (
-    <View style={[{ marginBottom: spacing.md }, style]}>
+    <View style={[{ marginBottom: spacing.md }, style]} onLayout={onLayout}>
       {!!label && <Text style={styles.fieldLabel}>{label}</Text>}
       {children}
     </View>
@@ -450,26 +537,52 @@ function Field({ label, children, style }: { label: string; children: React.Reac
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.5)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: spacing.lg },
+  sheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: spacing.lg,
+    maxHeight: '92%',
+  },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
   title: { fontSize: 16, fontWeight: '700', color: colors.textPrimary },
   fieldLabel: { fontSize: 12, fontWeight: '600', color: colors.textMuted, marginBottom: 6 },
-  input: { borderWidth: 1, borderColor: colors.border, borderRadius: radius?.md ?? 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.textPrimary },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius?.md ?? 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: colors.textPrimary,
+  },
   inputError: { borderColor: colors.error ?? 'crimson' },
-  hintText: { fontSize: 11, color: colors.textMuted, marginTop: 4 },
   errorText: { fontSize: 11, color: colors.error ?? 'crimson', marginTop: 4 },
   row2: { flexDirection: 'row', gap: spacing.md },
   rateInputWrap: { position: 'relative', justifyContent: 'center' },
   rateSpinner: { position: 'absolute', right: 10 },
-  previewCard: { backgroundColor: colors.background, borderRadius: radius?.md ?? 10, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginTop: spacing.xs },
+  previewCard: {
+    backgroundColor: colors.background,
+    borderRadius: radius?.md ?? 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginTop: spacing.xs,
+  },
   previewRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 },
   previewLabel: { fontSize: 13, color: colors.textMuted },
+  previewValue: { fontSize: 13, color: colors.textPrimary, fontWeight: '600' },
   previewValueBold: { fontSize: 16, color: colors.primary, fontWeight: '800' },
-  saveBtn: { backgroundColor: colors.primary, borderRadius: radius?.md ?? 10, paddingVertical: 14, alignItems: 'center', marginTop: spacing.sm },
+  saveBtn: {
+    backgroundColor: colors.primary,
+    borderRadius: radius?.md ?? 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: spacing.sm,
+  },
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 
-  // Combined Old % field: text input + toggle button in one row.
   percentRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   percentInput: { flex: 1 },
   percentToggle: {
@@ -483,7 +596,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
-  chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+  },
   chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
   chipTextActive: { color: '#fff' },

@@ -40,7 +40,8 @@ import {
 } from '../../../src/lib/api/invoices';
 
 import { getCustomerById, listCustomers } from '../../../src/lib/api/customers';
-import { completeCustomerOrderWithInvoice } from '../../../src/lib/api/customerOrders';
+import { completeCustomerOrderWithInvoice, getCustomerOrderById } from '../../../src/lib/api/customerOrders';
+import { buildOrderBill } from '../../../src/lib/orderEstimate';
 
 import { buildInvoiceItemFromProduct, invoiceTotals, recalcItem, withoutGst } from '../../../src/lib/invoiceCalc';
 import { companyToShopDetails, printHtml } from '../../../src/lib/invoicePdf';
@@ -48,7 +49,7 @@ import { buildEstimateSlip, type SlipLine } from '../../../src/lib/estimateSlip'
 
 import { BarcodeScannerModal } from '../../../src/components/invoice/BarcodeScannerModal';
 import { InvoiceItemRow } from '../../../src/components/invoice/InvoiceItemRow';
-import { JewelryItemSheet } from '../../../src/components/invoice/JewelryItemSheet';
+import { JewelryItemSheet, isPiecePurity } from '../../../src/components/invoice/JewelryItemSheet';
 import { ExchangeGoldSection } from '../../../src/components/invoice/ExchangeGoldSection';
 
 import { useNotifications } from '../../../src/context/NotificationContext';
@@ -80,7 +81,7 @@ import { displayNetWeight } from '../../../src/lib/exchangeGold';
 // import RNBluetoothClassic from 'react-native-bluetooth-classic';
 import { ensureBluetoothPermissions } from '../../../src/lib/thermalPrint/bluetoothPermissions';
 
-// NEW: share the estimate on WhatsApp as a thermal-style PDF
+// share the estimate on WhatsApp as a thermal-style PDF
 import { shareEstimateOnWhatsApp } from '../../../src/lib/whatsappShare';
 
 // ===========================================================
@@ -154,6 +155,8 @@ function NewInvoiceScreenInner() {
   // ---------------------------------------------------------
   // Incoming params
   //  - customer jewel order "Create Invoice" flow (orderId, ...)
+  //    The order itself is re-loaded from the database using orderId,
+  //    so its charges, old gold and advance are always exact.
   //  - heldId: opened from the Invoices page "Held Bills" list
   // ---------------------------------------------------------
 
@@ -190,6 +193,7 @@ function NewInvoiceScreenInner() {
   }>();
 
   const fromOrder = Boolean(orderId);
+  const [linkedOrderId, setLinkedOrderId] = useState<string | null>(orderId ?? null);
 
   const [resolvedCustomerId, setResolvedCustomerId] = useState<string | null>(null);
   const [orderPrefillApplied, setOrderPrefillApplied] = useState(false);
@@ -304,6 +308,12 @@ function NewInvoiceScreenInner() {
   const [gstEnabled, setGstEnabled] = useState(true);
   const [paymentSplits, setPaymentSplits] = useState<PaymentSplitRow[]>([]);
   const [paymentSplitsTouched, setPaymentSplitsTouched] = useState(false);
+
+  // Advance already paid on the customer order (a fixed line, not an editable row)
+  const [advance, setAdvance] = useState<{ amount: number; mode: PaymentMode }>({
+    amount: 0,
+    mode: 'cash',
+  });
 
   // ---------------------------------------------------------
   // Held estimate currently open on this screen (if any)
@@ -451,10 +461,15 @@ function NewInvoiceScreenInner() {
 
   // =========================================================
   // Pre-fill from a customer jewel order (Create Invoice flow)
+  //
+  // The order is loaded from the database and turned into a bill with
+  // buildOrderBill() — the SAME function the order's "Share Estimate"
+  // slip uses — so the invoice carries the order's value added %,
+  // making charge, stone charge, old gold and advance.
   // =========================================================
 
   useEffect(() => {
-    if (!fromOrder || loadingMaster || orderPrefillApplied) return;
+    if (!fromOrder || !orderId || loadingMaster || orderPrefillApplied) return;
     setOrderPrefillApplied(true);
 
     (async () => {
@@ -469,98 +484,38 @@ function NewInvoiceScreenInner() {
         }
       }
 
-      const matchedMetal = orderMetal
-        ? metals.find((m) => m.name.toLowerCase() === orderMetal.toLowerCase())
-        : undefined;
-      const matchedPurity = orderPurity
-        ? purities.find((p) => p.name.toLowerCase() === orderPurity.toLowerCase())
-        : undefined;
-      const matchedCategory = orderCategory
-        ? categories.find((c) => c.name.toLowerCase() === orderCategory.toLowerCase())
-        : undefined;
+      try {
+        const order = await getCustomerOrderById(orderId);
+        const bill = await buildOrderBill([order]);
 
-      // Min weight is required on the order, max weight is optional.
-      // Use the max weight when it is given, otherwise fall back to the min weight.
-      const minW = orderWeightMin ? parseFloat(orderWeightMin) : 0;
-      const maxW = orderWeightMax ? parseFloat(orderWeightMax) : 0;
-      const netWeight = maxW > 0 ? maxW : minW;
-      const stoneWeight = orderStoneWeight ? parseFloat(orderStoneWeight) : 0;
-
-      let rate = 0;
-      let makingRule = null as Awaited<ReturnType<typeof getMakingChargeRule>>;
-      let taxSetting = null as Awaited<ReturnType<typeof getDefaultTaxSetting>>;
-
-      if (matchedMetal && matchedPurity) {
-        try {
-          [rate, makingRule, taxSetting] = await Promise.all([
-            getCurrentRate(matchedMetal.id, matchedPurity.id),
-            getMakingChargeRule(matchedMetal.id, matchedPurity.id, matchedCategory?.id ?? null),
-            getDefaultTaxSetting(),
-          ]);
-        } catch (e) {
-          console.warn('Could not fetch rate/making-charge/tax for order prefill:', e);
-        }
-      }
-
-      const makingType = makingRule?.calculation_type ?? 'per_gram';
-      const makingValue = makingRule?.value ?? 0;
-
-      const calc = recalcItem({
-        netWeight,
-        rate,
-        quantity: 1,
-        makingType,
-        makingValue,
-        vaCharges: [],
-        itemDiscount: 0,
-        taxSetting,
-      });
-
-      const draftItem: InvoiceItem = {
-        id: `draft-${Date.now()}`,
-        product_id: null,
-        product_code: null,
-        name: orderCategory ? `${orderCategory} (Made to Order)` : 'Made to Order Item',
-        metal_id: matchedMetal?.id ?? null,
-        purity_id: matchedPurity?.id ?? null,
-        category_id: matchedCategory?.id ?? null,
-        quantity: 1,
-        gross_weight: netWeight + stoneWeight,
-        stone_weight: stoneWeight,
-        other_weight: 0,
-        net_weight: netWeight,
-        metal_rate: rate,
-        metal_value: calc.metal_value,
-        making_charge_type: makingType,
-        making_charge_value: makingValue,
-        making_charge_amount: calc.making_charge_amount,
-        value_added_charges: [],
-        item_discount: 0,
-        taxable_amount: calc.taxable_amount,
-        tax_setting_id: taxSetting?.id ?? null,
-        tax_percentage: calc.tax_percentage,
-        cgst_percentage: calc.cgst_percentage,
-        sgst_percentage: calc.sgst_percentage,
-        igst_percentage: calc.igst_percentage,
-        tax_amount: calc.tax_amount,
-        total_amount: calc.total_amount,
-        huid: null,
-        // The order note now lives on the item itself
-        remark: orderNumberParam
-          ? `Order ${orderNumberParam}${orderCategory ? ` — ${orderCategory}` : ''}`
-          : '',
-      };
-
-      if (!matchedMetal || !matchedPurity) {
-        console.warn(
-          `Order prefill: could not match metal "${orderMetal}" / purity "${orderPurity}" against master data — item opened with rate ₹0, select metal/purity manually.`
+        setItems(
+          bill.items.map((it) => ({
+            ...it,
+            remark: `Order ${order.order_number}${order.category ? ` — ${order.category}` : ''}`,
+          }))
         );
-      }
 
-      setEditingItem(draftItem);
-      setSheetOpen(true);
+        // Old gold given when the order was placed
+        setExchangeItems(bill.exchangeItems);
+        setExchangeTotal(bill.exchangeTotal);
+
+        // Advance paid on the order
+        if (bill.advanceTotal > 0) {
+          const id = (bill.paymentModes[0] ?? 'cash').trim().toLowerCase().replace(/\s+/g, '_');
+          setAdvance({
+            amount: bill.advanceTotal,
+            mode: (PAYMENT_MODES.some((m) => m.id === id) ? id : 'cash') as PaymentMode,
+          });
+        }
+      } catch (e: any) {
+        // Rate missing / metal not matched etc. -> fall back to manual entry
+        setErrorTitle('Could not load order details');
+        setErrorMessage(e?.message ?? 'Add the item manually.');
+        setEditingItem(null);
+        setSheetOpen(true);
+      }
     })();
-  }, [fromOrder, loadingMaster, orderPrefillApplied, orderCustomerId, orderMetal, orderPurity, orderCategory, orderWeightMin, orderWeightMax, orderStoneWeight, orderNumberParam, metals, purities, categories]);
+  }, [fromOrder, orderId, loadingMaster, orderPrefillApplied, orderCustomerId]);
 
 
   // =========================================================
@@ -613,7 +568,7 @@ function NewInvoiceScreenInner() {
         return;
       }
 
-      
+
       const [rate, makingRule, taxSetting] = await Promise.all([
         getCurrentRate(product.metal_id, product.purity_id),
         getMakingChargeRule(product.metal_id, product.purity_id, product.category_id),
@@ -635,15 +590,101 @@ function NewInvoiceScreenInner() {
   // Item sheet save / remove / per-item remark
   // =========================================================
 
-  const handleItemSave = (item: InvoiceItem) => {
+  // Puts one item on the bill. Does NOT open/close the sheet.
+  const addItemToBill = (item: InvoiceItem) => {
+    // The sheet's "Apply GST" drives the bill-wide checkbox.
+    const gstOn = item.gst_enabled !== false;
+    setGstEnabled(gstOn);
+
+    // The sheet saves tax-free numbers when GST is off. Store the item WITH its
+    // tax instead; the bill-wide switch strips it (withoutGst) while off, so
+    // ticking GST on again brings the tax back.
+    const taxSetting = taxSettings.find((t) => t.id === item.tax_setting_id) ?? null;
+
+    const isPieceItem = isPiecePurity(purities.find((p) => p.id === item.purity_id));
+
+    let taxed: InvoiceItem;
+
+    if (isPieceItem) {
+      // Piece rate: no weight or rate. The cashier typed the amount in the sheet.
+      // GST on  -> the typed amount already includes GST (tax is taken out of it).
+      // GST off -> the typed amount is the final total (tax is kept only so that
+      //            ticking GST on later can add it back).
+      const typed = Math.max(Number(item.total_amount) || 0, 0);
+      const pct = Number(taxSetting?.tax_percentage) || 0;
+      const base = gstOn && pct > 0 ? round2(typed / (1 + pct / 100)) : typed;
+
+      const calc = recalcItem({
+        netWeight: 1,
+        rate: base,
+        quantity: 1,
+        makingType: 'fixed',
+        makingValue: 0,
+        vaCharges: [],
+        itemDiscount: 0,
+        taxSetting,
+      });
+
+      taxed = {
+        ...item,
+        gst_enabled: true,
+        quantity: 1,
+        net_weight: 0,
+        metal_rate: 0,
+        metal_value: base,
+        making_charge_amount: 0,
+        value_added_charges: [],
+        taxable_amount: gstOn ? round2(typed - calc.tax_amount) : typed,
+        tax_percentage: calc.tax_percentage,
+        cgst_percentage: calc.cgst_percentage,
+        sgst_percentage: calc.sgst_percentage,
+        igst_percentage: calc.igst_percentage,
+        tax_amount: calc.tax_amount,
+        total_amount: gstOn ? typed : calc.total_amount,
+      };
+    } else {
+      const calc = recalcItem({
+        netWeight: item.net_weight,
+        rate: item.metal_rate,
+        quantity: item.quantity,
+        makingType: item.making_charge_type,
+        makingValue: item.making_charge_value,
+        vaCharges: item.value_added_charges,
+        itemDiscount: item.item_discount,
+        taxSetting,
+      });
+      taxed = {
+        ...item,
+        gst_enabled: true,
+        metal_value: calc.metal_value,
+        making_charge_amount: calc.making_charge_amount,
+        taxable_amount: calc.taxable_amount,
+        tax_percentage: calc.tax_percentage,
+        cgst_percentage: calc.cgst_percentage,
+        sgst_percentage: calc.sgst_percentage,
+        igst_percentage: calc.igst_percentage,
+        tax_amount: calc.tax_amount,
+        total_amount: calc.total_amount,
+      };
+    }
+
     setItems((prev) => {
-      const existing = prev.find((i) => i.id === item.id);
-      // The sheet may not know about `remark`, so keep the one already typed.
-      const merged: InvoiceItem = { ...item, remark: item.remark ?? existing?.remark ?? '' };
-      return existing ? prev.map((i) => (i.id === item.id ? merged : i)) : [...prev, merged];
+      const existing = prev.find((i) => i.id === taxed.id);
+      const merged: InvoiceItem = { ...taxed, remark: taxed.remark ?? existing?.remark ?? '' };
+      return existing ? prev.map((i) => (i.id === taxed.id ? merged : i)) : [...prev, merged];
     });
+  };
+
+  // Save: add the item and close the sheet.
+  const handleItemSave = (item: InvoiceItem) => {
+    addItemToBill(item);
     setSheetOpen(false);
     setEditingItem(null);
+  };
+
+  // Add New: add the item and keep the sheet open for the next product.
+  const handleItemSaveAndNext = (item: InvoiceItem) => {
+    addItemToBill(item);
   };
 
   const removeItem = (id: string) => {
@@ -686,10 +727,13 @@ function NewInvoiceScreenInner() {
 
   const amountOf = (row: PaymentSplitRow) => parseFloat(row.amountText) || 0;
 
-  // Money actually received (credit rows are NOT received)
-  const totalReceived = paymentSplits
+  // Money received on this screen (credit rows are NOT received)
+  const rowsReceived = paymentSplits
     .filter((r) => r.mode !== 'credit')
     .reduce((sum, r) => sum + amountOf(r), 0);
+
+  // Advance already paid on the order + money received now
+  const totalReceived = round2(advance.amount + rowsReceived);
 
   // Amount the customer will pay later
   const creditAmount = round2(
@@ -707,9 +751,36 @@ function NewInvoiceScreenInner() {
   );
 
 
-  const netFinalAmount = round2(Math.max(0, totals.grandTotal - exchangeTotal));
+  // New items total (before the bill discount) — shown as "NEW TOTAL".
+  const newItemsTotal = round2(totals.grandTotal + totals.discount);
+
+  // Net = new items − old gold. NOT clamped: when the old gold is worth more
+  // than the new items this goes NEGATIVE (shop owes the customer).
+  const netFinalAmount = round2(totals.grandTotal - exchangeTotal);
+  const customerGetsMoney = netFinalAmount < 0;
+
+  // Balance the customer still owes — never negative.
   const netBalanceDue = round2(Math.max(0, netFinalAmount - totalReceived));
   const splitMismatch = round2(netFinalAmount - totalReceived - creditAmount);
+
+  // Payment list used by Print and Save: the order advance (if any) first,
+  // then the rows the cashier entered.
+  const buildSplits = (): PaymentSplitEntry[] => {
+    const rows: PaymentSplitEntry[] = paymentSplits
+      .filter((row) => (parseFloat(row.amountText) || 0) > 0 && row.mode)
+      .map((row) => ({
+        id: row.id,
+        mode: row.mode as PaymentMode,
+        amount: round2(parseFloat(row.amountText) || 0),
+      }));
+    return advance.amount > 0
+      ? [{ id: 'advance', mode: advance.mode, amount: advance.amount, reference: 'Advance' }, ...rows]
+      : rows;
+  };
+
+  // Balance shown on the preview / slip (advance is deducted even before Generate)
+  const balanceShown =
+    stage === 'estimate' ? netBalanceDue : round2(Math.max(0, netFinalAmount - advance.amount));
 
   const vaAmount = totals.vaBreakdown[VA_CHARGE] ?? 0;
   const vaRate = totals.vaRates[VA_CHARGE];
@@ -771,6 +842,9 @@ function NewInvoiceScreenInner() {
     paymentSplitsTouched,
     stage,
     gstEnabled,
+    advanceAmount: advance.amount,
+    advanceMode: advance.mode,
+    orderId: linkedOrderId,
   });
 
   const resetForm = () => {
@@ -782,6 +856,7 @@ function NewInvoiceScreenInner() {
     setDiscountAmount('0');
     setPaymentSplits([]);
     setPaymentSplitsTouched(false);
+    setAdvance({ amount: 0, mode: 'cash' });
     setResolvedCustomerId(null);
     setSuggestions([]);
     setActiveField(null);
@@ -792,6 +867,7 @@ function NewInvoiceScreenInner() {
     setGstEnabled(true);
     prevPhoneDigits.current = 0;
     autoFillArmed.current = false;
+    setLinkedOrderId(null);
   };
 
   const handleHoldEstimate = async () => {
@@ -834,8 +910,14 @@ function NewInvoiceScreenInner() {
     setPaymentSplits(d.paymentSplits);
     setPaymentSplitsTouched(d.paymentSplitsTouched);
     setStage(d.stage);
+    setLinkedOrderId((d as any).orderId ?? null);
     // Held bills saved before the GST switch existed have no flag -> GST on.
     setGstEnabled((d as any).gstEnabled !== false);
+    // Held bills saved before the advance existed have none -> no advance.
+    setAdvance({
+      amount: Number((d as any).advanceAmount) || 0,
+      mode: (d as any).advanceMode ?? 'cash',
+    });
     setActiveHeldId(h.id);
 
     // Already billed -> locked, print only.
@@ -884,7 +966,10 @@ function NewInvoiceScreenInner() {
     setStage('estimate');
 
     if (!paymentSplitsTouched) {
-      setPaymentSplits([{ id: genRowId(), mode: '', amountText: String(netFinalAmount) }]);
+      // The advance is already counted; the payment row only collects the balance.
+      // (0 when the old gold covers the whole bill.)
+      const remaining = round2(Math.max(0, netFinalAmount - advance.amount));
+      setPaymentSplits([{ id: genRowId(), mode: '', amountText: String(remaining) }]);
     }
   };
 
@@ -962,13 +1047,7 @@ function NewInvoiceScreenInner() {
       created_at: new Date().toISOString(),
     }));
 
-    const splitsForPrint: PaymentSplitEntry[] = paymentSplits
-      .filter((row) => (parseFloat(row.amountText) || 0) > 0 && row.mode)
-      .map((row) => ({
-        id: row.id,
-        mode: row.mode as PaymentMode,
-        amount: round2(parseFloat(row.amountText) || 0),
-      }));
+    const splitsForPrint = buildSplits();
 
     const estimateInvoice: InvoiceDetail = {
       id: 'estimate',
@@ -983,8 +1062,8 @@ function NewInvoiceScreenInner() {
       invoice_discount: totals.discount,
       tax_amount: totals.taxTotal,
       grand_total: totals.grandTotal,
-      paid_amount: stage === 'estimate' ? totalReceived : 0,
-      balance_amount: stage === 'estimate' ? netBalanceDue : netFinalAmount,
+      paid_amount: stage === 'estimate' ? totalReceived : advance.amount,
+      balance_amount: balanceShown,
       payment_status: 'unpaid',
       payment_mode: splitsForPrint.length > 1 ? 'split' : (splitsForPrint[0]?.mode ?? 'cash'),
       status: 'unpaid',
@@ -1110,6 +1189,12 @@ function NewInvoiceScreenInner() {
       row('Gross', money(item.total_amount), true);
     });
 
+    // Sum of all NEW items (same idea as OLD TOTAL for old gold)
+    if (billItems.length > 0) {
+      full();
+      row('NEW TOTAL', money(newItemsTotal), true);
+    }
+
     if (exchangeItems.length > 0) {
       full();
       exchangeItems.forEach((e, idx) => {
@@ -1135,7 +1220,15 @@ function NewInvoiceScreenInner() {
       row('Discount', `-${money(totals.discount)}`, true);
       full();
     }
-    row('Nett RS', money(netFinalAmount), true);
+    row(customerGetsMoney ? 'Nett (C.R)' : 'Nett RS', money(netFinalAmount), true);
+
+    // Advance already paid on the customer order
+    if (advance.amount > 0) {
+      full();
+      row('Advance', `-${money(advance.amount)}`);
+      row('Paid By', advance.mode.replace('_', ' '));
+      row('BALANCE', money(balanceShown), true);
+    }
 
     // Only when the payment has actually been entered
     if (stage === 'estimate' && totalReceived > 0) {
@@ -1202,7 +1295,9 @@ function NewInvoiceScreenInner() {
       return;
     }
 
-    if (round2(totalReceived + creditAmount - netFinalAmount) > 0.01) {
+    // Overpayment only makes sense when the customer actually owes money.
+    // When old gold exceeds the new items (negative net) this check is skipped.
+    if (netFinalAmount >= 0 && round2(totalReceived + creditAmount - netFinalAmount) > 0.01) {
       setErrorTitle('Overpayment');
       setErrorMessage('Received + credit is more than the bill amount.');
       return;
@@ -1215,12 +1310,12 @@ function NewInvoiceScreenInner() {
     }
 
     // LOC / Remark is mandatory for EVERY item
-    const missingIdx = items.findIndex((i) => !i.remark?.trim());
-    if (missingIdx !== -1) {
-      setErrorTitle('Missing details');
-      setErrorMessage(`LOC / Remark is mandatory for item ${missingIdx + 1}.`);
-      return;
-    }
+    // const missingIdx = items.findIndex((i) => !i.remark?.trim());
+    // if (missingIdx !== -1) {
+    //   setErrorTitle('Missing details');
+    //   setErrorMessage(`LOC / Remark is mandatory for item ${missingIdx + 1}.`);
+    //   return;
+    // }
 
     const rowMissingMode = paymentSplits.some(
       (row) => (parseFloat(row.amountText) || 0) > 0 && !row.mode
@@ -1231,13 +1326,7 @@ function NewInvoiceScreenInner() {
       return;
     }
 
-    const splitsToSave: PaymentSplitEntry[] = paymentSplits
-      .filter((row) => (parseFloat(row.amountText) || 0) > 0 && row.mode)
-      .map((row) => ({
-        id: row.id,
-        mode: row.mode as PaymentMode,
-        amount: round2(parseFloat(row.amountText) || 0),
-      }));
+    const splitsToSave = buildSplits();
 
     setSaving(true);
 
@@ -1306,11 +1395,18 @@ function NewInvoiceScreenInner() {
         console.warn('Failed to send invoice notification', notifyError);
       }
 
-      if (fromOrder && orderId) {
+      if (linkedOrderId) {
         try {
-          await completeCustomerOrderWithInvoice(orderId, invoice.id);
-        } catch (linkError) {
+          await completeCustomerOrderWithInvoice(linkedOrderId, invoice.id);
+        } catch (linkError: any) {
           console.warn('Failed to link order to invoice', linkError);
+          Alert.alert(
+            'Order not marked as invoiced',
+            `Invoice ${invoice.invoice_number} was saved, but the order could not be updated: ${linkError?.message ?? 'unknown error'
+            }`,
+            [{ text: 'OK', onPress: () => router.replace(`/invoices/${invoice.id}`) }]
+          );
+          return;
         }
       }
 
@@ -1449,7 +1545,7 @@ function NewInvoiceScreenInner() {
                       ]);
                       return;
                     }
-                    setEditingItem(item);
+                    setEditingItem(items.find((i) => i.id === item.id) ?? item);
                     setSheetOpen(true);
                   }}
                   onRemove={() => {
@@ -1467,7 +1563,7 @@ function NewInvoiceScreenInner() {
                 <View style={styles.itemRemarkWrap}>
                   <TextInput
                     style={styles.itemRemarkInput}
-                    placeholder={`LOC / Remark for item ${idx + 1}`}
+                    placeholder={`LOC / Remark ${idx + 1}`}
                     placeholderTextColor={colors.textMuted}
                     value={items.find((i) => i.id === item.id)?.remark ?? ''}
                     onChangeText={(t) => updateItemRemark(item.id, t)}
@@ -1489,7 +1585,7 @@ function NewInvoiceScreenInner() {
               }}
             >
               <Plus size={16} color={colors.primary} />
-              <Text style={styles.linkText}>Add another item</Text>
+              <Text style={styles.linkText}>Add Manually</Text>
             </Pressable>
 
             <Pressable
@@ -1656,6 +1752,14 @@ function NewInvoiceScreenInner() {
               );
             })}
 
+            {/* Sum of all NEW items (same idea as OLD TOTAL for old gold) */}
+            {billItems.length > 0 && (
+              <>
+                <View style={styles.divider} />
+                <SlipRow label="NEW TOTAL" value={money(newItemsTotal)} bold />
+              </>
+            )}
+
             {exchangeItems.length > 0 && (
               <>
                 <View style={styles.divider} />
@@ -1699,8 +1803,24 @@ function NewInvoiceScreenInner() {
               </>
             )}
 
-            <SlipRow label="Nett RS" value={money(netFinalAmount)} bold />
+            {/* Negative = old gold is worth more than the new items (pay the customer) */}
+            <SlipRow
+              label={customerGetsMoney ? 'Nett (C.R)' : 'Nett RS'}
+              value={money(netFinalAmount)}
+              bold
+            />
             <View style={styles.divider} />
+
+            {/* Advance already paid on the customer order */}
+            {advance.amount > 0 && (
+              <>
+                <SlipRow label="Advance" value={`-${money(advance.amount)}`} />
+                <SlipRow label="Paid By" value={advance.mode.replace('_', ' ')} />
+                <SlipRow label="BALANCE" value={money(balanceShown)} bold />
+                <View style={styles.divider} />
+              </>
+            )}
+
             <SlipRow
               label="FINAL AMOUNT"
               value={stage === 'estimate' && totalReceived > 0 ? money(totalReceived) : ''}
@@ -1753,24 +1873,41 @@ function NewInvoiceScreenInner() {
                   </Pressable>
                 )}
 
-                {!readOnly && totalReceived === 0 && exchangeTotal === 0 ? (
+                {!readOnly && !customerGetsMoney && totalReceived === 0 && exchangeTotal === 0 ? (
                   <Text style={styles.warningText}>
                     ⚠ No amount entered here — this invoice will be saved as Unpaid.
                   </Text>
                 ) : null}
 
-                {!readOnly && (paymentSplits.length > 1 || creditAmount > 0) && Math.abs(splitMismatch) > 0.01 && (
-                  <Text style={styles.warningText}>
-                    {splitMismatch > 0
-                      ? `⚠ Splits are short by ₹${splitMismatch.toLocaleString('en-IN')} of the total due.`
-                      : `⚠ Splits exceed the total due by ₹${Math.abs(splitMismatch).toLocaleString('en-IN')}.`}
+                {/* Split mismatch warning only applies when the customer owes money */}
+                {!readOnly &&
+                  !customerGetsMoney &&
+                  (paymentSplits.length > 1 || creditAmount > 0 || advance.amount > 0) &&
+                  Math.abs(splitMismatch) > 0.01 && (
+                    <Text style={styles.warningText}>
+                      {splitMismatch > 0
+                        ? `⚠ Splits are short by ₹${splitMismatch.toLocaleString('en-IN')} of the total due.`
+                        : `⚠ Splits exceed the total due by ₹${Math.abs(splitMismatch).toLocaleString('en-IN')}.`}
+                    </Text>
+                  )}
+
+                {customerGetsMoney && (
+                  <Text style={styles.payoutText}>
+                    Old gold is worth ₹{Math.abs(netFinalAmount).toLocaleString('en-IN')} more than the new items —
+                    pay this amount to the customer.
                   </Text>
                 )}
 
                 <View style={{ marginTop: spacing.sm }}>
-                  {paymentSplits.length > 1 && <Row label="Total Received" value={totalReceived} />}
+                  {(paymentSplits.length > 1 || advance.amount > 0) && (
+                    <Row label="Total Received" value={totalReceived} />
+                  )}
                   {creditAmount > 0 && <Row label="On Credit" value={creditAmount} bold />}
-                  <Row label="Balance Due" value={netBalanceDue} bold={netBalanceDue > 0} />
+                  {customerGetsMoney ? (
+                    <Row label="Nett (C.R)" value={Math.abs(netFinalAmount)} bold />
+                  ) : (
+                    <Row label="Balance Due" value={netBalanceDue} bold={netBalanceDue > 0} />
+                  )}
                 </View>
               </View>
             )}
@@ -1901,6 +2038,7 @@ function NewInvoiceScreenInner() {
       <JewelryItemSheet
         visible={sheetOpen}
         initial={editingItem}
+        billGstEnabled={gstEnabled}
         metals={metals}
         purities={purities}
         categories={categories}
@@ -1911,6 +2049,7 @@ function NewInvoiceScreenInner() {
           setEditingItem(null);
         }}
         onSave={handleItemSave}
+        onSaveAndNext={handleItemSaveAndNext}
       />
 
 
@@ -1977,7 +2116,8 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: radius?.md ?? 10, paddingHorizontal: spacing.md, paddingVertical: 12, fontSize: 15, color: colors.textPrimary, marginBottom: spacing.md, backgroundColor: colors.surface },
   remarkInput: { minHeight: 56 },
   label: { fontSize: 13, color: colors.textMuted, marginBottom: 6 },
-  warningText: { fontSize: 12, color: '#B00020', marginTop: -6, marginBottom: spacing.md },
+  warningText: { fontSize: 12, color: '#B00020', marginTop: 10, marginBottom: spacing.md },
+  payoutText: { fontSize: 13, fontWeight: '600', color: '#137333', marginTop: 10, marginBottom: spacing.md },
   divider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.md },
   dividerThin: { height: 1, backgroundColor: colors.border, marginVertical: 6 },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.md },
@@ -2086,5 +2226,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.textPrimary,
     backgroundColor: colors.surface,
+    marginTop: spacing.sm,
   },
 });
