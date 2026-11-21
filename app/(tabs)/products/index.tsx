@@ -54,6 +54,7 @@ interface ProductRow {
   id: string;
   product_name: string;
   product_code: string;
+  barcode?: string | null;   // 👈 new
   net_weight: number;
   status?: string;
   metal_id: string | null;
@@ -235,6 +236,7 @@ function ProductListScreenInner() {
         !q ||
         p.product_name.toLowerCase().includes(q) ||
         p.product_code.toLowerCase().includes(q) ||
+         (p.barcode ?? '').toLowerCase().includes(q) ||   // 👈 new
         (p.categories?.name ?? '').toLowerCase().includes(q) ||
         (p.subcategories?.name ?? '').toLowerCase().includes(q);
       const matchesMetal = !selectedMetal || p.metals?.name === selectedMetal;

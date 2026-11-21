@@ -318,15 +318,15 @@ export async function getProducts() {
     const { data, error } = await supabase
       .from('products')
       .select(`
-        id, product_name, product_code, net_weight, status,
-        metal_id, purity_id, category_id, subcategory_id,
-        metals(name, type),
-        purities(name),
-        categories(name),
-        subcategories(name),
-        product_images(storage_path, is_primary),
-        product_diamonds(size)
-      `)
+  id, product_name, product_code, barcode, net_weight, status,
+  metal_id, purity_id, category_id, subcategory_id,
+  metals(name, type),
+  purities(name),
+  categories(name),
+  subcategories(name),
+  product_images(storage_path, is_primary),
+  product_diamonds(size)
+`)
       .order('created_at', { ascending: false })
       .range(from, from + PAGE_SIZE - 1);
 
