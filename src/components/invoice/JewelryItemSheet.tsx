@@ -348,20 +348,18 @@ export function JewelryItemSheet({
   const [nameFocused, setNameFocused] = useState(false);
   const [nameQuery, setNameQuery] = useState('');
   const [nameResults, setNameResults] = useState<string[]>([]);
-  const [nameNoMatch, setNameNoMatch] = useState(false);
+  // const [nameNoMatch, setNameNoMatch] = useState(false);
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearNameDropdown = () => {
     setNameQuery('');
     setNameResults([]);
-    setNameNoMatch(false);
   };
 
   useEffect(() => {
     const q = nameQuery.trim();
     if (!visible || !nameFocused || !q) {
       setNameResults([]);
-      setNameNoMatch(false);
       return;
     }
     let cancelled = false;
@@ -372,13 +370,9 @@ export function JewelryItemSheet({
         const typed = q.toLowerCase();
         // Hide a result that is exactly what was typed, there is nothing to pick.
         setNameResults(list.filter((n) => n.toLowerCase() !== typed).slice(0, 5));
-        setNameNoMatch(list.length === 0);
       } catch (e) {
         console.warn('[JewelryItemSheet] product name search failed:', e);
-        if (!cancelled) {
-          setNameResults([]);
-          setNameNoMatch(false);
-        }
+        if (!cancelled) setNameResults([]);
       }
     }, 250);
     return () => {
@@ -422,8 +416,7 @@ export function JewelryItemSheet({
   };
 
   const showNameDropdown =
-    nameFocused && nameQuery.trim().length > 0 && (nameResults.length > 0 || nameNoMatch);
-
+    nameFocused && nameQuery.trim().length > 0 && nameResults.length > 0;
   // ---------------------------------------------------------
   // Default metal / purity helpers
   // ---------------------------------------------------------
@@ -1014,23 +1007,15 @@ export function JewelryItemSheet({
               {/* Dropdown: only after typing, max 5 matching product names */}
               {showNameDropdown && (
                 <View style={styles.dropdown}>
-                  {nameResults.length > 0 ? (
-                    nameResults.map((n, i) => (
-                      <NameSuggestionRow
-                        key={n}
-                        name={n}
-                        query={nameQuery}
-                        last={i === nameResults.length - 1}
-                        onPress={() => selectSuggestedName(n)}
-                      />
-                    ))
-                  ) : (
-                    <View style={styles.dropEmpty}>
-                      <Text style={styles.dropEmptyText}>
-                        No matching product. “{nameQuery.trim()}” will be used as typed.
-                      </Text>
-                    </View>
-                  )}
+                  {nameResults.map((n, i) => (
+                    <NameSuggestionRow
+                      key={n}
+                      name={n}
+                      query={nameQuery}
+                      last={i === nameResults.length - 1}
+                      onPress={() => selectSuggestedName(n)}
+                    />
+                  ))}
                 </View>
               )}
             </Section>

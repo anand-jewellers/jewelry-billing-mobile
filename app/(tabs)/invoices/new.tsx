@@ -13,9 +13,8 @@ import {
   Keyboard,
 } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, router } from 'expo-router';
-import { Plus, Barcode, X, Check } from 'lucide-react-native';
+import { Plus, Barcode, Check, X } from 'lucide-react-native';
 import { Button, Card, ErrorModal } from '../../../src/components/ui';
-import { SelectField } from '../../../src/components/master';
 import { colors, spacing, radius } from '../../../src/theme';
 import { searchPhoneContacts } from '../../../src/lib/phoneContacts';
 import { PageGuard } from '../../../src/components/PageGuard';
@@ -88,14 +87,33 @@ import { shareEstimateOnWhatsApp } from '../../../src/lib/whatsappShare';
 // Constants
 // ===========================================================
 
-const PAYMENT_MODES = [
-  { id: 'cash', label: 'Cash' },
-  { id: 'card', label: 'Card' },
+// Modes that can actually receive money.
+type SimpleMode = 'cash' | 'card' | 'upi';
+
+// What the cashier taps in the "Payment Mode" radio list.
+//  cash / card / upi : the whole amount is paid with that one mode
+//  multi             : several rows, each with its own mode + amount
+//  part              : pay some now (mode + amount), the rest stays DUE
+type PayChoice = SimpleMode | 'multi' | 'part';
+
+const SIMPLE_MODES: { id: SimpleMode; label: string }[] = [
+  { id: 'cash', label: 'CASH' },
   { id: 'upi', label: 'UPI' },
-  { id: 'bank_transfer', label: 'Bank Transfer' },
-  { id: 'cheque', label: 'Cheque' },
-  { id: 'credit', label: 'Credit' },
+  { id: 'card', label: 'CARD' },
+  
 ];
+
+const PAY_CHOICES: { id: PayChoice; label: string }[] = [
+  ...SIMPLE_MODES,
+  { id: 'multi', label: 'MULTI PAYMENT' },
+  { id: 'part', label: 'PART PAYMENT' },
+];
+
+// Used only to map the advance paid on a customer order to a mode name.
+const ADVANCE_MODE_IDS = ['CASH', 'UPI','CARD', 'BANK TRANSFER', 'CHEQUE', 'CREDIT'];
+
+// Set to true if you want an "Are you sure?" popup before the final bill is saved.
+const CONFIRM_BEFORE_GENERATE = true;
 
 // Charge names as saved on the product / invoice item lines.
 const VA_CHARGE = 'Value Added Charge';
@@ -109,19 +127,19 @@ const isDiamondCharge = (name: unknown) => String(name ?? '').startsWith(DIAMOND
 const diamondWeightText = (name: unknown) =>
   String(name ?? '').replace(/^Diamond\s*/i, '').trim();
 
-type Stage = 'building' | 'estimate';
-
-// One row in the on-screen payment list. `amountText` stays a raw string
-// (not a number) so the cashier can type "1" -> "12" -> "12." without the
-// field fighting them; it's parsed to a number only where needed.
-// `mode` is '' until the cashier explicitly picks one (no default).
-interface PaymentSplitRow {
+// One row of a Multi Payment. `amountText` stays a raw string so the cashier
+// can type "1" -> "12" -> "12." without the field fighting them.
+interface MultiRow {
   id: string;
-  mode: PaymentMode | '';
+  mode: SimpleMode | '';
   amountText: string;
 }
 
 const genRowId = () => Math.random().toString(36).slice(2, 10);
+// Multi Payment is always the same three columns: CASH | CARD | UPI
+const makeMultiRows = (): MultiRow[] =>
+  SIMPLE_MODES.map((m) => ({ id: m.id, mode: m.id, amountText: '' }));
+const multiAmount = (r: MultiRow) => parseFloat(r.amountText) || 0;
 
 
 // ===========================================================
@@ -211,7 +229,7 @@ function NewInvoiceScreenInner() {
 
   // ---------------------------------------------------------
   // Customer
-  // (LOC / Remark is now stored PER ITEM, on each InvoiceItem.remark)
+  // (LOC / Remark is stored PER ITEM, on each InvoiceItem.remark)
   // ---------------------------------------------------------
 
   const [customerName, setCustomerName] = useState('');
@@ -294,22 +312,37 @@ function NewInvoiceScreenInner() {
   const [exchangeTotal, setExchangeTotal] = useState(0);
 
   // ---------------------------------------------------------
-  // Estimate / final stage
+  // Final amount (edited directly in the Receipt Preview)
+  //
+  //  - The cashier types the FINAL AMOUNT the customer agrees to pay.
+  //    Discount = Nett RS − Final amount (calculated automatically).
+  //  - Until the cashier types something, the final amount simply follows
+  //    the bill (no discount).
   // ---------------------------------------------------------
 
-  const [stage, setStage] = useState<Stage>('building');
+  const [finalAmountText, setFinalAmountText] = useState('');
+  const [finalTouched, setFinalTouched] = useState(false);
 
   // ---------------------------------------------------------
-  // Discount / payment
+  // Payment
   // ---------------------------------------------------------
 
-  const [discountAmount, setDiscountAmount] = useState('0');
+  const [paymentChoice, setPaymentChoice] = useState<PayChoice | ''>('');
+
+  // Multi Payment rows
+  const [multiRows, setMultiRows] = useState<MultiRow[]>([]);
+
+  // Part Payment: mode + amount paid now. The DUE is worked out from the
+  // final amount, and editing it changes the final amount (the cut becomes discount).
+  const [partMode, setPartMode] = useState<SimpleMode | ''>('');
+  const [partPaidText, setPartPaidText] = useState('');
+  const [dueText, setDueText] = useState('');
+  const [dueTouched, setDueTouched] = useState(false);
+
   // Bill-wide "Apply GST" switch (shown in the Receipt Preview header).
   const [gstEnabled, setGstEnabled] = useState(true);
-  const [paymentSplits, setPaymentSplits] = useState<PaymentSplitRow[]>([]);
-  const [paymentSplitsTouched, setPaymentSplitsTouched] = useState(false);
 
-  // Advance already paid on the customer order (a fixed line, not an editable row)
+  // Advance already paid on the customer order (a fixed line, not editable)
   const [advance, setAdvance] = useState<{ amount: number; mode: PaymentMode }>({
     amount: 0,
     mode: 'cash',
@@ -341,21 +374,11 @@ function NewInvoiceScreenInner() {
   const [editingItem, setEditingItem] = useState<InvoiceItem | null>(null);
 
   // ---------------------------------------------------------
-  // Saving
+  // Saving / printing / sharing
   // ---------------------------------------------------------
 
   const [saving, setSaving] = useState(false);
-
-  // ---------------------------------------------------------
-  // Print estimate (pre-save thermal preview)
-  // ---------------------------------------------------------
-
   const [printingEstimate, setPrintingEstimate] = useState(false);
-
-  // ---------------------------------------------------------
-  // Share estimate on WhatsApp (thermal-style PDF)
-  // ---------------------------------------------------------
-
   const [sharingEstimate, setSharingEstimate] = useState(false);
 
   // ---------------------------------------------------------
@@ -504,7 +527,7 @@ function NewInvoiceScreenInner() {
           const id = (bill.paymentModes[0] ?? 'cash').trim().toLowerCase().replace(/\s+/g, '_');
           setAdvance({
             amount: bill.advanceTotal,
-            mode: (PAYMENT_MODES.some((m) => m.id === id) ? id : 'cash') as PaymentMode,
+            mode: (ADVANCE_MODE_IDS.includes(id) ? id : 'cash') as PaymentMode,
           });
         }
       } catch (e: any) {
@@ -577,6 +600,10 @@ function NewInvoiceScreenInner() {
 
       const item = buildInvoiceItemFromProduct(product, rate, makingRule, taxSetting);
       setItems((prev) => [...prev, { ...item, remark: '' }]);
+      setFinalAmountText('');
+      setFinalTouched(false);
+      setDueText('');
+      setDueTouched(false);
       setScannerOpen(false);
     } catch (e: any) {
       Alert.alert('Lookup error', e?.message ?? 'Could not fetch product.');
@@ -673,6 +700,12 @@ function NewInvoiceScreenInner() {
       const merged: InvoiceItem = { ...taxed, remark: taxed.remark ?? existing?.remark ?? '' };
       return existing ? prev.map((i) => (i.id === taxed.id ? merged : i)) : [...prev, merged];
     });
+
+    // Item added or edited: the old typed final amount no longer matches the bill
+    setFinalAmountText('');
+    setFinalTouched(false);
+    setDueText('');
+    setDueTouched(false);
   };
 
   // Save: add the item and close the sheet.
@@ -689,6 +722,11 @@ function NewInvoiceScreenInner() {
 
   const removeItem = (id: string) => {
     setItems((prev) => prev.filter((i) => i.id !== id));
+    // The typed final amount belonged to the old bill: start fresh
+    setFinalAmountText('');
+    setFinalTouched(false);
+    setDueText('');
+    setDueTouched(false);
   };
 
   const updateItemRemark = (id: string, text: string) => {
@@ -697,90 +735,130 @@ function NewInvoiceScreenInner() {
 
 
   // =========================================================
-  // Payment split row management
-  // =========================================================
-
-  const addPaymentSplit = () => {
-    setPaymentSplitsTouched(true);
-    setPaymentSplits((prev) => [...prev, { id: genRowId(), mode: '', amountText: '' }]);
-  };
-
-  const removePaymentSplit = (id: string) => {
-    setPaymentSplitsTouched(true);
-    setPaymentSplits((prev) => prev.filter((row) => row.id !== id));
-  };
-
-  const updatePaymentSplitMode = (id: string, mode: PaymentMode) => {
-    setPaymentSplitsTouched(true);
-    setPaymentSplits((prev) => prev.map((row) => (row.id === id ? { ...row, mode } : row)));
-  };
-
-  const updatePaymentSplitAmount = (id: string, text: string) => {
-    setPaymentSplitsTouched(true);
-    setPaymentSplits((prev) => prev.map((row) => (row.id === id ? { ...row, amountText: text } : row)));
-  };
-
-
-  // =========================================================
   // Totals
+  //
+  // 1. baseTotals   : the bill with NO discount  -> "Nett RS" (baseNet)
+  // 2. discountValue: baseNet − the FINAL AMOUNT the cashier typed
+  //                   (editing the DUE in Part Payment also changes the
+  //                   final amount, so it ends up here as discount too)
+  // 3. netFinalAmount: what the customer finally owes (after discount)
+  // 4. amountDueNow : netFinalAmount − advance already paid
+  // 5. the payment choice decides how amountDueNow is received / left due
   // =========================================================
-
-  const amountOf = (row: PaymentSplitRow) => parseFloat(row.amountText) || 0;
-
-  // Money received on this screen (credit rows are NOT received)
-  const rowsReceived = paymentSplits
-    .filter((r) => r.mode !== 'credit')
-    .reduce((sum, r) => sum + amountOf(r), 0);
-
-  // Advance already paid on the order + money received now
-  const totalReceived = round2(advance.amount + rowsReceived);
-
-  // Amount the customer will pay later
-  const creditAmount = round2(
-    paymentSplits.filter((r) => r.mode === 'credit').reduce((sum, r) => sum + amountOf(r), 0)
-  );
 
   // When "Apply GST" is unticked every item is stripped of tax, so all totals,
   // the preview, the print and the saved invoice are GST-free.
   const billItems = gstEnabled ? items : items.map(withoutGst);
 
-  const totals = invoiceTotals(
-    billItems,
-    stage === 'estimate' ? parseFloat(discountAmount) || 0 : 0,
-    stage === 'estimate' ? totalReceived : 0
-  );
+  // Bill with no discount
+  const baseTotals = invoiceTotals(billItems, 0, 0);
 
+  // New items total (before old gold and discount) — shown as "NEW TOTAL".
+  const newItemsTotal = round2(baseTotals.grandTotal);
 
-  // New items total (before the bill discount) — shown as "NEW TOTAL".
-  const newItemsTotal = round2(totals.grandTotal + totals.discount);
+  // Nett = new items − old gold, before discount. NOT clamped: when the old gold
+  // is worth more than the new items this goes NEGATIVE (shop owes the customer).
+  const baseNet = round2(baseTotals.grandTotal - exchangeTotal);
 
-  // Net = new items − old gold. NOT clamped: when the old gold is worth more
-  // than the new items this goes NEGATIVE (shop owes the customer).
-  const netFinalAmount = round2(totals.grandTotal - exchangeTotal);
+  // Final amount typed by the cashier (NaN when empty / not a number)
+  const finalTyped = finalAmountText.trim() === '' ? NaN : parseFloat(finalAmountText);
+  const finalIsSet = !Number.isNaN(finalTyped);
+  const finalTooHigh = baseNet > 0 && finalIsSet && finalTyped > baseNet + 0.01;
+  const finalNegative = baseNet > 0 && finalIsSet && finalTyped < 0;
+
+  // Discount is simply the difference. Only applies when the customer owes money.
+  const discountValue =
+    baseNet > 0 && finalIsSet
+      ? round2(Math.min(Math.max(baseNet - finalTyped, 0), baseNet))
+      : 0;
+
+  const preTotals = invoiceTotals(billItems, discountValue, 0);
+
+  // What the customer finally owes (negative = shop pays the customer)
+  const netFinalAmount = round2(preTotals.grandTotal - exchangeTotal);
   const customerGetsMoney = netFinalAmount < 0;
+
+  // Final amount minus the advance already paid on the order (never negative)
+  const amountDueNow = round2(Math.max(0, netFinalAmount - advance.amount));
+
+  // ----- Multi Payment -----
+  const multiReceived = round2(
+    multiRows.reduce((sum, r) => sum + (r.mode ? multiAmount(r) : 0), 0)
+  );
+  const multiRemaining = round2(amountDueNow - multiReceived);
+
+  // ----- Part Payment -----
+  const partPaid = round2(Math.max(0, parseFloat(partPaidText) || 0));
+  const partReceived = round2(Math.min(partPaid, amountDueNow));
+  // Automatic due = what is left after the part payment
+  const partDue = round2(Math.max(0, amountDueNow - partPaid));
+  const dueFieldValue = dueTouched ? dueText : String(partDue);
+
+  // ----- What happens to amountDueNow -----
+  const isSimpleChoice =
+    paymentChoice === 'cash' || paymentChoice === 'card' || paymentChoice === 'upi';
+
+  const rowsReceived = isSimpleChoice
+    ? amountDueNow
+    : paymentChoice === 'multi'
+      ? multiReceived
+      : paymentChoice === 'part'
+        ? partReceived
+        : 0;
+
+  // Amount the customer will pay later (Part Payment only)
+  const creditAmount = paymentChoice === 'part' ? partDue : 0;
+
+  // Advance already paid on the order + money received now
+  const totalReceived = round2(advance.amount + rowsReceived);
+
+  // True once a payment has been chosen / filled for an amount that is due.
+  // Until then, Print / Share produce a plain ESTIMATE (no "paid" figures).
+  const paymentEntered =
+    amountDueNow > 0 &&
+    (isSimpleChoice ||
+      (paymentChoice === 'multi' && multiReceived > 0) ||
+      (paymentChoice === 'part' && partReceived > 0));
+
+  const totals = invoiceTotals(billItems, discountValue, totalReceived);
 
   // Balance the customer still owes — never negative.
   const netBalanceDue = round2(Math.max(0, netFinalAmount - totalReceived));
-  const splitMismatch = round2(netFinalAmount - totalReceived - creditAmount);
 
   // Payment list used by Print and Save: the order advance (if any) first,
-  // then the rows the cashier entered.
+  // then what the cashier chose.
   const buildSplits = (): PaymentSplitEntry[] => {
-    const rows: PaymentSplitEntry[] = paymentSplits
-      .filter((row) => (parseFloat(row.amountText) || 0) > 0 && row.mode)
-      .map((row) => ({
-        id: row.id,
-        mode: row.mode as PaymentMode,
-        amount: round2(parseFloat(row.amountText) || 0),
-      }));
-    return advance.amount > 0
-      ? [{ id: 'advance', mode: advance.mode, amount: advance.amount, reference: 'Advance' }, ...rows]
-      : rows;
+    const advanceRows: PaymentSplitEntry[] =
+      advance.amount > 0
+        ? [{ id: 'advance', mode: advance.mode, amount: advance.amount, reference: 'Advance' }]
+        : [];
+
+    let rows: PaymentSplitEntry[] = [];
+
+    if (isSimpleChoice && amountDueNow > 0) {
+      rows = [{ id: 'payment', mode: paymentChoice as PaymentMode, amount: amountDueNow }];
+    } else if (paymentChoice === 'multi') {
+      rows = multiRows
+        .filter((r) => r.mode && multiAmount(r) > 0)
+        .map((r) => ({ id: r.id, mode: r.mode as PaymentMode, amount: round2(multiAmount(r)) }));
+    } else if (paymentChoice === 'part') {
+      if (partMode && partReceived > 0) {
+        rows.push({ id: 'payment', mode: partMode as PaymentMode, amount: partReceived });
+      }
+      // The unpaid part is saved as a credit line (same as a credit sale before)
+      if (partDue > 0) {
+        rows.push({ id: 'due', mode: 'credit' as PaymentMode, amount: partDue });
+      }
+    }
+
+    return [...advanceRows, ...rows];
   };
 
-  // Balance shown on the preview / slip (advance is deducted even before Generate)
-  const balanceShown =
-    stage === 'estimate' ? netBalanceDue : round2(Math.max(0, netFinalAmount - advance.amount));
+  // Billed (read-only) bills always print as a plain ESTIMATE: never show payments.
+  const showPaid = paymentEntered && !readOnly;
+
+  // Balance shown on the printed estimate.
+  const balanceShown = showPaid ? netBalanceDue : amountDueNow;
 
   const vaAmount = totals.vaBreakdown[VA_CHARGE] ?? 0;
   const vaRate = totals.vaRates[VA_CHARGE];
@@ -799,21 +877,69 @@ function NewInvoiceScreenInner() {
     .filter(Boolean)
     .join(' | ');
 
+  // What the FINAL AMOUNT box shows: the typed text once the cashier touches it,
+  // otherwise the bill amount (so it always starts filled in).
+  const finalFieldValue = finalTouched ? finalAmountText : String(baseNet);
+
+  // Typing a final amount: the due goes back to "automatic".
+  const onFinalAmountChange = (text: string) => {
+    setFinalTouched(true);
+    setFinalAmountText(text);
+    setDueTouched(false);
+  };
+
+  // Typing the part-payment amount: the due goes back to "automatic".
+  const onPartPaidChange = (text: string) => {
+    setPartPaidText(text);
+    setDueTouched(false);
+  };
+
+  // Editing the DUE changes the final amount:  final = advance + paid now + due.
+  // Cutting the due therefore lowers the final amount, and the cut shows up as
+  // discount (Nett RS − Final amount).
+  const onDueChange = (text: string) => {
+    setDueTouched(true);
+    setDueText(text);
+    const dueNum = parseFloat(text);
+    if (!Number.isNaN(dueNum) && dueNum >= 0) {
+      setFinalTouched(true);
+      setFinalAmountText(String(round2(advance.amount + partPaid + dueNum)));
+    }
+  };
+
+  // ----- Payment choice helpers -----
+  const selectChoice = (c: PayChoice) => {
+    if (readOnly) return;
+    setPaymentChoice(c);
+    if (c === 'multi' && multiRows.length !== SIMPLE_MODES.length) {
+      setMultiRows(makeMultiRows());
+    }
+  };
+
+  // const addMultiRow = () => {
+  //   setMultiRows((prev) => [...prev, { id: genRowId(), mode: '', amountText: '' }]);
+  // };
+
+  // const removeMultiRow = (id: string) => {
+  //   setMultiRows((prev) => prev.filter((r) => r.id !== id));
+  // };
+
+  // const updateMultiMode = (id: string, mode: SimpleMode) => {
+  //   setMultiRows((prev) => prev.map((r) => (r.id === id ? { ...r, mode } : r)));
+  // };
+
+  const updateMultiAmount = (id: string, text: string) => {
+    setMultiRows((prev) => prev.map((r) => (r.id === id ? { ...r, amountText: text } : r)));
+  };
+
 
   // =========================================================
   // Apply GST toggle (Receipt Preview header)
-  // Locked once the estimate is generated or the bill is already billed.
+  // Locked only when the bill is already billed (read-only).
   // =========================================================
 
   const handleToggleGst = () => {
     if (readOnly) return;
-    if (stage === 'estimate') {
-      Alert.alert('Editing locked', 'Go back to editing to change GST.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Go back', onPress: handleBackToEditing },
-      ]);
-      return;
-    }
     setGstEnabled((v) => !v);
   };
 
@@ -827,8 +953,8 @@ function NewInvoiceScreenInner() {
   // =========================================================
 
   // Everything needed to rebuild the screen later.
-  // `remark` is kept (blank) only so the HeldEstimate type is still satisfied;
-  // the real remarks now live on each item.
+  // `remark`, `paymentMode`, `paymentSplits`, `paymentSplitsTouched` and `stage`
+  // are kept only so the HeldEstimate type is still satisfied / older code can read them.
   const buildHeldData = () => ({
     customerName,
     customerPhone,
@@ -837,10 +963,21 @@ function NewInvoiceScreenInner() {
     items,
     exchangeItems,
     exchangeTotal,
-    discountAmount,
-    paymentSplits,
-    paymentSplitsTouched,
-    stage,
+    discountAmount: String(discountValue),
+    paymentChoice,
+    multiRows,
+    partMode,
+    partPaidText,
+    paymentMode: isSimpleChoice ? paymentChoice : '',
+    paymentSplits: isSimpleChoice
+      ? [{ id: 'payment', mode: paymentChoice, amountText: String(amountDueNow) }]
+      : paymentChoice === 'multi'
+        ? multiRows
+        : paymentChoice === 'part' && partMode
+          ? [{ id: 'payment', mode: partMode, amountText: String(partReceived) }]
+          : [],
+    paymentSplitsTouched: Boolean(paymentChoice),
+    stage: 'building' as const,
     gstEnabled,
     advanceAmount: advance.amount,
     advanceMode: advance.mode,
@@ -853,14 +990,18 @@ function NewInvoiceScreenInner() {
     setExchangeTotal(0);
     setCustomerName('');
     setCustomerPhone('');
-    setDiscountAmount('0');
-    setPaymentSplits([]);
-    setPaymentSplitsTouched(false);
+    setFinalAmountText('');
+    setFinalTouched(false);
+    setPaymentChoice('');
+    setMultiRows([]);
+    setPartMode('');
+    setPartPaidText('');
+    setDueText('');
+    setDueTouched(false);
     setAdvance({ amount: 0, mode: 'cash' });
     setResolvedCustomerId(null);
     setSuggestions([]);
     setActiveField(null);
-    setStage('building');
     setActiveHeldId(null);
     setReadOnly(false);
     setBilledNumber(null);
@@ -901,18 +1042,61 @@ function NewInvoiceScreenInner() {
     setResolvedCustomerId(d.resolvedCustomerId);
     setActiveField(null); // loading a held bill must not trigger a customer search
     setSuggestions([]);
+
     // Older held bills had ONE bill-wide remark: copy it onto each item
     // that has no remark of its own.
-    setItems(d.items.map((i: InvoiceItem) => ({ ...i, remark: i.remark ?? d.remark ?? '' })));
+    const heldItems: InvoiceItem[] = d.items.map((i: InvoiceItem) => ({
+      ...i,
+      remark: i.remark ?? d.remark ?? '',
+    }));
+    setItems(heldItems);
     setExchangeItems(d.exchangeItems);
     setExchangeTotal(d.exchangeTotal);
-    setDiscountAmount(d.discountAmount);
-    setPaymentSplits(d.paymentSplits);
-    setPaymentSplitsTouched(d.paymentSplitsTouched);
-    setStage(d.stage);
-    setLinkedOrderId((d as any).orderId ?? null);
+
     // Held bills saved before the GST switch existed have no flag -> GST on.
-    setGstEnabled((d as any).gstEnabled !== false);
+    const heldGstOn = (d as any).gstEnabled !== false;
+    setGstEnabled(heldGstOn);
+
+    // The saved discount is turned back into a FINAL AMOUNT (Nett RS − discount).
+    const heldBillItems = heldGstOn ? heldItems : heldItems.map(withoutGst);
+    const heldBaseNet = round2(invoiceTotals(heldBillItems, 0, 0).grandTotal - d.exchangeTotal);
+    const heldDiscount = parseFloat(d.discountAmount) || 0;
+    if (heldDiscount > 0 && heldBaseNet > 0) {
+      setFinalAmountText(String(round2(heldBaseNet - heldDiscount)));
+      setFinalTouched(true);
+    } else {
+      setFinalAmountText('');
+      setFinalTouched(false);
+    }
+    setDueText('');
+    setDueTouched(false);
+
+    // Payment: new bills store the choice directly. Older bills stored one mode
+    // (or payment rows), so use the first cash / card / upi one found.
+    const isSimple = (m: any): m is SimpleMode => m === 'cash' || m === 'card' || m === 'upi';
+    const legacyRow = (d.paymentSplits ?? []).find(
+      (r: any) => isSimple(r.mode) && (parseFloat(r.amountText) || 0) > 0
+    );
+    const legacyMode = isSimple((d as any).paymentMode)
+      ? (d as any).paymentMode
+      : (legacyRow?.mode ?? '');
+    setPaymentChoice((((d as any).paymentChoice ?? legacyMode) || '') as PayChoice | '');
+    const heldMulti: MultiRow[] = (d as any).multiRows ?? [];
+    setMultiRows(
+      heldMulti.length
+        ? makeMultiRows().map((r) => {
+          const sum = heldMulti
+            .filter((h) => h.mode === r.mode)
+            .reduce((s, h) => s + (parseFloat(h.amountText) || 0), 0);
+          return { ...r, amountText: sum > 0 ? String(round2(sum)) : '' };
+        })
+        : []
+    );
+    setPartMode((d as any).partMode ?? '');
+    setPartPaidText((d as any).partPaidText ?? '');
+
+    setLinkedOrderId((d as any).orderId ?? null);
+
     // Held bills saved before the advance existed have none -> no advance.
     setAdvance({
       amount: Number((d as any).advanceAmount) || 0,
@@ -924,7 +1108,6 @@ function NewInvoiceScreenInner() {
     const isBilled = Boolean(h.billedInvoiceNumber);
     setReadOnly(isBilled);
     setBilledNumber(h.billedInvoiceNumber ?? null);
-    if (isBilled) setStage('estimate'); // show the full bill with payments
   };
 
   // Opened from the Invoices page "Held Bills" list.
@@ -950,32 +1133,6 @@ function NewInvoiceScreenInner() {
     // clear the params so the scanner doesn't reopen on refocus / back
     router.setParams({ scan: undefined, ts: undefined });
   }, [scanParam, scanTs, loadingMaster, readOnly]);
-
-
-  // =========================================================
-  // Stage transitions
-  // =========================================================
-
-  const handleGenerateEstimate = () => {
-    if (items.length === 0) {
-      setErrorTitle('No items');
-      setErrorMessage('Add at least one item before generating an estimate.');
-      return;
-    }
-
-    setStage('estimate');
-
-    if (!paymentSplitsTouched) {
-      // The advance is already counted; the payment row only collects the balance.
-      // (0 when the old gold covers the whole bill.)
-      const remaining = round2(Math.max(0, netFinalAmount - advance.amount));
-      setPaymentSplits([{ id: genRowId(), mode: '', amountText: String(remaining) }]);
-    }
-  };
-
-  const handleBackToEditing = () => {
-    setStage('building');
-  };
 
 
   // =========================================================
@@ -1047,7 +1204,10 @@ function NewInvoiceScreenInner() {
       created_at: new Date().toISOString(),
     }));
 
-    const splitsForPrint = buildSplits();
+    // Read-only (already billed): keep only the order advance (if any), drop the payment rows
+    const splitsForPrint = readOnly
+      ? buildSplits().filter((s) => s.id === 'advance')
+      : buildSplits();
 
     const estimateInvoice: InvoiceDetail = {
       id: 'estimate',
@@ -1062,7 +1222,7 @@ function NewInvoiceScreenInner() {
       invoice_discount: totals.discount,
       tax_amount: totals.taxTotal,
       grand_total: totals.grandTotal,
-      paid_amount: stage === 'estimate' ? totalReceived : advance.amount,
+      paid_amount: showPaid ? totalReceived : advance.amount,
       balance_amount: balanceShown,
       payment_status: 'unpaid',
       payment_mode: splitsForPrint.length > 1 ? 'split' : (splitsForPrint[0]?.mode ?? 'cash'),
@@ -1082,6 +1242,7 @@ function NewInvoiceScreenInner() {
 
   // =========================================================
   // Print estimate (thermal printer)
+  // Printing before a payment is chosen = a plain ESTIMATE.
   // =========================================================
 
   const handlePrintEstimate = async () => {
@@ -1189,8 +1350,8 @@ function NewInvoiceScreenInner() {
       row('Gross', money(item.total_amount), true);
     });
 
-    // Sum of all NEW items (same idea as OLD TOTAL for old gold)
-    if (billItems.length > 0) {
+    // Sum of all NEW items — only when there is more than one item
+    if (billItems.length > 1) {
       full();
       row('NEW TOTAL', money(newItemsTotal), true);
     }
@@ -1215,25 +1376,21 @@ function NewInvoiceScreenInner() {
       row('OLD TOTAL', money(exchangeTotal), true);
     }
 
+    // Nett RS (before discount) -> Discount (auto) -> FINAL AMOUNT
     full();
-    if (totals.discount > 0) {
-      row('Discount', `-${money(totals.discount)}`, true);
-      full();
+    row(customerGetsMoney && discountValue === 0 ? 'Nett (C.R)' : 'Nett RS', money(baseNet), true);
+    if (discountValue > 0) {
+      row('Discount', `-${money(discountValue)}`, true);
     }
-    row(customerGetsMoney ? 'Nett (C.R)' : 'Nett RS', money(netFinalAmount), true);
+    full();
+    row('FINAL AMOUNT', money(netFinalAmount), true);
 
     // Advance already paid on the customer order
     if (advance.amount > 0) {
       full();
       row('Advance', `-${money(advance.amount)}`);
       row('Paid By', advance.mode.replace('_', ' '));
-      row('BALANCE', money(balanceShown), true);
-    }
-
-    // Only when the payment has actually been entered
-    if (stage === 'estimate' && totalReceived > 0) {
-      full();
-      row('FINAL AMOUNT', money(totalReceived), true);
+      row('BALANCE', money(amountDueNow), true);
     }
 
     return L;
@@ -1276,7 +1433,7 @@ function NewInvoiceScreenInner() {
 
 
   // =========================================================
-  // Save final invoice
+  // Save final invoice  (the "Generate" button)
   //
   // The estimate is NOT deleted here. After the invoice is created the
   // estimate stays in "Held Bills" (tagged with the bill number) until
@@ -1288,41 +1445,79 @@ function NewInvoiceScreenInner() {
 
   const handleSaveInvoice = async () => {
     if (readOnly) return; // billed estimates can never be invoiced again
+    if (saving) return;
 
     if (items.length === 0) {
       setErrorTitle('No items');
-      setErrorMessage('Add at least one item before saving.');
+      setErrorMessage('Add at least one item before generating the bill.');
       return;
     }
 
-    // Overpayment only makes sense when the customer actually owes money.
-    // When old gold exceeds the new items (negative net) this check is skipped.
-    if (netFinalAmount >= 0 && round2(totalReceived + creditAmount - netFinalAmount) > 0.01) {
-      setErrorTitle('Overpayment');
-      setErrorMessage('Received + credit is more than the bill amount.');
+    // Final amount checks (only when the customer owes money)
+    if (baseNet > 0 && finalTouched && finalAmountText.trim() !== '' && !finalIsSet) {
+      setErrorTitle('Invalid final amount');
+      setErrorMessage('Enter a valid number in the FINAL AMOUNT box.');
+      return;
+    }
+    if (finalNegative) {
+      setErrorTitle('Invalid final amount');
+      setErrorMessage('Final amount cannot be less than zero.');
+      return;
+    }
+    if (finalTooHigh) {
+      setErrorTitle('Final amount too high');
+      setErrorMessage(`Final amount cannot be more than the bill amount (₹${baseNet.toLocaleString('en-IN')}).`);
       return;
     }
 
+    // Payment checks (only when money is due now)
+    if (amountDueNow > 0) {
+      if (!paymentChoice) {
+        setErrorTitle('Payment mode required');
+        setErrorMessage('Please select a payment mode.');
+        return;
+      }
+
+      if (paymentChoice === 'multi') {
+        if (multiRows.some((r) => multiAmount(r) > 0 && !r.mode)) {
+          setErrorTitle('Payment mode required');
+          setErrorMessage('Please select a mode for every payment row that has an amount.');
+          return;
+        }
+        if (Math.abs(multiRemaining) > 0.01) {
+          setErrorTitle('Multi payment total does not match');
+          setErrorMessage(
+            multiRemaining > 0
+              ? `Payments are short by ₹${multiRemaining.toLocaleString('en-IN')} of the amount due.`
+              : `Payments exceed the amount due by ₹${Math.abs(multiRemaining).toLocaleString('en-IN')}.`
+          );
+          return;
+        }
+      }
+
+      if (paymentChoice === 'part') {
+        if (!partMode) {
+          setErrorTitle('Payment mode required');
+          setErrorMessage('Please select the payment mode for the amount paid now.');
+          return;
+        }
+        if (partPaid <= 0) {
+          setErrorTitle('Amount required');
+          setErrorMessage('Enter the amount paid now for the part payment.');
+          return;
+        }
+        if (partPaid > amountDueNow + 0.01) {
+          setErrorTitle('Amount too high');
+          setErrorMessage(`Amount paid cannot be more than the amount due (₹${amountDueNow.toLocaleString('en-IN')}).`);
+          return;
+        }
+      }
+    }
+
+    // A due amount needs a customer to collect it from
     if (creditAmount > 0 && (!customerName.trim() || customerPhone.trim().length < 10)) {
-      setErrorTitle('Customer required for credit');
-      setErrorMessage('Enter the customer name and a valid phone number for a credit sale.');
-      return;
-    }
-
-    // LOC / Remark is mandatory for EVERY item
-    // const missingIdx = items.findIndex((i) => !i.remark?.trim());
-    // if (missingIdx !== -1) {
-    //   setErrorTitle('Missing details');
-    //   setErrorMessage(`LOC / Remark is mandatory for item ${missingIdx + 1}.`);
-    //   return;
-    // }
-
-    const rowMissingMode = paymentSplits.some(
-      (row) => (parseFloat(row.amountText) || 0) > 0 && !row.mode
-    );
-    if (rowMissingMode) {
-      setErrorTitle('Payment mode required');
-      setErrorMessage('Please select a payment mode for every payment row that has an amount.');
+      setErrorTitle('Customer required for due amount');
+      setErrorMessage('Enter the customer name and a valid phone number when an amount is left due.');
       return;
     }
 
@@ -1338,8 +1533,8 @@ function NewInvoiceScreenInner() {
           setErrorMessage(`This estimate was already billed as ${latest.billedInvoiceNumber} on another device.`);
           return;
         }
-
       }
+
       const invoice = await createInvoice({
         customerId: resolvedCustomerId,
         customerName: customerName.trim() || 'Walk-in Customer',
@@ -1378,7 +1573,7 @@ function NewInvoiceScreenInner() {
           keepExpiry: true,
           billedInvoiceId: invoice.id,
           billedInvoiceNumber: invoice.invoice_number,
-          data: { ...buildHeldData(), stage: 'estimate' },
+          data: buildHeldData(),
         });
       } catch (heldError) {
         console.warn('Failed to keep estimate after billing', heldError);
@@ -1387,9 +1582,9 @@ function NewInvoiceScreenInner() {
       try {
         await notify(
           'invoice',
-          creditAmount > 0 ? 'Credit invoice billed' : 'New invoice billed',
+          creditAmount > 0 ? 'Part payment invoice billed' : 'New invoice billed',
           `Invoice for ${customerName.trim() || 'Walk-in'} — ₹${totals.grandTotal.toLocaleString('en-IN')}` +
-          (netBalanceDue > 0 ? ` (credit ₹${netBalanceDue.toLocaleString('en-IN')})` : '')
+          (netBalanceDue > 0 ? ` (due ₹${netBalanceDue.toLocaleString('en-IN')})` : '')
         );
       } catch (notifyError) {
         console.warn('Failed to send invoice notification', notifyError);
@@ -1419,6 +1614,61 @@ function NewInvoiceScreenInner() {
     }
   };
 
+  // "Generate" button: saves the final bill (optionally after a confirmation).
+  const handleGenerate = () => {
+    if (!CONFIRM_BEFORE_GENERATE) {
+      handleSaveInvoice();
+      return;
+    }
+    Alert.alert('Generate final bill?', 'This will save the invoice.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Generate', onPress: handleSaveInvoice },
+    ]);
+  };
+
+
+
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  const keyboardTop = useRef<number | null>(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+
+  // Scrolls just enough so the focused input sits above the keyboard.
+  const scrollFocusedIntoView = () => {
+    const input = (TextInput as any).State?.currentlyFocusedInput?.();
+    if (!input) return;
+    setTimeout(() => {
+      input.measureInWindow((_x: number, y: number, _w: number, h: number) => {
+        const limit = keyboardTop.current;
+        if (limit == null) return;
+        const bottom = y + h + 16; // 16px breathing room
+        if (bottom > limit) {
+          scrollRef.current?.scrollTo({
+            y: scrollY.current + (bottom - limit),
+            animated: true,
+          });
+        }
+      });
+    }, 100);
+  };
+
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', (e) => {
+      keyboardTop.current = e.endCoordinates.screenY;
+      setKeyboardHeight(e.endCoordinates.height);
+      scrollFocusedIntoView();
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardTop.current = null;
+      setKeyboardHeight(0);
+    });
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
 
   // =========================================================
   // Loading screen
@@ -1433,7 +1683,7 @@ function NewInvoiceScreenInner() {
   }
 
 
-  // Reusable "Share Estimate on WhatsApp" button
+  // Reusable "Share Estimate on WhatsApp" button (used in read-only mode)
   const shareEstimateButton = (
     <Pressable
       style={[
@@ -1449,6 +1699,9 @@ function NewInvoiceScreenInner() {
     </Pressable>
   );
 
+  // The FINAL AMOUNT box is only typeable when the customer owes money.
+  const finalEditable = !readOnly && baseNet > 0;
+
 
   // =========================================================
   // Screen
@@ -1457,8 +1710,13 @@ function NewInvoiceScreenInner() {
   return (
     <View style={styles.screen}>
       <ScrollView
+        ref={scrollRef}
+        onScroll={(e) => {
+          scrollY.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ padding: spacing.lg, paddingBottom: 140 }}
+        contentContainerStyle={{ padding: spacing.lg, paddingBottom: 60 + keyboardHeight }}
       >
 
         {/* =================================================
@@ -1538,25 +1796,11 @@ function NewInvoiceScreenInner() {
                   purities={purities}
                   onPress={() => {
                     if (readOnly) return;
-                    if (stage === 'estimate') {
-                      Alert.alert('Editing locked', 'Go back to editing to change items.', [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Go back', onPress: handleBackToEditing },
-                      ]);
-                      return;
-                    }
                     setEditingItem(items.find((i) => i.id === item.id) ?? item);
                     setSheetOpen(true);
                   }}
                   onRemove={() => {
                     if (readOnly) return;
-                    if (stage === 'estimate') {
-                      Alert.alert('Editing locked', 'Go back to editing to remove items.', [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Go back', onPress: handleBackToEditing },
-                      ]);
-                      return;
-                    }
                     removeItem(item.id);
                   }}
                 />
@@ -1575,7 +1819,7 @@ function NewInvoiceScreenInner() {
           )}
         </Card>
 
-        {stage === 'building' && !readOnly && (
+        {!readOnly && (
           <View style={styles.linkRow}>
             <Pressable
               style={styles.linkBtn}
@@ -1611,18 +1855,16 @@ function NewInvoiceScreenInner() {
           onChange={(list, total) => {
             setExchangeItems(list);
             setExchangeTotal(total);
+            setFinalAmountText('');
+            setFinalTouched(false);
+            setDueText('');
+            setDueTouched(false);
           }}
           metals={metals}
           purities={purities}
           fetchRate={getCurrentRate}
-          locked={stage === 'estimate' || readOnly}
-          onLockedAttempt={() => {
-            if (readOnly) return;
-            Alert.alert('Editing locked', 'Go back to editing to change old gold items.', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Go back', onPress: handleBackToEditing },
-            ]);
-          }}
+          locked={readOnly}
+          onLockedAttempt={() => { }}
         />
 
         <View style={styles.divider} />
@@ -1630,18 +1872,18 @@ function NewInvoiceScreenInner() {
 
         {/* =================================================
             Receipt Preview
+            The FINAL AMOUNT row is a typeable box and the payment
+            is picked with radio buttons.
         ================================================= */}
 
         {items.length > 0 && (
           <Card style={{ marginTop: spacing.md }}>
             {/* Header row: title on the left, Apply GST checkbox on the right */}
             <View style={styles.previewHeader}>
-              <Text style={[styles.totalsHeader, { marginBottom: 0 }]}>
-                {stage === 'estimate' ? 'Payment Details' : 'Receipt Preview'}
-              </Text>
+              <Text style={[styles.totalsHeader, { marginBottom: 0 }]}>Receipt Preview</Text>
 
               <Pressable
-                style={[styles.gstToggle, (readOnly || stage === 'estimate') && styles.gstToggleLocked]}
+                style={[styles.gstToggle, readOnly && styles.gstToggleLocked]}
                 onPress={handleToggleGst}
                 hitSlop={8}
               >
@@ -1752,8 +1994,8 @@ function NewInvoiceScreenInner() {
               );
             })}
 
-            {/* Sum of all NEW items (same idea as OLD TOTAL for old gold) */}
-            {billItems.length > 0 && (
+            {/* Sum of all NEW items — only when there is more than one item */}
+            {billItems.length > 1 && (
               <>
                 <View style={styles.divider} />
                 <SlipRow label="NEW TOTAL" value={money(newItemsTotal)} bold />
@@ -1795,130 +2037,166 @@ function NewInvoiceScreenInner() {
 
             <View style={styles.divider} />
 
-            {/* Discount (only when one is given) — shown before the final amount */}
-            {totals.discount > 0 && (
-              <>
-                <SlipRow label="Discount" value={`-${money(totals.discount)}`} bold />
-                <View style={styles.divider} />
-              </>
-            )}
-
-            {/* Negative = old gold is worth more than the new items (pay the customer) */}
+            {/* Nett RS = bill amount before any discount.
+                Negative = old gold is worth more than the new items (pay the customer) */}
             <SlipRow
               label={customerGetsMoney ? 'Nett (C.R)' : 'Nett RS'}
-              value={money(netFinalAmount)}
+              value={money(baseNet)}
               bold
             />
+
+            {/* Discount is worked out automatically from the FINAL AMOUNT */}
+            {discountValue > 0 && (
+              <SlipRow label="Discount" value={`-${money(discountValue)}`} bold />
+            )}
+
             <View style={styles.divider} />
+
+            {/* FINAL AMOUNT — type the amount the customer agrees to pay.
+                The difference from Nett RS becomes the discount. */}
+            {finalEditable ? (
+              <SlipInputRow
+                label="FINAL AMOUNT"
+                value={finalFieldValue}
+                placeholder={String(baseNet)}
+                onChangeText={onFinalAmountChange}
+                onFocus={scrollFocusedIntoView}
+              />
+            ) : (
+              <SlipRow label="FINAL AMOUNT" value={money(netFinalAmount)} bold />
+            )}
+
+            {finalTooHigh && (
+              <Text style={styles.warningText}>
+                ⚠ Final amount is more than the bill amount (₹{baseNet.toLocaleString('en-IN')}).
+              </Text>
+            )}
 
             {/* Advance already paid on the customer order */}
             {advance.amount > 0 && (
               <>
-                <SlipRow label="Advance" value={`-${money(advance.amount)}`} />
-                <SlipRow label="Paid By" value={advance.mode.replace('_', ' ')} />
-                <SlipRow label="BALANCE" value={money(balanceShown)} bold />
                 <View style={styles.divider} />
+                <SlipRow label="Advance" value={`-${money(advance.amount)}`} />
+                <SlipRow label="Payment Mode" value={advance.mode.replace('_', ' ')} />
+                <SlipRow label="BALANCE" value={money(amountDueNow)} bold />
               </>
             )}
 
-            <SlipRow
-              label="FINAL AMOUNT"
-              value={stage === 'estimate' && totalReceived > 0 ? money(totalReceived) : ''}
-              bold
-            />
+            {/* Payment — radio buttons */}
+            <View style={styles.paymentSection}>
+              <Text style={styles.label}>Payment Mode</Text>
 
-            {stage === 'estimate' && (
-              <View style={styles.paymentSection}>
-                <Text style={styles.label}>Payment</Text>
+              <View style={styles.radioWrap}>
+                {PAY_CHOICES.map((m) => (
+                  <RadioOption
+                    key={m.id}
+                    label={m.label}
+                    selected={paymentChoice === m.id}
+                    onPress={() => selectChoice(m.id)}
+                  />
+                ))}
+              </View>
 
-                {paymentSplits.map((row) => (
-                  <View key={row.id} style={styles.splitRow}>
-                    <View style={{ flex: 1.3 }} pointerEvents={readOnly ? 'none' : 'auto'}>
-                      <SelectField
-                        label="Mode"
-                        value={row.mode}
-                        options={PAYMENT_MODES}
-                        placeholder="Select mode"
-                        onChange={(id) => updatePaymentSplitMode(row.id, id as PaymentMode)}
+              {/* ---------- Multi Payment: mode + amount per row ---------- */}
+              {/* ---------- Multi Payment: CASH | CARD | UPI in one line ---------- */}
+              {paymentChoice === 'multi' && !customerGetsMoney && (
+                <View style={styles.subSection}>
+                  <View style={styles.multiCols}>
+                    {multiRows.map((row) => (
+                      <View key={row.id} style={styles.multiCol}>
+                        <Text style={styles.multiColLabel}>{String(row.mode).toUpperCase()}</Text>
+                        <TextInput
+                          style={[styles.input, styles.multiColInput]}
+                          keyboardType="decimal-pad"
+                          value={row.amountText}
+                          onChangeText={(t) => updateMultiAmount(row.id, t)}
+                          placeholder="₹"
+                          placeholderTextColor={colors.textMuted}
+                          editable={!readOnly}
+                          onFocus={scrollFocusedIntoView}
+                        />
+                      </View>
+                    ))}
+                  </View>
+
+                  <View style={{ marginTop: spacing.sm }}>
+                    <Row label="Received" value={multiReceived} />
+                    <Row label="Remaining" value={multiRemaining} bold={Math.abs(multiRemaining) > 0.01} />
+                  </View>
+                </View>
+              )}
+
+              {/* ---------- Part Payment: mode, amount paid, due ---------- */}
+              {paymentChoice === 'part' && !customerGetsMoney && (
+                <View style={styles.subSection}>
+                  <Text style={styles.subLabel}>Payment mode</Text>
+                  <View style={styles.radioWrap}>
+                    {SIMPLE_MODES.map((m) => (
+                      <RadioOption
+                        key={m.id}
+                        label={m.label}
+                        selected={partMode === m.id}
+                        onPress={() => {
+                          if (readOnly) return;
+                          setPartMode(m.id);
+                        }}
                       />
-                    </View>
-                    <View style={{ flex: 1, marginLeft: spacing.sm }}>
-                      <Text style={styles.label}>Amount (₹)</Text>
+                    ))}
+                  </View>
+
+                  <View style={styles.partRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.subLabel}>Amount paid (₹)</Text>
                       <TextInput
                         style={styles.input}
                         keyboardType="decimal-pad"
-                        value={row.amountText}
-                        onChangeText={(text) => updatePaymentSplitAmount(row.id, text)}
+                        value={partPaidText}
+                        onChangeText={onPartPaidChange}
                         placeholder="0"
                         placeholderTextColor={colors.textMuted}
                         editable={!readOnly}
+                        onFocus={scrollFocusedIntoView}
                       />
                     </View>
-                    {!readOnly && paymentSplits.length > 1 && (
-                      <Pressable
-                        style={styles.removeSplitBtn}
-                        onPress={() => removePaymentSplit(row.id)}
-                        hitSlop={8}
-                      >
-                        <X size={18} color={colors.textMuted} />
-                      </Pressable>
-                    )}
+
+                    <View style={{ flex: 1, marginLeft: spacing.sm }}>
+                      <Text style={styles.subLabel}>Due (₹)</Text>
+                      <TextInput
+                        style={styles.input}
+                        keyboardType="decimal-pad"
+                        value={dueFieldValue}
+                        onChangeText={onDueChange}
+                        placeholder="0"
+                        placeholderTextColor={colors.textMuted}
+                        editable={finalEditable}
+                        onFocus={scrollFocusedIntoView}
+                      />
+                    </View>
                   </View>
-                ))}
 
-                {!readOnly && (
-                  <Pressable style={styles.linkBtn} onPress={addPaymentSplit}>
-                    <Plus size={16} color={colors.primary} />
-                    <Text style={styles.linkText}>Add payment method</Text>
-                  </Pressable>
-                )}
-
-                {!readOnly && !customerGetsMoney && totalReceived === 0 && exchangeTotal === 0 ? (
-                  <Text style={styles.warningText}>
-                    ⚠ No amount entered here — this invoice will be saved as Unpaid.
-                  </Text>
-                ) : null}
-
-                {/* Split mismatch warning only applies when the customer owes money */}
-                {!readOnly &&
-                  !customerGetsMoney &&
-                  (paymentSplits.length > 1 || creditAmount > 0 || advance.amount > 0) &&
-                  Math.abs(splitMismatch) > 0.01 && (
+                  {partPaid > amountDueNow + 0.01 && (
                     <Text style={styles.warningText}>
-                      {splitMismatch > 0
-                        ? `⚠ Splits are short by ₹${splitMismatch.toLocaleString('en-IN')} of the total due.`
-                        : `⚠ Splits exceed the total due by ₹${Math.abs(splitMismatch).toLocaleString('en-IN')}.`}
+                      ⚠ Amount paid is more than the amount due (₹{amountDueNow.toLocaleString('en-IN')}).
                     </Text>
                   )}
-
-                {customerGetsMoney && (
-                  <Text style={styles.payoutText}>
-                    Old gold is worth ₹{Math.abs(netFinalAmount).toLocaleString('en-IN')} more than the new items —
-                    pay this amount to the customer.
-                  </Text>
-                )}
-
-                <View style={{ marginTop: spacing.sm }}>
-                  {(paymentSplits.length > 1 || advance.amount > 0) && (
-                    <Row label="Total Received" value={totalReceived} />
-                  )}
-                  {creditAmount > 0 && <Row label="On Credit" value={creditAmount} bold />}
-                  {customerGetsMoney ? (
-                    <Row label="Nett (C.R)" value={Math.abs(netFinalAmount)} bold />
-                  ) : (
-                    <Row label="Balance Due" value={netBalanceDue} bold={netBalanceDue > 0} />
-                  )}
                 </View>
-              </View>
-            )}
+              )}
+
+              {customerGetsMoney && (
+                <Text style={styles.payoutText}>
+                  Old gold is worth ₹{Math.abs(netFinalAmount).toLocaleString('en-IN')} more than the new items —
+                  pay this amount to the customer.
+                </Text>
+              )}
+            </View>
           </Card>
         )}
 
         {/* =================================================
             Bottom buttons
             readOnly (billed)  -> Print Estimate + Share
-            building           -> Generate / Print / Share / Hold
-            estimate           -> banner + discount + Share + Hold
+            otherwise          -> Generate (saves final bill) | Print
+                                  Share | Hold
         ================================================= */}
 
         {readOnly ? (
@@ -1935,12 +2213,22 @@ function NewInvoiceScreenInner() {
 
             {shareEstimateButton}
           </>
-        ) : stage === 'building' ? (
+        ) : (
           <View style={styles.gridWrap}>
             {/* Row 1: Generate | Print */}
             <View style={styles.gridRow}>
-              <Pressable style={[styles.gridBtn, styles.gridBtnPrimary]} onPress={handleGenerateEstimate}>
-                <Text style={[styles.gridBtnText, styles.gridBtnTextPrimary]}>Generate</Text>
+              <Pressable
+                style={[
+                  styles.gridBtn,
+                  styles.gridBtnPrimary,
+                  (saving || items.length === 0) && styles.footerBtnDisabled,
+                ]}
+                onPress={handleGenerate}
+                disabled={saving || items.length === 0}
+              >
+                <Text style={[styles.gridBtnText, styles.gridBtnTextPrimary]}>
+                  {saving ? 'Saving…' : 'Generate'}
+                </Text>
               </Pressable>
 
               <Pressable
@@ -1975,49 +2263,8 @@ function NewInvoiceScreenInner() {
               </Pressable>
             </View>
           </View>
-        ) : (
-          <>
-            <View style={styles.estimateBanner}>
-              <Text style={styles.estimateBannerText}>ESTIMATE — review before confirming</Text>
-              <Pressable onPress={handleBackToEditing}>
-                <Text style={styles.editLink}>← Edit items</Text>
-              </Pressable>
-            </View>
-
-            <Text style={styles.label}>Discount Amount (₹)</Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="decimal-pad"
-              value={discountAmount}
-              onChangeText={setDiscountAmount}
-            />
-
-            {shareEstimateButton}
-
-            <Pressable
-              style={[styles.printEstimateBtn, { marginTop: spacing.sm }]}
-              onPress={handleHoldEstimate}
-            >
-              <Text style={styles.printEstimateBtnText}>Hold Estimate (4 hrs)</Text>
-            </Pressable>
-          </>
         )}
       </ScrollView>
-
-
-      {/* ===================================================
-          Footer
-      =================================================== */}
-
-      <View style={styles.footer}>
-        {stage === 'estimate' && !readOnly && (
-          <Button
-            label={saving ? 'Saving…' : 'Confirm & Save Final Invoice'}
-            onPress={handleSaveInvoice}
-            disabled={saving || items.length === 0}
-          />
-        )}
-      </View>
 
 
       {/* ===================================================
@@ -2105,6 +2352,59 @@ function SlipRow({ label, value, bold }: { label: string; value: string; bold?: 
   );
 }
 
+// Same layout as SlipRow, but the value column is a typeable box.
+function SlipInputRow({
+  label,
+  value,
+  placeholder,
+  onChangeText,
+  onFocus,
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  onChangeText: (text: string) => void;
+  onFocus?: () => void;
+}) {
+  return (
+    <View style={[styles.slipRow, { alignItems: 'center' }]}>
+      <Text style={[styles.slipLabel, styles.rowBold]}>{label}</Text>
+      <Text style={[styles.slipColon, styles.rowBold]}>:</Text>
+      <View style={{ flex: 1 }}>
+        <TextInput
+          style={styles.slipInput}
+          keyboardType="decimal-pad"
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor={colors.textMuted}
+          onFocus={onFocus}
+        />
+      </View>
+    </View>
+  );
+}
+
+// Small radio button (no background) used for every payment option.
+function RadioOption({
+  label,
+  selected,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable style={styles.radioItem} onPress={onPress} hitSlop={6}>
+      <View style={[styles.radioOuter, selected && styles.radioOuterOn]}>
+        {selected && <View style={styles.radioInner} />}
+      </View>
+      <Text style={styles.radioLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
 
 // ===========================================================
 // Styles
@@ -2116,7 +2416,9 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: radius?.md ?? 10, paddingHorizontal: spacing.md, paddingVertical: 12, fontSize: 15, color: colors.textPrimary, marginBottom: spacing.md, backgroundColor: colors.surface },
   remarkInput: { minHeight: 56 },
   label: { fontSize: 13, color: colors.textMuted, marginBottom: 6 },
+  subLabel: { fontSize: 13, color: colors.textMuted, marginBottom: 6 },
   warningText: { fontSize: 12, color: '#B00020', marginTop: 10, marginBottom: spacing.md },
+  hintText: { fontSize: 11, color: colors.textMuted, marginTop: 2, marginBottom: spacing.sm, textAlign: 'center' },
   payoutText: { fontSize: 13, fontWeight: '600', color: '#137333', marginTop: 10, marginBottom: spacing.md },
   divider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.md },
   dividerThin: { height: 1, backgroundColor: colors.border, marginVertical: 6 },
@@ -2143,7 +2445,36 @@ const styles = StyleSheet.create({
   slipLabel: { flex: 1, textAlign: 'right', color: colors.textSecondary, fontSize: 14 },
   slipColon: { width: 20, textAlign: 'center', color: colors.textSecondary, fontSize: 14 },
   slipValue: { flex: 1, color: colors.textPrimary, fontSize: 14, fontVariant: ['tabular-nums'] },
+  slipInput: {
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    borderRadius: radius?.md ?? 10,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    fontSize: 17,
+    fontWeight: '800',
+    color: colors.textPrimary,
+    backgroundColor: colors.surface,
+    fontVariant: ['tabular-nums'],
+  },
   paymentSection: { marginTop: spacing.md, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: colors.border },
+
+  // Payment radio buttons (small, no background)
+  radioWrap: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 20, rowGap: 14, marginTop: 2 },
+  radioItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  radioOuter: { width: 20, height: 20, borderRadius: 10, borderWidth: 1.5, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  radioOuterOn: { borderColor: colors.primary },
+  radioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.primary },
+  radioLabel: { fontSize: 14, color: colors.textPrimary },
+
+  // Multi Payment / Part Payment blocks
+  subSection: { marginTop: spacing.md, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: colors.border },
+  multiCols: { flexDirection: 'row', gap: spacing.sm },
+  multiCol: { flex: 1 },
+  multiColLabel: { fontSize: 13, fontWeight: '600', color: colors.textMuted, marginBottom: 6, textAlign: 'center' },
+  multiColInput: { marginBottom: 0, paddingHorizontal: spacing.sm, textAlign: 'center' },
+  partRow: { flexDirection: 'row', alignItems: 'flex-start', marginTop: spacing.md },
+
   splitRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: spacing.sm },
   removeSplitBtn: { marginLeft: spacing.sm, marginBottom: 12, padding: 4 },
   footer: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: colors.background, padding: spacing.lg, borderTopWidth: 1, borderTopColor: colors.border },

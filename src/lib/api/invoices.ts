@@ -136,7 +136,7 @@ export async function searchProductNames(query: string, limit = 5): Promise<stri
 
   return names.slice(0, limit);
 }
-
+//  All the details are calculated 
 
 // ---------------------------------------------------------
 // Rates / making charges / tax

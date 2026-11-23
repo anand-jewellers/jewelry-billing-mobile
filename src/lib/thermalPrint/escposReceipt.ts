@@ -284,11 +284,12 @@ const PAY_MODE_LABELS: Record<string, string> = {
 };
 
 const PAID_MODE_NAMES: Record<string, string> = {
-  cash: 'cash',
-  card: 'card',
+  cash: 'CASH',
+  card: 'CARD',
   upi: 'UPI',
-  bank_transfer: 'bank transfer',
-  cheque: 'cheque',
+  bank_transfer: 'BANK TRANSFER',
+  cheque: 'CHEQUE',
+  credit: 'CREDIT',
 };
 
 // Tax amount from invoice.charges (CGST / SGST / IGST|GST)
@@ -539,7 +540,7 @@ export async function printThermalReceiptDirect(
   // Sum of all NEW items (before discount), same idea as OLD TOTAL.
   // Skipped for a single piece-rate item (the sample slip goes Gross -> Nett RS).
   const singlePieceItem = itemCount === 1 && isPieceItem(invoice.items[0]);
-  if (itemCount > 0 && !singlePieceItem) {
+  if (itemCount > 1 && !singlePieceItem) {
     out += tightDash();
     out += itemBoldRow('NEW TOTAL', fixed2(f.grand + f.discount));
     out += LF;
@@ -608,7 +609,7 @@ export async function printThermalReceiptDirect(
       if (isEstimate) {
         label = PAY_MODE_LABELS[mode] ?? mode.toUpperCase();   // estimate unchanged
       } else if (mode === 'credit') {
-        label = 'Credit';
+        label = 'DUE (CREDIT)';  // final bill: credit is "Due"
       } else {
         label = `Paid (${PAID_MODE_NAMES[mode] ?? mode.replace(/_/g, ' ')})`;
       }
