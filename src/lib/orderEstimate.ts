@@ -58,8 +58,11 @@ export interface BillOptions {
 export interface ComputedBill {
   billItems: InvoiceItem[];
   totals: ReturnType<typeof invoiceTotals>;
-  netFinalAmount: number; // after old gold
-  balance: number; // after advance
+  netFinalAmount: number; // after old gold. NEGATIVE = shop pays the customer
+  balance: number; // after advance. NEGATIVE = shop pays the customer
+  baseNet: number; // bill before any discount (negative = customer gets money)
+  customerGetsMoney: boolean; // netFinalAmount < 0
+  payToCustomer: number; // positive amount the shop must hand over (0 if none)
 }
 
 export interface OrderEstimate {
@@ -254,10 +257,25 @@ export async function buildOrderBill(orders: CustomerOrder[]): Promise<OrderBill
 export function computeBill(bill: OrderBill, opts: BillOptions): ComputedBill {
   // "Apply GST" unticked -> every item is stripped of tax
   const billItems = opts.gst ? bill.items : bill.items.map(withoutGst);
-  const totals = invoiceTotals(billItems, opts.discount || 0, 0);
-  const netFinalAmount = round2(Math.max(0, totals.grandTotal - bill.exchangeTotal));
-  const balance = round2(Math.max(0, netFinalAmount - bill.advanceTotal));
-  return { billItems, totals, netFinalAmount, balance };
+
+  // Bill with NO discount, minus old gold. NOT clamped:
+  // negative means the old gold is worth more than the new items.
+  const baseTotals = invoiceTotals(billItems, 0, 0);
+  const baseNet = round2(baseTotals.grandTotal - bill.exchangeTotal);
+
+  // A discount only makes sense when the customer owes money
+  const requested = Math.max(opts.discount || 0, 0);
+  const discount = baseNet > 0 ? round2(Math.min(requested, baseNet)) : 0;
+
+  const totals = invoiceTotals(billItems, discount, 0);
+
+  const netFinalAmount = round2(totals.grandTotal - bill.exchangeTotal); // can be negative
+  const balance = round2(netFinalAmount - bill.advanceTotal);            // can be negative
+
+  const customerGetsMoney = netFinalAmount < 0;
+  const payToCustomer = round2(Math.max(0, -(netFinalAmount - bill.advanceTotal)));
+
+  return { billItems, totals, netFinalAmount, balance, baseNet, customerGetsMoney, payToCustomer };
 }
 
 // ---------------------------------------------------------
@@ -265,7 +283,7 @@ export function computeBill(bill: OrderBill, opts: BillOptions): ComputedBill {
 // ---------------------------------------------------------
 
 export function buildBillSlipLines(bill: OrderBill, computed: ComputedBill): SlipLine[] {
-  const { billItems, totals, netFinalAmount, balance } = computed;
+  const { billItems, totals, netFinalAmount, balance, customerGetsMoney } = computed;
   const { exchangeItems, exchangeTotal, advanceTotal, paymentModes } = bill;
 
   const L: SlipLine[] = [];
@@ -357,20 +375,20 @@ export function buildBillSlipLines(bill: OrderBill, computed: ComputedBill): Sli
     thin();
     row('OLD TOTAL', money(exchangeTotal), true);
   }
-
   full();
   if (totals.discount > 0) {
     row('Discount', `-${money(totals.discount)}`, true);
     full();
   }
-  row('Nett RS', money(netFinalAmount), true);
+  // Negative value + (C.R) label = shop pays the customer
+  row(customerGetsMoney ? 'Nett (C.R)' : 'Nett RS', money(netFinalAmount), true);
 
   // Advance already paid on the orders
   if (advanceTotal > 0) {
     full();
     row('Advance', `-${money(advanceTotal)}`);
     if (paymentModes.length > 0) row('Paid By', paymentModes.join(', '));
-    row('BALANCE', money(balance), true);
+    row(balance < 0 ? 'BALANCE (C.R)' : 'BALANCE', money(balance), true);
   }
 
   return L;

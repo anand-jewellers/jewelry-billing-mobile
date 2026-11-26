@@ -582,8 +582,8 @@ export default function InvoiceListScreen() {
               style={styles.searchInput}
               placeholder={
                 view === 'invoices'
-                  ? 'Search invoice no. or customer name'
-                  : 'Search name, phone or receipt no.'
+                  ? 'Search invoice no or customer name'
+                  : 'Search name, phone or invoice no.'
               }
               placeholderTextColor="#94A3B8"
               value={searchText}

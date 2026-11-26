@@ -10,7 +10,7 @@ import { getInvoiceById } from '../../../src/lib/api/invoices';
 import { getCompanySettings, getInvoiceSettings } from '../../../src/lib/api/settings';
 import {
   buildInvoiceHtml,
-  buildThermalReceiptHtml,
+  // buildThermalReceiptHtml,
   companyToShopDetails,
   printHtml,
   printInvoice,
@@ -48,6 +48,26 @@ function formatRate(amount: number, base: number): string {
 // Charge names that should show a "(x%)" rate suffix, derived from that
 // line's own amount ÷ subtotal — these are the GST-style charges.
 const RATE_LABELED_CHARGE_NAMES = new Set(['CGST', 'SGST', 'IGST', 'GST']);
+
+const PAYMENT_LABELS: Record<string, string> = {
+  cash: 'Cash',
+  card: 'Card',
+  upi: 'UPI',
+  bank_transfer: 'Bank Transfer',
+  cheque: 'Cheque',
+  credit: 'Due',
+  advance: 'Advance',
+  chit_fund: 'Chit Fund',
+  split: 'Split',
+};
+
+// "Advance" rows from a customer order keep their cash/upi mode and are
+// tagged with reference "Advance", so label them "Advance (Cash)".
+function splitLabel(mode: string, reference?: string | null): string {
+  const base = PAYMENT_LABELS[mode] ?? mode.replace('_', ' ');
+  if (reference === 'Advance' && mode !== 'advance') return `Advance (${base})`;
+  return base;
+}
 
 export default function InvoiceDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -147,12 +167,7 @@ export default function InvoiceDetailScreen() {
     // Bluetooth thermal printing only works in the native app.
     // On web, keep the old browser print dialog.
     if (Platform.OS === 'web') {
-      try {
-        const html = buildThermalReceiptHtml(invoice, shop, displayConfig);
-        await printHtml(html);
-      } catch (e: any) {
-        Alert.alert('Could not print receipt', e?.message ?? 'Unknown error');
-      }
+      Alert.alert('Not available', 'Receipt printing works only in the mobile app.');
       return;
     }
 
@@ -204,6 +219,29 @@ export default function InvoiceDetailScreen() {
 
   const exchangeItems = invoice.exchange_items ?? [];
   const exchangeTotal = invoice.exchange_total ?? 0;
+
+  // ---- Payment breakdown ----
+  const splits = invoice.payment_splits ?? [];
+  // Advance / Chit Fund: deducted from the bill
+  const prepaidRows = splits.filter(
+    (s) => s.amount > 0 && (s.mode === 'advance' || s.mode === 'chit_fund' || s.reference === 'Advance')
+  );
+  // Money received at billing (cash / card / upi ...)
+  const paidNowRows = splits.filter(
+    (s) =>
+      s.amount > 0 &&
+      s.mode !== 'credit' &&
+      s.mode !== 'advance' &&
+      s.mode !== 'chit_fund' &&
+      s.reference !== 'Advance'
+  );
+
+  const balanceDue = Number(invoice.balance_amount) || 0;
+  const paidTotal = Number(invoice.paid_amount) || 0;
+  const payState = balanceDue <= 0.01 ? 'paid' : paidTotal > 0 ? 'partial' : 'unpaid';
+  const netPayable = invoice.grand_total - exchangeTotal;
+  const prepaidSum = prepaidRows.reduce((t, s) => t + s.amount, 0);
+  const payoutToCustomer = Math.max(0, Math.round((prepaidSum - netPayable) * 100) / 100);
 
   return (
     <View style={styles.screen}>
@@ -259,7 +297,10 @@ export default function InvoiceDetailScreen() {
           </View>
           <View style={styles.metaRow}>
             <Text style={styles.metaLabel}>Status</Text>
-            <Text style={[styles.metaValue, styles.statusBadge]}>{invoice.status} · {invoice.payment_status}</Text>
+            <Text style={[styles.metaValue, styles.statusBadge]}>
+              {invoice.status} · {payState}
+              {balanceDue > 0.01 ? ` (due ₹${balanceDue.toLocaleString('en-IN')})` : ''}
+            </Text>
           </View>
         </Card>
 
@@ -320,9 +361,35 @@ export default function InvoiceDetailScreen() {
           <Row label="Discount" value={-invoice.invoice_discount} />
           <View style={styles.dividerThin} />
           <Row label="Grand Total" value={invoice.grand_total} bold />
-          {exchangeTotal > 0 && <Row label="Old Gold Exchange" value={-exchangeTotal} />}
-          <Row label="Amount Paid" value={invoice.paid_amount} />
-          {invoice.balance_amount > 0 && <Row label="Balance Due" value={invoice.balance_amount} bold negative />}
+          {exchangeTotal > 0 && (
+            <>
+              <Row label="Old Gold Exchange" value={-exchangeTotal} />
+              <View style={styles.dividerThin} />
+              <Row label="Net Payable" value={netPayable} bold />
+            </>
+          )}
+
+          {(prepaidRows.length > 0 || paidNowRows.length > 0) && <View style={styles.dividerThin} />}
+
+          {/* Advance / Chit Fund: deducted from the bill */}
+          {prepaidRows.map((s) => (
+            <Row key={s.id} label={splitLabel(s.mode, s.reference)} value={-s.amount} />
+          ))}
+
+          {/* Money received at billing (cash / card / upi) */}
+          {paidNowRows.map((s) => (
+            <Row key={s.id} label={`Paid · ${splitLabel(s.mode, s.reference)}`} value={s.amount} />
+          ))}
+
+          <View style={styles.dividerThin} />
+          <Row label="Total Received" value={invoice.paid_amount} bold />
+          {payoutToCustomer > 0.01 ? (
+            <Row label="Pay to Customer" value={payoutToCustomer} bold negative />
+          ) : balanceDue > 0.01 ? (
+            <Row label="Balance Due" value={balanceDue} bold negative />
+          ) : (
+            <Row label="Balance Due" value={0} />
+          )}
         </View>
       </ScrollView>
 

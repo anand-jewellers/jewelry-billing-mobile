@@ -377,7 +377,7 @@ export default function CustomerDetailsScreen() {
                             <MessageCircle size={13} color="#fff" />
                           )}
                           <Text style={styles.smithChipText} numberOfLines={1}>
-                            Share with {o.goldsmith_name?.trim() || 'Goldsmith'}
+                            Share with Smith - {o.goldsmith_name?.trim() || 'Goldsmith'}
                           </Text>
                         </Pressable>
                       )}
@@ -411,7 +411,7 @@ export default function CustomerDetailsScreen() {
                 <>
                   <MessageCircle size={18} color="#fff" />
                   <Text style={styles.shareBtnText}>
-                    Share Combined Estimate ({selectedOrders.length} {selectedOrders.length === 1 ? 'order' : 'orders'})
+                    Share Estimate ({selectedOrders.length} {selectedOrders.length === 1 ? 'order' : 'orders'})
                   </Text>
                 </>
               )}

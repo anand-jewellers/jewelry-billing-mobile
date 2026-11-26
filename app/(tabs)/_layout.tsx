@@ -61,11 +61,11 @@ interface NavItemConfig {
 }
 
 const NAV_ITEMS: NavItemConfig[] = [
-  { name: 'index', route: '/', title: 'Dashboard', tabLabel: 'Dashboard', pageKey: 'dashboard', iconActive: 'grid', iconInactive: 'grid-outline' },
-  { name: 'customers', route: '/customers', title: 'Customers', tabLabel: 'Customers', pageKey: 'customers', iconActive: 'people', iconInactive: 'people-outline' },
-  { name: 'products', route: '/products', title: 'Products', tabLabel: 'Products', pageKey: 'products', iconActive: 'cube', iconInactive: 'cube-outline' },
-  { name: 'invoices', route: '/invoices', title: 'Invoices', tabLabel: 'Invoices', pageKey: 'invoices', iconActive: 'document-text', iconInactive: 'document-text-outline' },
-  { name: 'settings', route: '/settings', title: 'Settings', tabLabel: 'Settings', pageKey: 'settings', iconActive: 'settings', iconInactive: 'settings-outline' },
+  { name: 'index', route: '/', title: 'Dashboard', tabLabel: 'DASHBOARD', pageKey: 'dashboard', iconActive: 'grid', iconInactive: 'grid-outline' },
+  { name: 'customers', route: '/customers', title: 'Customers', tabLabel: 'CUSTOMERS', pageKey: 'customers', iconActive: 'people', iconInactive: 'people-outline' },
+  { name: 'products', route: '/products', title: 'Products', tabLabel: 'PRODUCTS', pageKey: 'products', iconActive: 'cube', iconInactive: 'cube-outline' },
+  { name: 'invoices', route: '/invoices', title: 'Invoices', tabLabel: 'INVOICES', pageKey: 'invoices', iconActive: 'document-text', iconInactive: 'document-text-outline' },
+  { name: 'settings', route: '/settings', title: 'Settings', tabLabel: 'SETTINGS', pageKey: 'settings', iconActive: 'settings', iconInactive: 'settings-outline' },
 ];
 
 function TabIcon({ name, focused }: { name: IconName; focused: boolean }) {

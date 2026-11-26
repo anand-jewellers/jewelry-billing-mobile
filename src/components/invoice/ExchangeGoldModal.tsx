@@ -3,7 +3,8 @@
 // Add / edit one old-gold item on an invoice (exchange).
 // UI + keyboard handling are the same as PurchaseItemModal:
 //   Product name, Metal, Purity, Weight, Stone/Dust, Old %, Rate, preview.
-// The default Old % per purity (incl. SAADHA = 80) is kept exactly as before.
+// Metal and Purity are small radio buttons (Gold + 916 selected by default).
+// The default Old % per purity (incl. SADHA = SADHA_OLD_PERCENT) is kept exactly as before.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -23,32 +24,31 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, ChevronDown, ChevronUp } from 'lucide-react-native';
 import { colors, spacing, radius } from '../../theme';
-import { SelectField } from '../master';
 import {
   computeExchangeItem,
   deductionFromOldPercent,
   displayNetWeight,
   COMMON_PURITIES,
   OLD_PERCENT_STEPS,
-  SAADHA_OLD_PERCENT,
+  SADHA_OLD_PERCENT,
   defaultOldPercentForPurity,
 } from '../../lib/exchangeGold';
 import type { ExchangeItem } from '../../types/invoices';
 import type { Metal, Purity } from '../../types/settings';
 
-// key: stable id used only by the dropdown control.
+// key: stable id used only by the radio control.
 // dbId: the REAL purity_id to save / use for rate-fetch.
 interface PurityOption {
   key: string;
   dbId: string | null;
   metalId: string | null;
-  label: string;
+  name: string;
   percent: number;
   defaultOld: number; // Old % filled in when this purity is picked
-  isSaadha: boolean; // purity row named SAADHA (same 91.6 value, different shop name)
+  isSadha: boolean; // purity row named SADHA (same 91.6 value, different shop name)
 }
 
-const isSaadhaName = (name: string) => /saadha/i.test(name);
+const isSadhaName = (name: string) => /sadha/i.test(name);
 
 interface Props {
   visible: boolean;
@@ -58,6 +58,38 @@ interface Props {
   purities?: Purity[];
   fetchRate?: (metalId: string, purityId: string) => Promise<number>;
   editingItem?: ExchangeItem | null;
+}
+
+// ---------- Small radio group (radio + text only, no background) ----------
+function RadioGroup({
+  options,
+  value,
+  onChange,
+  emptyText,
+}: {
+  options: { id: string; label: string }[];
+  value: string | null;
+  onChange: (id: string) => void;
+  emptyText?: string;
+}) {
+  if (options.length === 0) {
+    return <Text style={styles.helperText}>{emptyText ?? 'No options'}</Text>;
+  }
+  return (
+    <View style={styles.radioWrap}>
+      {options.map((o) => {
+        const on = o.id === value;
+        return (
+          <Pressable key={o.id} style={styles.radioItem} onPress={() => onChange(o.id)} hitSlop={6}>
+            <View style={[styles.radioOuter, on && styles.radioOuterOn]}>
+              {on && <View style={styles.radioInner} />}
+            </View>
+            <Text style={[styles.radioLabel, on && styles.radioLabelOn]}>{o.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 }
 
 export function ExchangeGoldModal({
@@ -120,17 +152,16 @@ export function ExchangeGoldModal({
   const allPurityOptions: PurityOption[] = useMemo(() => {
     if (purities.length > 0) {
       return purities.map((p) => {
-        const rawPercent = (p as any).purity_percentage;
-        const percent = Number(rawPercent) || 0;
-        const saadha = isSaadhaName(p.name);
+        const percent = Number((p as any).purity_percentage) || 0;
+        const sadha = isSadhaName(p.name);
         return {
           key: p.id,
           dbId: p.id,
           metalId: (p as any).metal_id ?? null,
-          label: percent > 0 ? `${p.name} (${rawPercent}%)` : p.name,
+          name: p.name,
           percent,
-          defaultOld: saadha ? SAADHA_OLD_PERCENT : defaultOldPercentForPurity(percent),
-          isSaadha: saadha,
+          defaultOld: sadha ? SADHA_OLD_PERCENT : defaultOldPercentForPurity(percent),
+          isSadha: sadha,
         };
       });
     }
@@ -138,10 +169,10 @@ export function ExchangeGoldModal({
       key: `fallback_${i}`,
       dbId: p.id,
       metalId: null,
-      label: p.label,
+      name: p.label,
       percent: p.percent,
       defaultOld: defaultOldPercentForPurity(p.percent),
-      isSaadha: false,
+      isSadha: false,
     }));
   }, [purities]);
 
@@ -152,16 +183,17 @@ export function ExchangeGoldModal({
   };
 
   const purityOptions = useMemo(
-    () => purityListFor(metalId).map((o) => ({ id: o.key, label: o.label })),
+    () => purityListFor(metalId).map((o) => ({ id: o.key, label: o.name })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [allPurityOptions, metalId]
   );
   const metalOptions = useMemo(() => metals.map((m) => ({ id: m.id, label: m.name })), [metals]);
 
-  // Default purity for a list: 22K (never SAADHA / REG, which share 91.6), else first
+  // Default purity for a list: the 916 / 91.6 / 22K one (never SADHA, which shares 91.6), else first
   const pickDefaultPurity = (list: PurityOption[]): PurityOption | null =>
-    list.find((o) => !o.isSaadha && /22k/i.test(o.label)) ??
-    list.find((o) => !o.isSaadha && Math.abs(o.percent - 91.6) < 0.05) ??
+    list.find((o) => !o.isSadha && /916|91\.6|22\s*k/i.test(o.name)) ??
+    list.find((o) => !o.isSadha && Math.abs(o.percent - 91.6) < 0.15) ??
+    list.find((o) => !o.isSadha) ??
     list[0] ??
     null;
 
@@ -242,8 +274,7 @@ export function ExchangeGoldModal({
     if (!visible || !initPendingRef.current) return;
     if (allPurityOptions.length === 0) return;
 
-    const gold =
-      metals.find((m) => /gold/i.test(m.name)) ?? (metals.length === 1 ? metals[0] : metals[0]);
+    const gold = metals.find((m) => /gold/i.test(m.name)) ?? metals[0];
     const mid = gold?.id ?? '';
     if (metals.length > 0 && !mid) return;
     initPendingRef.current = false;
@@ -255,7 +286,7 @@ export function ExchangeGoldModal({
       // select the matching option WITHOUT touching the saved rate / old %
       const match =
         list.find((o) => o.dbId != null && o.dbId === editingItem.purity_id) ??
-        list.find((o) => !o.isSaadha && o.percent === editingItem.purity_percent);
+        list.find((o) => !o.isSadha && o.percent === editingItem.purity_percent);
       setPurityKey(match?.key ?? '');
       setPurityId(match?.dbId ?? editingItem.purity_id ?? null);
     } else {
@@ -343,23 +374,21 @@ export function ExchangeGoldModal({
               />
             </Field>
 
-            <Field label="">
-              <SelectField
-                label="Metal"
-                value={metalId}
+            <Field label="Metal">
+              <RadioGroup
                 options={metalOptions}
-                placeholder="Select metal"
-                onChange={(id) => handleMetalChange(id as string)}
+                value={metalId || null}
+                onChange={handleMetalChange}
+                emptyText="No metals found"
               />
             </Field>
 
-            <Field label="">
-              <SelectField
-                label="Purity"
-                value={purityKey}
+            <Field label="Purity">
+              <RadioGroup
                 options={purityOptions}
-                placeholder="Select purity"
-                onChange={(id) => handlePurityChange(id as string)}
+                value={purityKey || null}
+                onChange={handlePurityChange}
+                emptyText="No purities found"
               />
             </Field>
 
@@ -582,6 +611,34 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+
+  // Radio buttons (small, no background)
+  helperText: { color: colors.textMuted, fontSize: 12, fontStyle: 'italic' },
+  radioWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 18,
+    rowGap: 8,
+  },
+  radioItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 2,
+  },
+  radioOuter: {
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterOn: { borderColor: colors.primary },
+  radioInner: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.primary },
+  radioLabel: { fontSize: 13, color: colors.textMuted, fontWeight: '500' },
+  radioLabelOn: { color: colors.textPrimary, fontWeight: '700' },
 
   percentRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   percentInput: { flex: 1 },

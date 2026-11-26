@@ -71,10 +71,10 @@ export const COMMON_PURITIES = [
   { id: null, label: '925 (Silver)', percent: 92.5 },
 ];
 
-// SAADHA is a local option: it uses the 22K (916) purity and rate,
+// sadha is a local option: it uses the 22K (916) purity and rate,
 // but starts with 80% as the Old %.
-// export const SAADHA_LABEL = 'SAADHA';
-export const SAADHA_OLD_PERCENT = 80;
+// export const SADHA_LABEL = 'SADHA';
+export const SADHA_OLD_PERCENT = 80;
 
 // Default Old % when a purity is selected (the cashier can still change it)
 export function defaultOldPercentForPurity(purityPercent: number): number {

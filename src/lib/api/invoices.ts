@@ -271,6 +271,8 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice>
     quantity: item.quantity,
     gross_weight: item.gross_weight,
     stone_weight: item.stone_weight,
+    stone_id: item.stone_id ?? null,       // NEW
+    stone_name: item.stone_name ?? null,   // NEW
     net_weight: item.net_weight,
     metal_rate: item.metal_rate,
     metal_value: item.metal_value,
@@ -424,6 +426,7 @@ export async function getInvoiceById(invoiceId: string): Promise<InvoiceDetail> 
     paid_amount: invoice.paid_amount,
     balance_amount: invoice.balance_amount,
     payment_status: invoice.payment_status,
+    payment_mode: (invoice.payment_mode ?? 'cash') as PaymentMode,   // NEW
     status: invoice.status,
     items: items ?? [],
     charges: charges ?? [],
@@ -450,6 +453,10 @@ export interface InvoiceListItem {
   payment_mode: string;
   status: string;
   customer_name: string;
+  // Filled in by listInvoices() from invoice_payment_splits
+  advance_amount?: number;   // order advance + typed Advance
+  chit_amount?: number;      // Chit Fund
+  paid_now_amount?: number;  // cash / card / upi received at billing
 }
 
 export interface ListInvoicesParams {
@@ -503,6 +510,41 @@ export async function listInvoices(params: ListInvoicesParams = {}): Promise<Lis
 
   const rows = (data ?? []) as InvoiceListItem[];
   const total = count ?? rows.length;
+
+  // Advance / Chit Fund / paid-now amounts for the rows on this page.
+  // If this lookup fails the list still loads, just without the chips.
+  if (rows.length > 0) {
+    try {
+      const { data: splitRows, error: splitErr } = await supabase
+        .from('invoice_payment_splits')
+        .select('invoice_id, payment_mode, amount, reference')
+        .in('invoice_id', rows.map((r) => r.id));
+      if (splitErr) throw splitErr;
+
+      const sums = new Map<string, { advance: number; chit: number; paidNow: number }>();
+      for (const s of (splitRows ?? []) as any[]) {
+        const cur = sums.get(s.invoice_id) ?? { advance: 0, chit: 0, paidNow: 0 };
+        const amt = Number(s.amount) || 0;
+        const mode = String(s.payment_mode ?? '');
+        const ref = String(s.reference ?? '');
+
+        if (mode === 'chit_fund') cur.chit += amt;
+        else if (mode === 'advance' || ref === 'Advance') cur.advance += amt;
+        else if (mode !== 'credit') cur.paidNow += amt;
+
+        sums.set(s.invoice_id, cur);
+      }
+
+      for (const r of rows) {
+        const s = sums.get(r.id);
+        r.advance_amount = s?.advance ?? 0;
+        r.chit_amount = s?.chit ?? 0;
+        r.paid_now_amount = s?.paidNow ?? 0;
+      }
+    } catch (e) {
+      console.warn('[listInvoices] could not load payment splits:', e);
+    }
+  }
 
   return {
     rows,

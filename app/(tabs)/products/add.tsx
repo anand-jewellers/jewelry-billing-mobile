@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   View, Text, TextInput, ScrollView, TouchableOpacity, Pressable, StyleSheet,
-  ActivityIndicator, Modal,
+  ActivityIndicator, Modal, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { CheckCircle2, ChevronDown, ChevronUp, Plus, X } from 'lucide-react-native';
@@ -31,6 +31,10 @@ const SAVED_POPUP_AUTO_NAV_MS = 1500;
 
 // Route to the product list screen.
 const PRODUCT_LIST_ROUTE = '/products';
+
+// Increase this if a header sits above the screen and the keyboard still
+// covers the focused field a little (iOS only).
+const KEYBOARD_VERTICAL_OFFSET = 0;
 
 // Defaults applied when a 91.6 (22k) purity is selected.
 // Both stay editable.
@@ -160,7 +164,8 @@ function AddProductScreenInner() {
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [subcategoryId, setSubcategoryId] = useState<string | null>(null);
   const [brand, setBrand] = useState('');
-  const [huid, setHuid] = useState('');
+  const [hasHuid, setHasHuid] = useState<'yes' | 'no'>('yes');
+  const [huid, setHuid] = useState('HUID'); // default text, same idea as HSN '7113'
   const [designNumber, setDesignNumber] = useState('');
   const [hsnCode, setHsnCode] = useState('7113');
   const [size, setSize] = useState('');
@@ -318,6 +323,7 @@ function AddProductScreenInner() {
       );
       if (bad) return 'Each diamond row needs both a size and an amount';
     }
+    if (hasHuid === 'yes' && !huid.trim()) return 'Enter the HUID or select No';
     return null;
   }
 
@@ -378,7 +384,7 @@ function AddProductScreenInner() {
         other_weight: otherNum,
         net_weight: netWeight,
         hsn_code: hsnCode || undefined,
-        huid: huid || undefined,
+        huid: hasHuid === 'yes' ? huid.trim() || undefined : undefined,
         design_number: designNumber || undefined,
         size: size || undefined,
         stones: stonesPayload,
@@ -446,10 +452,16 @@ function AddProductScreenInner() {
   }
 
   return (
-    <View style={styles.root}>
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={KEYBOARD_VERTICAL_OFFSET}
+    >
       <ScrollView
+        style={styles.scroll}
         contentContainerStyle={styles.screen}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         showsVerticalScrollIndicator={false}
       >
         {/* 1. Photos */}
@@ -679,12 +691,39 @@ function AddProductScreenInner() {
           )}
         </Card>
 
+        {/* HUID (Yes / No) */}
+        <Card title="HUID">
+          <Field label="HUID">
+            <RadioGroup
+              options={[
+                { id: 'yes', label: 'Yes' },
+                { id: 'no', label: 'No' },
+              ]}
+              value={hasHuid}
+              onChange={(id) => setHasHuid(id as 'yes' | 'no')}
+            />
+          </Field>
+          {hasHuid === 'yes' && (
+            <Field label="HUID number">
+              <TextInput
+                style={styles.input}
+                placeholder="HUID"
+                placeholderTextColor={colors.textMuted}
+                autoCapitalize="characters"
+                selectTextOnFocus
+                value={huid}
+                onChangeText={setHuid}
+              />
+            </Field>
+          )}
+        </Card>
+
         {/* 8. More details (collapsed by default) */}
         <View style={styles.card}>
           <Pressable style={styles.moreHeader} onPress={() => setShowMore((v) => !v)}>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>More details</Text>
-              <Text style={styles.cardHint}>Size, HUID, design number, brand, HSN</Text>
+              <Text style={styles.cardHint}>Size, design number, brand, HSN</Text>
             </View>
             {showMore ? (
               <ChevronUp size={20} color={colors.textMuted} />
@@ -705,16 +744,6 @@ function AddProductScreenInner() {
                 />
               </Field>
               <View style={styles.row}>
-                <Field label="HUID" style={styles.col}>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="HUID"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    value={huid}
-                    onChangeText={setHuid}
-                  />
-                </Field>
                 <Field label="Design no." style={styles.col}>
                   <TextInput
                     style={styles.input}
@@ -724,8 +753,6 @@ function AddProductScreenInner() {
                     onChangeText={setDesignNumber}
                   />
                 </Field>
-              </View>
-              <View style={styles.row}>
                 <Field label="Brand" style={styles.col}>
                   <TextInput
                     style={styles.input}
@@ -735,23 +762,23 @@ function AddProductScreenInner() {
                     onChangeText={setBrand}
                   />
                 </Field>
-                <Field label="HSN code" style={styles.col}>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="HSN code"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="number-pad"
-                    value={hsnCode}
-                    onChangeText={setHsnCode}
-                  />
-                </Field>
               </View>
+              <Field label="HSN code">
+                <TextInput
+                  style={styles.input}
+                  placeholder="HSN code"
+                  placeholderTextColor={colors.textMuted}
+                  keyboardType="number-pad"
+                  value={hsnCode}
+                  onChangeText={setHsnCode}
+                />
+              </Field>
             </View>
           )}
         </View>
       </ScrollView>
 
-      {/* Sticky save bar */}
+      {/* Sticky save bar (moves up with the keyboard) */}
       <View style={styles.footer}>
         <View>
           <Text style={styles.footerLabel}>Net weight</Text>
@@ -789,13 +816,15 @@ function AddProductScreenInner() {
         message={errorInfo?.message ?? null}
         onClose={() => setErrorVisible(false)}
       />
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
-  screen: { padding: spacing.lg, paddingBottom: spacing.xl * 2 },
+  scroll: { flex: 1 },
+  // Extra bottom space so the last fields can be scrolled above the keyboard.
+  screen: { padding: spacing.lg, paddingBottom: spacing.xl * 4 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
 
   card: {

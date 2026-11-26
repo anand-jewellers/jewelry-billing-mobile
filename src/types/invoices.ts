@@ -8,7 +8,9 @@ export type ProductStatus = 'active' | 'inactive' | 'sold' | 'discontinued';
 // value stored on the invoice header when payment_splits.length > 1, so
 // anything still reading the single `payment_mode` field knows to look at
 // the breakdown instead of trusting one mode.
-export type PaymentMode = 'cash' | 'card' | 'upi' | 'bank_transfer' | 'cheque' | 'credit' | 'split';
+export type PaymentMode =
+  'cash' | 'card' | 'upi' | 'bank_transfer' | 'cheque' | 'credit' | 'split'
+  | 'advance' | 'chit_fund';
 
 export interface Product {
   id: string;
@@ -73,8 +75,10 @@ export interface InvoiceItem {
   tax_amount: number;
   total_amount: number;
   huid: string | null;
-  gst_enabled?: boolean; //
-  remark?: string | null;          // NEW: per-item LOC / remark
+  gst_enabled?: boolean;
+  remark?: string | null;          // per-item LOC / remark
+  stone_id?: string | null;        // NEW: first selected stone
+  stone_name?: string | null;      // NEW: all stone names, comma-joined ("Ruby, Emerald")
 }
 
 export interface Customer {

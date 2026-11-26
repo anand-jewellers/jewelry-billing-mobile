@@ -181,14 +181,14 @@ export default function CombinedOrderBillScreen() {
       const shop = companyToShopDetails(companySettings);
       const display = invoiceSettings
         ? {
-            show_logo: invoiceSettings.show_logo,
-            show_huid: invoiceSettings.show_huid,
-            show_weight: invoiceSettings.show_weight,
-            show_making_charges: invoiceSettings.show_making_charges,
-            show_value_added_charges: invoiceSettings.show_value_added_charges,
-            invoice_footer: invoiceSettings.invoice_footer,
-            terms_and_conditions: invoiceSettings.terms_and_conditions,
-          }
+          show_logo: invoiceSettings.show_logo,
+          show_huid: invoiceSettings.show_huid,
+          show_weight: invoiceSettings.show_weight,
+          show_making_charges: invoiceSettings.show_making_charges,
+          show_value_added_charges: invoiceSettings.show_value_added_charges,
+          invoice_footer: invoiceSettings.invoice_footer,
+          terms_and_conditions: invoiceSettings.terms_and_conditions,
+        }
         : {};
 
       const { billItems, totals, netFinalAmount } = computed;
@@ -250,7 +250,7 @@ export default function CombinedOrderBillScreen() {
         tax_amount: totals.taxTotal,
         grand_total: totals.grandTotal,
         paid_amount: 0,
-        balance_amount: netFinalAmount,
+        balance_amount: Math.max(0, netFinalAmount),
         payment_status: 'unpaid',
         payment_mode: 'cash',
         status: 'unpaid',
@@ -302,7 +302,7 @@ export default function CombinedOrderBillScreen() {
     );
   }
 
-  const { billItems, totals, netFinalAmount, balance } = computed;
+  const { billItems, totals, netFinalAmount, balance, customerGetsMoney, payToCustomer } = computed;
   const { exchangeItems, exchangeTotal, advanceTotal, paymentModes } = bill;
 
   return (
@@ -468,7 +468,11 @@ export default function CombinedOrderBillScreen() {
             </>
           )}
 
-          <SlipRow label="Nett RS" value={money(netFinalAmount)} bold />
+          <SlipRow
+            label={customerGetsMoney ? 'Nett (C.R)' : 'Nett RS'}
+            value={money(netFinalAmount)}
+            bold
+          />
 
           {/* Advance already paid on the orders */}
           {advanceTotal > 0 && (
@@ -476,19 +480,34 @@ export default function CombinedOrderBillScreen() {
               <View style={styles.divider} />
               <SlipRow label="Advance" value={`-${money(advanceTotal)}`} />
               {paymentModes.length > 0 && <SlipRow label="Paid By" value={paymentModes.join(', ')} />}
-              <SlipRow label="BALANCE" value={money(balance)} bold />
+              <SlipRow label={balance < 0 ? 'BALANCE (C.R)' : 'BALANCE'} value={money(balance)} bold />
             </>
+          )}
+
+          {/* Shop owes the customer money */}
+          {payToCustomer > 0 && (
+            <Text style={styles.payoutText}>
+              Pay ₹{payToCustomer.toLocaleString('en-IN')} to the customer
+              {advanceTotal > 0
+                ? ' (old gold difference + advance already paid).'
+                : ' (old gold is worth more than the new items).'}
+            </Text>
           )}
         </Card>
 
         {/* Discount */}
-        <Text style={[styles.label, { marginTop: spacing.lg }]}>Discount Amount (₹)</Text>
-        <TextInput
-          style={styles.input}
-          keyboardType="decimal-pad"
-          value={discountAmount}
-          onChangeText={setDiscountAmount}
-        />
+        {/* Discount (only when the customer owes money) */}
+        {!customerGetsMoney && (
+          <>
+            <Text style={[styles.label, { marginTop: spacing.lg }]}>Discount Amount (₹)</Text>
+            <TextInput
+              style={styles.input}
+              keyboardType="decimal-pad"
+              value={discountAmount}
+              onChangeText={setDiscountAmount}
+            />
+          </>
+        )}
 
         {/* Share / Print */}
         <Pressable
@@ -601,4 +620,5 @@ const styles = StyleSheet.create({
   },
   outlineBtnText: { color: colors.primary, fontWeight: '700', fontSize: 15 },
   btnDisabled: { opacity: 0.5 },
+    payoutText: { fontSize: 13, fontWeight: '600', color: '#137333', marginTop: spacing.md },
 });

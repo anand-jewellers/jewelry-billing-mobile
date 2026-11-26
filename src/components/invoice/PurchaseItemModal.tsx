@@ -2,10 +2,11 @@
 //
 // Add / edit one old-gold (or silver) item for a cash purchase.
 // Fields: product name, metal, purity, weight, stone weight, old %.
+// Metal and Purity are small radio buttons (Gold + 916 selected by default).
 // Amount uses the SAME calculation as the old-gold exchange on the invoice
 // (computeExchangeItem in lib/exchangeGold.ts).
 // Old % is auto-filled from the purity using the SAME defaults as
-// ExchangeGoldModal (SAADHA = SAADHA_OLD_PERCENT, others =
+// ExchangeGoldModal (SADHA = SADHA_OLD_PERCENT, others =
 // defaultOldPercentForPurity). The value stays editable.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -25,27 +26,38 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, ChevronDown, ChevronUp } from 'lucide-react-native';
 import { colors, spacing, radius } from '../../theme';
-import { SelectField } from '../master';
 import {
   computeExchangeItem,
   deductionFromOldPercent,
   displayNetWeight,
   OLD_PERCENT_STEPS,
-  SAADHA_OLD_PERCENT,
+  SADHA_OLD_PERCENT,
   defaultOldPercentForPurity,
 } from '../../lib/exchangeGold';
 import type { Metal, Purity } from '../../types/settings';
 import type { PurchaseItem } from '../../lib/api/cashPurchases';
 
-const isSaadhaName = (name: string) => /saadha/i.test(name);
+const isSadhaName = (name: string) => /sadha/i.test(name);
 
 // Default Old % for a purity row - same rule as ExchangeGoldModal
 const defaultOldFor = (p?: Purity | null): number => {
   if (!p) return 0;
-  if (isSaadhaName(p.name)) return SAADHA_OLD_PERCENT;
+  if (isSadhaName(p.name)) return SADHA_OLD_PERCENT;
   const percent = Number((p as any).purity_percentage) || 0;
   return defaultOldPercentForPurity(percent);
 };
+
+// The 916 / 91.6 / 22K purity (never SADHA, which shares 91.6)
+const is916Purity = (p: Purity): boolean => {
+  if (isSadhaName(p.name)) return false;
+  if (/916|91\.6|22\s*k/i.test(p.name)) return true;
+  const pct = Number((p as any).purity_percentage) || 0;
+  return Math.abs(pct - 91.6) < 0.15;
+};
+
+// Default purity for a list: the 916 one, else the first non-SADHA, else the first
+const pickDefaultPurity = (list: Purity[]): Purity | undefined =>
+  list.find(is916Purity) ?? list.find((p) => !isSadhaName(p.name)) ?? list[0];
 
 interface Props {
   visible: boolean;
@@ -55,6 +67,38 @@ interface Props {
   purities: Purity[];
   fetchRate: (metalId: string, purityId: string) => Promise<number>;
   editingItem?: PurchaseItem | null;
+}
+
+// ---------- Small radio group (radio + text only, no background) ----------
+function RadioGroup({
+  options,
+  value,
+  onChange,
+  emptyText,
+}: {
+  options: { id: string; label: string }[];
+  value: string | null;
+  onChange: (id: string) => void;
+  emptyText?: string;
+}) {
+  if (options.length === 0) {
+    return <Text style={styles.helperText}>{emptyText ?? 'No options'}</Text>;
+  }
+  return (
+    <View style={styles.radioWrap}>
+      {options.map((o) => {
+        const on = o.id === value;
+        return (
+          <Pressable key={o.id} style={styles.radioItem} onPress={() => onChange(o.id)} hitSlop={6}>
+            <View style={[styles.radioOuter, on && styles.radioOuterOn]}>
+              {on && <View style={styles.radioInner} />}
+            </View>
+            <Text style={[styles.radioLabel, on && styles.radioLabelOn]}>{o.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 }
 
 export function PurchaseItemModal({
@@ -144,7 +188,7 @@ export function PurchaseItemModal({
 
   const handleMetalChange = (id: string) => {
     setMetalId(id);
-    const first = purityListFor(id)[0];
+    const first = pickDefaultPurity(purityListFor(id));
     const pid = first?.id ?? '';
     setPurityId(pid);
     applyDefaultOld(first);
@@ -178,18 +222,14 @@ export function PurchaseItemModal({
     setOldPercent('');
     setRatePerGram('');
 
-    // New item: start with Gold + 22K (never SAADHA), default Old %, and fetch the rate
+    // New item: start with Gold + 916 (never SADHA), default Old %, and fetch the rate
     const gold = metals.find((m) => /gold/i.test(m.name)) ?? metals[0];
     const mid = gold?.id ?? '';
-    const list = purityListFor(mid);
-    const p22 =
-      list.find((p) => !isSaadhaName(p.name) && p.name.trim().toLowerCase() === '22k') ??
-      list.find((p) => !isSaadhaName(p.name) && /22k/i.test(p.name)) ??
-      list[0];
+    const p916 = pickDefaultPurity(purityListFor(mid));
     setMetalId(mid);
-    setPurityId(p22?.id ?? '');
-    applyDefaultOld(p22);
-    void loadRate(mid, p22?.id ?? '');
+    setPurityId(p916?.id ?? '');
+    applyDefaultOld(p916);
+    void loadRate(mid, p916?.id ?? '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, editingItem]);
 
@@ -273,23 +313,21 @@ export function PurchaseItemModal({
               />
             </Field>
 
-            <Field label="">
-              <SelectField
-                label="Metal"
-                value={metalId}
+            <Field label="Metal">
+              <RadioGroup
                 options={metalOptions}
-                placeholder="Select metal"
-                onChange={(id) => handleMetalChange(id as string)}
+                value={metalId || null}
+                onChange={handleMetalChange}
+                emptyText="No metals found"
               />
             </Field>
 
-            <Field label="">
-              <SelectField
-                label="Purity"
-                value={purityId}
+            <Field label="Purity">
+              <RadioGroup
                 options={purityOptions}
-                placeholder="Select purity"
-                onChange={(id) => handlePurityChange(id as string)}
+                value={purityId || null}
+                onChange={handlePurityChange}
+                emptyText="No purities found"
               />
             </Field>
 
@@ -512,6 +550,34 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+
+  // Radio buttons (small, no background)
+  helperText: { color: colors.textMuted, fontSize: 12, fontStyle: 'italic' },
+  radioWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 18,
+    rowGap: 8,
+  },
+  radioItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 2,
+  },
+  radioOuter: {
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterOn: { borderColor: colors.primary },
+  radioInner: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.primary },
+  radioLabel: { fontSize: 13, color: colors.textMuted, fontWeight: '500' },
+  radioLabelOn: { color: colors.textPrimary, fontWeight: '700' },
 
   percentRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   percentInput: { flex: 1 },

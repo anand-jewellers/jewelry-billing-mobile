@@ -496,8 +496,10 @@ export async function deleteValueAddedChargeType(id: string) {
 }
 
 // ---------- Tax Settings ----------
-export async function listTaxSettings(): Promise<TaxSetting[]> {
-  const { data, error } = await supabase.from('tax_settings').select('*').order('tax_name');
+export async function listTaxSettings(includeInactive = false): Promise<TaxSetting[]> {
+  let query = supabase.from('tax_settings').select('*').order('tax_name');
+  if (!includeInactive) query = query.eq('is_active', true);
+  const { data, error } = await query;
   if (error) throw error;
   return data as TaxSetting[];
 }
@@ -508,19 +510,35 @@ export async function createTaxSetting(input: {
   cgst: number;
   sgst: number;
   igst: number;
-}) {
-  const { error } = await supabase.from('tax_settings').insert(input);
-  if (error) throw error;
+}): Promise<TaxSetting> {
+  const existing = await findExisting('tax_settings', 'tax_name', input.tax_name);
+  return (await reuseOrInsert(
+    'tax_settings',
+    existing,
+    input,
+    {
+      tax_name: input.tax_name,
+      tax_percentage: input.tax_percentage,
+      cgst: input.cgst,
+      sgst: input.sgst,
+      igst: input.igst,
+    },
+    'Tax',
+    input.tax_name
+  )) as TaxSetting;
 }
 
 export async function updateTaxSetting(id: string, patch: Partial<TaxSetting>) {
+  if (patch.tax_name) {
+    await freeNameForRename('tax_settings', id, 'tax_name', patch.tax_name, 'Tax');
+  }
   const { error } = await supabase.from('tax_settings').update(patch).eq('id', id);
   if (error) throw error;
 }
 
+/** Hides the tax (is_active = false). Products and invoices keep their reference. */
 export async function deleteTaxSetting(id: string) {
-  const { error } = await supabase.from('tax_settings').delete().eq('id', id);
-  if (error) throw error;
+  await softDelete('tax_settings', id);
 }
 
 // ---------- Invoice Settings (single row) ----------

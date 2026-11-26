@@ -38,9 +38,9 @@ const ROUTE_ORDERS = '/customers/orders'; // change to your customer orders rout
 
 const RATE_ROWS: { label: string; metalMatch: string; purityMatch: string }[] = [
   // { label: '24K Gold', metalMatch: 'gold', purityMatch: '24k' },
-  { label: '22K Gold', metalMatch: 'gold', purityMatch: '916' },
-  { label: '18K Gold', metalMatch: 'gold', purityMatch: '18k' },
-  { label: 'Silver', metalMatch: 'silver', purityMatch: 'silver' },
+  { label: '22K GOLD', metalMatch: 'gold', purityMatch: '916' },
+  { label: '18K GOLD', metalMatch: 'gold', purityMatch: '18k' },
+  { label: 'SILVER', metalMatch: 'silver', purityMatch: 'silver' },
 ];
 
 function getIndianDateTimeLabel(): { date: string; time: string } {
@@ -331,37 +331,37 @@ function DashboardScreenInner() {
   const summaryCards = [
     {
       icon: 'receipt-outline',
-      label: 'Invoices',
+      label: 'INVOICES',
       value: reportLoading ? '…' : String(report?.totalInvoices ?? 0),
       route: ROUTE_INVOICES,
     },
     {
       icon: 'checkmark-circle-outline',
-      label: 'Collection',
+      label: 'SALES',
       value: reportLoading ? '…' : inr(report?.totalCollected ?? 0),
       route: ROUTE_INVOICES,
     },
     {
       icon: 'people-outline',
-      label: 'Customers',
+      label: 'CUSTOMERS',
       value: String(totalCustomers),
       route: ROUTE_CUSTOMERS,
     },
     {
       icon: 'diamond-outline',
-      label: 'Products',
+      label: 'PRODUCTS',
       value: String(totalProducts),
       route: ROUTE_PRODUCTS,
     },
     {
       icon: 'construct-outline',
-      label: 'Repair',
+      label: 'REPAIRS',
       value: reportLoading ? '…' : String(repairCount),
       route: ROUTE_REPAIRS_LIST,
     },
     {
       icon: 'clipboard-outline',
-      label: 'Orders',
+      label: 'ORDERS',
       value: reportLoading ? '…' : String(orderCount),
       route: ROUTE_ORDERS,
     },
@@ -377,9 +377,9 @@ function DashboardScreenInner() {
       {/* Quick action buttons */}
       <ComponentGuard pageKey="dashboard.quick_actions">
         <View style={styles.quickRow}>
-          <QuickAction icon="barcode-outline" label="Scan & Bill" variant="outline" onPress={openScanner} />
+          <QuickAction icon="barcode-outline" label="SCAN & BILL" variant="outline" onPress={openScanner} />
           <ComponentGuard pageKey="products.add">
-            <QuickAction icon="add-circle-outline" label="Add Product" variant="outline" onPress={openAddProduct} />
+            <QuickAction icon="add-circle-outline" label="ADD PRODUCT" variant="outline" onPress={openAddProduct} />
           </ComponentGuard>
         </View>
 
@@ -387,13 +387,13 @@ function DashboardScreenInner() {
         <View style={[styles.quickRow, styles.quickRowSecond]}>
           <QuickAction
             icon="construct-outline"
-            label="Repair / Service"
+            label="REPAIR / SERVICE"
             variant="outline"
             onPress={() => go(ROUTE_REPAIR)}
           />
           <QuickAction
             icon="wallet-outline"
-            label="Cash Purchase"
+            label="CASH PURCHASE"
             variant="outline"
             onPress={() => go(ROUTE_PURCHASE)}
           />
@@ -403,7 +403,7 @@ function DashboardScreenInner() {
         <View style={[styles.quickRow, styles.quickRowSecond]}>
           <QuickAction
             icon="clipboard-outline"
-            label="New Order"
+            label="NEW ORDER"
             variant="outline"
             onPress={() => go(ROUTE_NEW_ORDER)}
           />
@@ -437,7 +437,7 @@ function DashboardScreenInner() {
             <View style={[styles.columnWrapper, isSideBySide && styles.columnFlex]}>
               <View style={styles.ratesHeader}>
                 <View>
-                  <Text style={styles.sectionTitle}>Jewel Rate</Text>
+                  <Text style={styles.sectionTitle}>GOLD & SILVER RATES</Text>
                   {/* <Text style={styles.sectionSubtitle}>
                     {istDateTime.date} · {istDateTime.time}
                   </Text> */}
@@ -470,7 +470,7 @@ function DashboardScreenInner() {
           <ComponentGuard pageKey="dashboard.payment_breakdown">
             <View style={[styles.columnWrapper, isSideBySide && styles.columnFlex]}>
               <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Payment Breakdown</Text>
+                <Text style={styles.sectionTitle}>PAYMENT BREAKDOWN</Text>
               </View>
 
               <Card style={[styles.ratesCard, styles.matchedCard, styles.chartCardAlign]}>
@@ -489,7 +489,7 @@ function DashboardScreenInner() {
       {needsReport && (
         <View style={styles.downloadWrap}>
           <Button
-            label={downloading ? 'Generating PDF…' : 'Download PDF'}
+            label={downloading ? 'Generating PDF…' : 'DOWNLOAD PDF'}
             variant="primary"
             onPress={handleDownload}
             disabled={downloading || reportLoading || !report || report.totalInvoices === 0}
@@ -572,6 +572,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     color: colors.textSecondary,
+    fontWeight:700,
   },
   statValueWrap: {
     width: '100%',
@@ -658,7 +659,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
-  rateLabel: { fontSize: 13, color: colors.textSecondary },
+  rateLabel: { fontSize: 13, color: colors.textPrimary, fontWeight: '700', },
   rateValue: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing.md },
   errorText: { fontSize: 13, color: colors.error, textAlign: 'center', paddingVertical: spacing.md },

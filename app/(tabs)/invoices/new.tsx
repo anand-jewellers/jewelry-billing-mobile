@@ -83,6 +83,11 @@ import { ensureBluetoothPermissions } from '../../../src/lib/thermalPrint/blueto
 // share the estimate on WhatsApp as a thermal-style PDF
 import { shareEstimateOnWhatsApp } from '../../../src/lib/whatsappShare';
 
+
+import { ShakeErrorCard } from '../../../src/components/ui/ShakeErrorCard';
+import { ConfirmModal } from '../../../src/components/ui/ConfirmModal';
+
+
 // ===========================================================
 // Constants
 // ===========================================================
@@ -100,7 +105,7 @@ const SIMPLE_MODES: { id: SimpleMode; label: string }[] = [
   { id: 'cash', label: 'CASH' },
   { id: 'upi', label: 'UPI' },
   { id: 'card', label: 'CARD' },
-  
+
 ];
 
 const PAY_CHOICES: { id: PayChoice; label: string }[] = [
@@ -110,7 +115,7 @@ const PAY_CHOICES: { id: PayChoice; label: string }[] = [
 ];
 
 // Used only to map the advance paid on a customer order to a mode name.
-const ADVANCE_MODE_IDS = ['CASH', 'UPI','CARD', 'BANK TRANSFER', 'CHEQUE', 'CREDIT'];
+const ADVANCE_MODE_IDS = ['CASH', 'UPI', 'CARD', 'BANK TRANSFER', 'CHEQUE', 'CREDIT'];
 
 // Set to true if you want an "Are you sure?" popup before the final bill is saved.
 const CONFIRM_BEFORE_GENERATE = true;
@@ -347,6 +352,11 @@ function NewInvoiceScreenInner() {
     amount: 0,
     mode: 'cash',
   });
+  // Extra prepaid amounts typed by the cashier (checkbox + amount)
+  const [advanceOn, setAdvanceOn] = useState(false);
+  const [advanceText, setAdvanceText] = useState('');
+  const [chitOn, setChitOn] = useState(false);
+  const [chitText, setChitText] = useState('');
 
   // ---------------------------------------------------------
   // Held estimate currently open on this screen (if any)
@@ -388,7 +398,31 @@ function NewInvoiceScreenInner() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [errorTitle, setErrorTitle] = useState<string>('Missing details');
 
+  // ---- paste here ----
+  const afterErrorRef = useRef<(() => void) | null>(null);
+  const [inlineError, setInlineError] = useState<{ id: number; text: string } | null>(null);
 
+  // Blocking error (modal)
+  const showError = (title: string, message: string, afterClose?: () => void) => {
+    afterErrorRef.current = afterClose ?? null;
+    setErrorTitle(title);
+    setErrorMessage(message);
+  };
+
+
+
+  // Inline error (shake card)
+  const showInlineError = (text: string) => setInlineError({ id: Date.now(), text });
+
+  // Auto-hide after 5 seconds
+  useEffect(() => {
+    if (!inlineError) return;
+    const t = setTimeout(() => setInlineError(null), 5000);
+    return () => clearTimeout(t);
+  }, [inlineError]);
+
+  const [confirmGenerateOpen, setConfirmGenerateOpen] = useState(false);
+  const [heldNoticeOpen, setHeldNoticeOpen] = useState(false);
   // =========================================================
   // Load master data
   // =========================================================
@@ -531,11 +565,10 @@ function NewInvoiceScreenInner() {
           });
         }
       } catch (e: any) {
-        // Rate missing / metal not matched etc. -> fall back to manual entry
-        setErrorTitle('Could not load order details');
-        setErrorMessage(e?.message ?? 'Add the item manually.');
-        setEditingItem(null);
-        setSheetOpen(true);
+        showError('Could not load order details', e?.message ?? 'Add the item manually.', () => {
+          setEditingItem(null);
+          setSheetOpen(true);
+        });
       }
     })();
   }, [fromOrder, orderId, loadingMaster, orderPrefillApplied, orderCustomerId]);
@@ -557,37 +590,23 @@ function NewInvoiceScreenInner() {
       const product = await getProductByCode(trimmed);
 
       if (!product) {
-        Alert.alert(
+        setScannerOpen(false);
+        showError(
           'Product not found',
-          `No product matches "${trimmed}". Confirm the barcode was generated from this product's Product ID.`,
-          [
-            { text: 'OK' },
-            {
-              text: 'Add manually',
-              onPress: () => {
-                setScannerOpen(false);
-                setEditingItem(null);
-                setSheetOpen(true);
-              },
-            },
-          ]
+          `No product matches "${trimmed}". Check the barcode, or use "Add Manually".`
         );
         return;
       }
 
-      // Already sold -> error modal only, no product details, nothing added.
       if (product.status === 'sold') {
-        setScannerOpen(false); // close the scanner so the modal can show on top of it
-        setErrorTitle('Already sold');
-        setErrorMessage('This product has already been sold.');
+        setScannerOpen(false);
+        showError('Already sold', 'This product has already been sold.');
         return;
       }
 
-      // Same piece is already in the current bill.
       if (items.some((i) => i.product_id === product.id)) {
         setScannerOpen(false);
-        setErrorTitle('Already added');
-        setErrorMessage('This product is already in the current bill.');
+        showError('Already added', 'This product is already in the current bill.');
         return;
       }
 
@@ -606,7 +625,8 @@ function NewInvoiceScreenInner() {
       setDueTouched(false);
       setScannerOpen(false);
     } catch (e: any) {
-      Alert.alert('Lookup error', e?.message ?? 'Could not fetch product.');
+      setScannerOpen(false);
+      showError('Lookup error', e?.message ?? 'Could not fetch product.');
     } finally {
       setScanBusy(false);
     }
@@ -778,8 +798,23 @@ function NewInvoiceScreenInner() {
   const netFinalAmount = round2(preTotals.grandTotal - exchangeTotal);
   const customerGetsMoney = netFinalAmount < 0;
 
-  // Final amount minus the advance already paid on the order (never negative)
-  const amountDueNow = round2(Math.max(0, netFinalAmount - advance.amount));
+
+  const advanceExtra = advanceOn ? round2(Math.max(0, parseFloat(advanceText) || 0)) : 0;
+  const chitExtra = chitOn ? round2(Math.max(0, parseFloat(chitText) || 0)) : 0;
+
+  // Order advance + typed Advance + Chit Fund
+  const prepaidTotal = round2(advance.amount + advanceExtra + chitExtra);
+
+  // Balance after advance + chit fund. NEGATIVE = the shop pays the customer.
+  const balanceAfterPrepaid = round2(netFinalAmount - prepaidTotal);
+  const shopPays = balanceAfterPrepaid < -0.01;
+  const payoutAmount = shopPays ? round2(-balanceAfterPrepaid) : 0;
+
+  // Only the part of advance / chit fund that actually goes against the bill
+  const prepaidApplied = round2(Math.min(prepaidTotal, Math.max(netFinalAmount, 0)));
+
+  // What the customer still has to pay now (never negative)
+  const amountDueNow = round2(Math.max(0, balanceAfterPrepaid));
 
   // ----- Multi Payment -----
   const multiReceived = round2(
@@ -810,7 +845,7 @@ function NewInvoiceScreenInner() {
   const creditAmount = paymentChoice === 'part' ? partDue : 0;
 
   // Advance already paid on the order + money received now
-  const totalReceived = round2(advance.amount + rowsReceived);
+  const totalReceived = round2(prepaidApplied + rowsReceived);
 
   // True once a payment has been chosen / filled for an amount that is due.
   // Until then, Print / Share produce a plain ESTIMATE (no "paid" figures).
@@ -833,6 +868,12 @@ function NewInvoiceScreenInner() {
         ? [{ id: 'advance', mode: advance.mode, amount: advance.amount, reference: 'Advance' }]
         : [];
 
+    const extraRows: PaymentSplitEntry[] = [];
+    if (advanceExtra > 0)
+      extraRows.push({ id: 'adv-extra', mode: 'advance', amount: advanceExtra, reference: 'Advance' });
+    if (chitExtra > 0)
+      extraRows.push({ id: 'chit', mode: 'chit_fund', amount: chitExtra, reference: 'Chit Fund' });
+
     let rows: PaymentSplitEntry[] = [];
 
     if (isSimpleChoice && amountDueNow > 0) {
@@ -851,7 +892,7 @@ function NewInvoiceScreenInner() {
       }
     }
 
-    return [...advanceRows, ...rows];
+    return [...advanceRows, ...extraRows, ...rows];
   };
 
   // Billed (read-only) bills always print as a plain ESTIMATE: never show payments.
@@ -903,7 +944,7 @@ function NewInvoiceScreenInner() {
     const dueNum = parseFloat(text);
     if (!Number.isNaN(dueNum) && dueNum >= 0) {
       setFinalTouched(true);
-      setFinalAmountText(String(round2(advance.amount + partPaid + dueNum)));
+      setFinalAmountText(String(round2(prepaidTotal + partPaid + dueNum)));
     }
   };
 
@@ -982,6 +1023,7 @@ function NewInvoiceScreenInner() {
     advanceAmount: advance.amount,
     advanceMode: advance.mode,
     orderId: linkedOrderId,
+    advanceOn, advanceText, chitOn, chitText,
   });
 
   const resetForm = () => {
@@ -1009,6 +1051,8 @@ function NewInvoiceScreenInner() {
     prevPhoneDigits.current = 0;
     autoFillArmed.current = false;
     setLinkedOrderId(null);
+    setAdvanceOn(false); setAdvanceText('');
+    setChitOn(false); setChitText('');
   };
 
   const handleHoldEstimate = async () => {
@@ -1026,7 +1070,7 @@ function NewInvoiceScreenInner() {
         data: buildHeldData(),
       });
       resetForm(); // screen is clear for the next customer
-      Alert.alert('Estimate held', 'Saved for 4 hours. Find it under "Held Bills" on the Invoices page.');
+      setHeldNoticeOpen(true);
     } catch (e: any) {
       setErrorTitle('Could not hold estimate');
       setErrorMessage(e?.message ?? 'Unknown error');
@@ -1042,6 +1086,10 @@ function NewInvoiceScreenInner() {
     setResolvedCustomerId(d.resolvedCustomerId);
     setActiveField(null); // loading a held bill must not trigger a customer search
     setSuggestions([]);
+    setAdvanceOn(Boolean((d as any).advanceOn));
+    setAdvanceText((d as any).advanceText ?? '');
+    setChitOn(Boolean((d as any).chitOn));
+    setChitText((d as any).chitText ?? '');
 
     // Older held bills had ONE bill-wide remark: copy it onto each item
     // that has no remark of its own.
@@ -1118,7 +1166,7 @@ function NewInvoiceScreenInner() {
       const h = await getHeldEstimate(heldIdParam);
       if (cancelled) return;
       if (h) applyHeld(h);
-      else Alert.alert('Not found', 'This held bill has expired or was deleted.');
+      else showInlineError('This held bill has expired or was deleted.');
     })();
     return () => {
       cancelled = true;
@@ -1177,6 +1225,7 @@ function NewInvoiceScreenInner() {
       purity_name: purityNameFor(item.purity_id),
       quantity: item.quantity,
       gross_weight: item.gross_weight,
+      stone_name: item.stone_name ?? null,   // NEW
       stone_weight: item.stone_weight,
       net_weight: item.net_weight,
       metal_rate: item.metal_rate,
@@ -1206,7 +1255,7 @@ function NewInvoiceScreenInner() {
 
     // Read-only (already billed): keep only the order advance (if any), drop the payment rows
     const splitsForPrint = readOnly
-      ? buildSplits().filter((s) => s.id === 'advance')
+      ? buildSplits().filter((s) => s.id === 'advance' || s.id === 'adv-extra' || s.id === 'chit')
       : buildSplits();
 
     const estimateInvoice: InvoiceDetail = {
@@ -1222,7 +1271,7 @@ function NewInvoiceScreenInner() {
       invoice_discount: totals.discount,
       tax_amount: totals.taxTotal,
       grand_total: totals.grandTotal,
-      paid_amount: showPaid ? totalReceived : advance.amount,
+      paid_amount: showPaid ? totalReceived : prepaidApplied,
       balance_amount: balanceShown,
       payment_status: 'unpaid',
       payment_mode: splitsForPrint.length > 1 ? 'split' : (splitsForPrint[0]?.mode ?? 'cash'),
@@ -1386,11 +1435,15 @@ function NewInvoiceScreenInner() {
     row('FINAL AMOUNT', money(netFinalAmount), true);
 
     // Advance already paid on the customer order
-    if (advance.amount > 0) {
+    if (prepaidTotal > 0) {
       full();
-      row('Advance', `-${money(advance.amount)}`);
-      row('Paid By', advance.mode.replace('_', ' '));
-      row('BALANCE', money(amountDueNow), true);
+      if (advance.amount > 0) {
+        row('Advance (Order)', `-${money(advance.amount)}`);
+        row('Paid By', advance.mode.replace('_', ' '));
+      }
+      if (advanceExtra > 0) row('Advance', `-${money(advanceExtra)}`);
+      if (chitExtra > 0) row('Chit Fund', `-${money(chitExtra)}`);
+      row(shopPays ? 'PAY TO CUSTOMER' : 'BALANCE', money(shopPays ? payoutAmount : amountDueNow), true);
     }
 
     return L;
@@ -1467,6 +1520,11 @@ function NewInvoiceScreenInner() {
     if (finalTooHigh) {
       setErrorTitle('Final amount too high');
       setErrorMessage(`Final amount cannot be more than the bill amount (₹${baseNet.toLocaleString('en-IN')}).`);
+      return;
+    }
+    if ((advanceOn && advanceExtra <= 0) || (chitOn && chitExtra <= 0)) {
+      setErrorTitle('Amount required');
+      setErrorMessage('Enter the amount for the ticked Advance / Chit Fund, or untick it.');
       return;
     }
 
@@ -1595,11 +1653,10 @@ function NewInvoiceScreenInner() {
           await completeCustomerOrderWithInvoice(linkedOrderId, invoice.id);
         } catch (linkError: any) {
           console.warn('Failed to link order to invoice', linkError);
-          Alert.alert(
+          showError(
             'Order not marked as invoiced',
-            `Invoice ${invoice.invoice_number} was saved, but the order could not be updated: ${linkError?.message ?? 'unknown error'
-            }`,
-            [{ text: 'OK', onPress: () => router.replace(`/invoices/${invoice.id}`) }]
+            `Invoice ${invoice.invoice_number} was saved, but the order could not be updated: ${linkError?.message ?? 'unknown error'}`,
+            () => router.replace(`/invoices/${invoice.id}`)
           );
           return;
         }
@@ -1615,15 +1672,13 @@ function NewInvoiceScreenInner() {
   };
 
   // "Generate" button: saves the final bill (optionally after a confirmation).
+  // "Generate" button: saves the final bill (optionally after a confirmation).
   const handleGenerate = () => {
     if (!CONFIRM_BEFORE_GENERATE) {
       handleSaveInvoice();
       return;
     }
-    Alert.alert('Generate final bill?', 'This will save the invoice.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Generate', onPress: handleSaveInvoice },
-    ]);
+    setConfirmGenerateOpen(true);
   };
 
 
@@ -1731,6 +1786,9 @@ function NewInvoiceScreenInner() {
             </Text>
           </View>
         )}
+
+
+        {inlineError && <ShakeErrorCard key={inlineError.id} message={inlineError.text} />}
 
         {/* =================================================
             Customer (with autocomplete by name / phone)
@@ -2072,13 +2130,91 @@ function NewInvoiceScreenInner() {
               </Text>
             )}
 
-            {/* Advance already paid on the customer order */}
-            {advance.amount > 0 && (
+            {/* Advance / Chit Fund: two checkboxes in one line, input boxes open below */}
+            {!readOnly && (
+              <View style={styles.paymentSection}>
+                <View style={styles.prepaidChecks}>
+                  <Pressable
+                    style={styles.prepaidCheckItem}
+                    hitSlop={8}
+                    onPress={() => {
+                      setAdvanceOn((v) => !v);
+                      if (advanceOn) setAdvanceText('');
+                    }}
+                  >
+                    <View style={[styles.checkbox, advanceOn && styles.checkboxOn]}>
+                      {advanceOn && <Check size={14} color="#fff" strokeWidth={3} />}
+                    </View>
+                    <Text style={styles.gstLabel}>ADVANCE</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={styles.prepaidCheckItem}
+                    hitSlop={8}
+                    onPress={() => {
+                      setChitOn((v) => !v);
+                      if (chitOn) setChitText('');
+                    }}
+                  >
+                    <View style={[styles.checkbox, chitOn && styles.checkboxOn]}>
+                      {chitOn && <Check size={14} color="#fff" strokeWidth={3} />}
+                    </View>
+                    <Text style={styles.gstLabel}>CHIT FUND</Text>
+                  </Pressable>
+                </View>
+
+                {(advanceOn || chitOn) && (
+                  <View style={styles.prepaidInputs}>
+                    <View style={styles.multiCols}>
+                      {advanceOn && (
+                        <View style={styles.multiCol}>
+                          <TextInput
+                            style={[styles.input, styles.multiColInput]}
+                            keyboardType="decimal-pad"
+                            value={advanceText}
+                            onChangeText={setAdvanceText}
+                            placeholder="₹"
+                            placeholderTextColor={colors.textMuted}
+                            onFocus={scrollFocusedIntoView}
+                          />
+                        </View>
+                      )}
+                      {chitOn && (
+                        <View style={styles.multiCol}>
+                          <TextInput
+                            style={[styles.input, styles.multiColInput]}
+                            keyboardType="decimal-pad"
+                            value={chitText}
+                            onChangeText={setChitText}
+                            placeholder="₹"
+                            placeholderTextColor={colors.textMuted}
+                            onFocus={scrollFocusedIntoView}
+                          />
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Deductions + balance */}
+            {prepaidTotal > 0 && (
               <>
                 <View style={styles.divider} />
-                <SlipRow label="Advance" value={`-${money(advance.amount)}`} />
-                <SlipRow label="Payment Mode" value={advance.mode.replace('_', ' ')} />
-                <SlipRow label="BALANCE" value={money(amountDueNow)} bold />
+                {advance.amount > 0 && (
+                  <>
+                    <SlipRow label="Advance (Order)" value={`-${money(advance.amount)}`} />
+                    <SlipRow label="Payment Mode" value={advance.mode.replace('_', ' ')} />
+                  </>
+                )}
+                {advanceExtra > 0 && <SlipRow label="Advance" value={`-${money(advanceExtra)}`} />}
+                {chitExtra > 0 && <SlipRow label="Chit Fund" value={`-${money(chitExtra)}`} />}
+                <SlipRow
+                  label={shopPays ? 'BALANCE (C.R)' : 'BALANCE'}
+                  value={money(balanceAfterPrepaid)}
+                  bold
+                />
               </>
             )}
 
@@ -2182,10 +2318,9 @@ function NewInvoiceScreenInner() {
                 </View>
               )}
 
-              {customerGetsMoney && (
+              {shopPays && (
                 <Text style={styles.payoutText}>
-                  Old gold is worth ₹{Math.abs(netFinalAmount).toLocaleString('en-IN')} more than the new items —
-                  pay this amount to the customer.
+                  Pay ₹{payoutAmount.toLocaleString('en-IN')} to the customer.
                 </Text>
               )}
             </View>
@@ -2308,11 +2443,41 @@ function NewInvoiceScreenInner() {
         visible={!!errorMessage}
         title={errorTitle}
         message={errorMessage}
-        onClose={() => setErrorMessage(null)}
+        onClose={() => {
+          setErrorMessage(null);
+          const cb = afterErrorRef.current;
+          afterErrorRef.current = null;
+          cb?.();
+        }}
+      />
+
+      <ConfirmModal
+        visible={confirmGenerateOpen}
+        title="Generate final bill?"
+        message="This will save the invoice."
+        confirmText="Generate"
+        cancelText="Cancel"
+        onCancel={() => setConfirmGenerateOpen(false)}
+        onConfirm={() => {
+          setConfirmGenerateOpen(false);
+          handleSaveInvoice();
+        }}
+      />
+
+      <ConfirmModal
+        visible={heldNoticeOpen}
+        variant="success"
+        title="Estimate held"
+        message={'Saved for 4 hours. Find it under "Held Bills" on the Invoices page.'}
+        confirmText="OK"
+        cancelText={null}
+        onCancel={() => setHeldNoticeOpen(false)}
+        onConfirm={() => setHeldNoticeOpen(false)}
       />
     </View>
   );
 }
+
 
 
 // ===========================================================
@@ -2559,4 +2724,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     marginTop: spacing.sm,
   },
+  prepaidCheckRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 8 },
+  prepaidChecks: { flexDirection: 'row', alignItems: 'center', columnGap: 32 },
+  prepaidCheckItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  prepaidInputs: { marginTop: spacing.md },
 });

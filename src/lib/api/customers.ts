@@ -6,12 +6,14 @@ import type { OrderStatus } from './customerOrders';
 export interface CustomerListItem extends Customer {
   address: string | null;
   gstin: string | null;
+  created_at?: string | null;   // add
   latest_invoice_number?: string | null;
   latest_invoice_date?: string | null;
   latest_order_id?: string | null;
   latest_order_status?: OrderStatus | null;
   latest_order_metal?: string | null;
 }
+
 
 export interface ListCustomersParams {
   search?: string;
@@ -35,12 +37,9 @@ function invoiceSortValue(invoiceNumber: string | null | undefined): number | nu
 }
 
 export function compareCustomerListItems(a: CustomerListItem, b: CustomerListItem): number {
-  // Customers with an active jewel order (pending/ready) always float to the
-  // top of the queue, ready before pending, ahead of everyone sorted by
-  // invoice number. Once an order is completed it no longer gets priority.
-  const aPri = orderPriority(a.latest_order_status);
-  const bPri = orderPriority(b.latest_order_status);
-  if (aPri !== bPri) return aPri - bPri;
+  const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+  const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+  if (aTime !== bTime) return bTime - aTime; // newest customer first
 
   const aValue = invoiceSortValue(a.latest_invoice_number);
   const bValue = invoiceSortValue(b.latest_invoice_number);

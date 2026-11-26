@@ -109,6 +109,7 @@ function ProductListScreenInner() {
   const [minWeight, setMinWeight] = useState('');
   const [maxWeight, setMaxWeight] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [selectedStatus, setSelectedStatus] = useState<'available' | 'sold' | null>(null);
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -213,12 +214,18 @@ function ProductListScreenInner() {
     setCurrentPage(1);
   }
 
+  function handleSelectStatus(value: 'available' | 'sold') {
+    setSelectedStatus(selectedStatus === value ? null : value);
+    setCurrentPage(1);
+  }
+
   function clearFilters() {
     setSearchText('');
     setSelectedMetal(null);
     setSelectedPurity(null);
     setSelectedCategory(null);
     setSelectedSubCategory(null);
+    setSelectedStatus(null);   // 👈 new
     setMinWeight('');
     setMaxWeight('');
     setCurrentPage(1);
@@ -236,7 +243,7 @@ function ProductListScreenInner() {
         !q ||
         p.product_name.toLowerCase().includes(q) ||
         p.product_code.toLowerCase().includes(q) ||
-         (p.barcode ?? '').toLowerCase().includes(q) ||   // 👈 new
+        (p.barcode ?? '').toLowerCase().includes(q) ||   // 👈 new
         (p.categories?.name ?? '').toLowerCase().includes(q) ||
         (p.subcategories?.name ?? '').toLowerCase().includes(q);
       const matchesMetal = !selectedMetal || p.metals?.name === selectedMetal;
@@ -247,12 +254,17 @@ function ProductListScreenInner() {
       const weight = Number(p.net_weight);
       const matchesMinWeight = minWeightNum === null || isNaN(minWeightNum) || weight >= minWeightNum;
       const matchesMaxWeight = maxWeightNum === null || isNaN(maxWeightNum) || weight <= maxWeightNum;
+      const isSold = p.status === 'sold';
+      const matchesStatus =
+        !selectedStatus ||
+        (selectedStatus === 'sold' ? isSold : !isSold);
       return (
         matchesSearch &&
         matchesMetal &&
         matchesPurity &&
         matchesCategory &&
         matchesSubCategory &&
+        matchesStatus &&
         matchesMinWeight &&
         matchesMaxWeight
       );
@@ -264,6 +276,7 @@ function ProductListScreenInner() {
     selectedPurity,
     selectedCategory,
     selectedSubCategory,
+    selectedStatus,
     minWeightNum,
     maxWeightNum,
   ]);
@@ -274,10 +287,11 @@ function ProductListScreenInner() {
     !!selectedPurity ||
     !!selectedCategory ||
     !!selectedSubCategory ||
+    !!selectedStatus ||
     hasWeightFilter;
 
   const activeFilterCount =
-    [selectedMetal, selectedPurity, selectedCategory, selectedSubCategory].filter(Boolean).length +
+    [selectedMetal, selectedPurity, selectedCategory, selectedSubCategory, selectedStatus].filter(Boolean).length +
     (searchText ? 1 : 0) +
     (hasWeightFilter ? 1 : 0);
 
@@ -441,7 +455,7 @@ function ProductListScreenInner() {
           <Search size={18} color="#94A3B8" />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search name, code, category or sub category"
+            placeholder="Search name, jewel-code, category or barcode"
             placeholderTextColor="#94A3B8"
             value={searchText}
             onChangeText={(text) => {
@@ -552,17 +566,20 @@ function ProductListScreenInner() {
           >
             {categoryOptions.length > 0 && (
               <>
-                <Text style={styles.filterGroupLabel}>Category</Text>
+                <Text style={styles.filterGroupLabel}>Status</Text>
                 <View style={styles.filterWrap}>
-                  {categoryOptions.map((name) => {
-                    const active = selectedCategory === name;
+                  {([
+                    { key: 'available', label: 'Available' },
+                    { key: 'sold', label: 'Sold' },
+                  ] as const).map(({ key, label }) => {
+                    const active = selectedStatus === key;
                     return (
                       <Pressable
-                        key={name}
+                        key={key}
                         style={[styles.chip, active && styles.chipActive]}
-                        onPress={() => handleSelectCategory(name)}
+                        onPress={() => handleSelectStatus(key)}
                       >
-                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
                       </Pressable>
                     );
                   })}

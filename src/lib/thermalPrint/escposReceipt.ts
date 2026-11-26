@@ -302,14 +302,22 @@ function taxAmountOf(invoice: InvoiceDetail, kind: 'CGST' | 'SGST' | 'IGST'): nu
 }
 
 // The advance paid on the customer order (tagged in new.tsx)
-const isAdvanceSplit = (s: any) =>
-  s?.id === 'advance' || String(s?.reference ?? '').trim().toLowerCase() === 'advance';
+const isChitSplit = (s: any) => s?.mode === 'chit_fund';
 
-// One total per payment mode, EXCLUDING the advance (two cash rows -> one cash figure)
+// Advance: the order advance (id 'advance'), the typed Advance (mode 'advance')
+// or anything tagged with reference "Advance". Chit fund is never an advance.
+const isAdvanceSplit = (s: any) =>
+  !isChitSplit(s) &&
+  (s?.mode === 'advance' ||
+    s?.id === 'advance' ||
+    s?.id === 'adv-extra' ||
+    String(s?.reference ?? '').trim().toLowerCase() === 'advance');
+
+// One total per payment mode, EXCLUDING advance and chit fund
 function splitTotalsByMode(invoice: InvoiceDetail): Record<string, number> {
   const totals: Record<string, number> = {};
   for (const s of invoice.payment_splits ?? []) {
-    if (isAdvanceSplit(s)) continue;
+    if (isAdvanceSplit(s) || isChitSplit(s)) continue;
     const amt = num(s.amount);
     if (amt <= 0) continue;
     totals[s.mode] = round2((totals[s.mode] ?? 0) + amt);
@@ -317,7 +325,8 @@ function splitTotalsByMode(invoice: InvoiceDetail): Record<string, number> {
   return totals;
 }
 
-// Advance totals per mode
+// Advance totals per mode (order advance keeps its cash/upi mode,
+// the typed Advance has mode 'advance')
 function advanceTotalsByMode(invoice: InvoiceDetail): Record<string, number> {
   const totals: Record<string, number> = {};
   for (const s of invoice.payment_splits ?? []) {
@@ -327,6 +336,15 @@ function advanceTotalsByMode(invoice: InvoiceDetail): Record<string, number> {
     totals[s.mode] = round2((totals[s.mode] ?? 0) + amt);
   }
   return totals;
+}
+
+// Chit fund total
+function chitTotalOf(invoice: InvoiceDetail): number {
+  let total = 0;
+  for (const s of invoice.payment_splits ?? []) {
+    if (isChitSplit(s)) total += num(s.amount);
+  }
+  return round2(total);
 }
 
 // ===========================================================
@@ -492,7 +510,6 @@ export async function printThermalReceiptDirect(
           : fixed2(num(vaLine.amount) * qty)
       );
     }
-    out += tightDash();
 
     // Charges
     const hasCharges =
@@ -596,13 +613,40 @@ export async function printThermalReceiptDirect(
 
   const splitEntries = Object.entries(splitTotalsByMode(invoice));
   const advanceEntries = Object.entries(advanceTotalsByMode(invoice));
+  const chitTotal = chitTotalOf(invoice);
+  const advanceTotal = round2(advanceEntries.reduce((t, [, a]) => t + a, 0));
+  const prepaidTotal = round2(advanceTotal + chitTotal);
+  const hasPrepaid = prepaidTotal > 0;
 
-  // Advance paid on the customer order, printed first
+  // Advance (order advance + typed advance), deducted from the bill
   for (const [mode, amt] of advanceEntries) {
-    const modeName = PAID_MODE_NAMES[mode] ?? mode.replace(/_/g, ' ');
-    out += boldSummaryRow(`Advance (${modeName})`, fixed2(amt));
+    const label =
+      mode === 'advance'
+        ? 'Advance'
+        : `Advance (${PAID_MODE_NAMES[mode] ?? mode.replace(/_/g, ' ').toUpperCase()})`;
+    out += boldSummaryRow(label, `-${fixed2(amt)}`);
   }
 
+  // Chit fund, deducted from the bill
+  if (chitTotal > 0) {
+    out += boldSummaryRow('Chit Fund', `-${fixed2(chitTotal)}`);
+  }
+
+  // Amount left to pay after advance and chit fund
+  // Balance after advance and chit fund.
+  // Negative = the shop pays the customer.
+  if (hasPrepaid) {
+    const diff = round2(f.netBillAmount - prepaidTotal);
+    const payout = diff < 0 ? round2(-diff) : 0;
+    out += dashed();
+    out += boldSummaryRow(
+      payout > 0 ? 'BALANCE (C.R)' : 'BALANCE',
+      fixed2(payout > 0 ? payout : diff)
+    );
+    out += dashed();
+  }
+
+  // Money received now (cash / card / upi) and any amount left due
   if (splitEntries.length > 0) {
     for (const [mode, amt] of splitEntries) {
       let label: string;
@@ -615,7 +659,7 @@ export async function printThermalReceiptDirect(
       }
       out += boldSummaryRow(label, fixed2(amt));
     }
-  } else if (advanceEntries.length === 0) {
+  } else if (!hasPrepaid) {
     if (!isEstimate && f.paid > 0) {
       // Older invoices with no split rows: use the single saved payment mode
       const legacyMode = String((invoice as any).payment_mode ?? 'cash');
@@ -626,11 +670,6 @@ export async function printThermalReceiptDirect(
     } else {
       out += boldSummaryRow('FINAL AMOUNT', f.paid > 0 ? fixed2(f.paid) : '');
     }
-  }
-
-  // Estimate with an advance: show what is still to pay
-  if (isEstimate && advanceEntries.length > 0) {
-    out += boldSummaryRow('BALANCE', fixed2(invoice.balance_amount));
   }
 
   // -------------------------------------------------------

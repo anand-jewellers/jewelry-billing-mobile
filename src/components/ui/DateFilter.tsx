@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Card } from './';
+// import { Card } from './';
 import { colors, spacing } from '../../theme';
 import { toYMD, fromYMD, formatDisplayDate } from '../../lib/dateUtils';
 
@@ -33,10 +33,10 @@ interface DateFilterProps {
 }
 
 const MODE_OPTIONS: { key: DateFilterMode; label: string }[] = [
-  { key: 'today', label: 'Today' },
-  { key: 'week', label: 'Week' },
-  { key: 'month', label: 'Month' },
-  { key: 'custom', label: 'Custom' },
+  { key: 'today', label: 'TODAY' },
+  { key: 'week', label: 'WEEK' },
+  { key: 'month', label: 'MONTH' },
+  { key: 'custom', label: 'CUSTOM' },
 ];
 
 const WEEKDAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -169,20 +169,19 @@ export function DateFilter({ value, onChange }: DateFilterProps) {
             </TouchableOpacity>
           );
         })}
-      </View>
 
-      <Pressable
-        onPress={() => {
-          if (value.mode === 'particular') openPicker('particular');
-          if (value.mode === 'custom') openPicker('rangeStart');
-        }}
-        disabled={value.mode === 'today' || value.mode === 'week' || value.mode === 'month'}
-      >
-        <Card style={styles.summaryCard}>
-          <Text style={styles.summaryText}>{describeValue(value)}</Text>
-          {value.mode !== 'today' && <Text style={styles.summaryHint}>Tap to change</Text>}
-        </Card>
-      </Pressable>
+        {(value.mode === 'custom' || value.mode === 'particular') && (
+          <Pressable
+            onPress={() => openPicker(value.mode === 'particular' ? 'particular' : 'rangeStart')}
+            hitSlop={6}
+            style={styles.rangeWrap}
+          >
+            <Text style={styles.rangeText} numberOfLines={1}>
+              {describeValue(value)}
+            </Text>
+          </Pressable>
+        )}
+      </View>
 
       <CalendarModal
         visible={pickerOpen}
@@ -524,7 +523,15 @@ export function DateField({
 }
 
 const styles = StyleSheet.create({
-  chipRow: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+  },
+  rangeWrap: { flexShrink: 1 },
+  rangeText: { fontSize: 12, fontWeight: '600', color: colors.textPrimary },
   chip: {
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
@@ -536,16 +543,6 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.gold, borderColor: colors.gold },
   chipText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
   chipTextActive: { color: '#FFFFFF' },
-
-  summaryCard: {
-    marginHorizontal: spacing.lg,
-    marginTop: spacing.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  summaryText: { fontSize: 13, fontWeight: '600', color: colors.textPrimary },
-  summaryHint: { fontSize: 11, color: colors.textMuted },
 
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' },
   modalCard: {

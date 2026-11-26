@@ -36,22 +36,6 @@ function fmtDate(value: string): string {
   return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}`;
 }
 
-function fmtDateTimeSlip(value: string | undefined): string {
-  const d = value ? new Date(value) : new Date();
-  if (isNaN(d.getTime())) return '';
-  const yy = String(d.getFullYear()).slice(-2);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-
-  let hours = d.getHours();
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12 || 12;
-  const hh = String(hours).padStart(2, '0');
-
-  return `${dd}-${mm}-${yy} ${hh}:${minutes} ${ampm}`;
-}
-
 function withRate(label: string, amount: number, base: number): string {
   if (!base || amount <= 0) return label;
   return `${label} @ ${pctText((amount / base) * 100)}`;
@@ -75,23 +59,8 @@ const STONE_CHARGE = 'Stone Charge';
 // named "Diamond <size>" (e.g. "Diamond 0.25 ct") — see invoiceCalc.ts.
 const DIAMOND_CHARGE_PREFIX = 'Diamond';
 const isDiamondCharge = (name: unknown) => String(name ?? '').startsWith(DIAMOND_CHARGE_PREFIX);
-// "Diamond 0.25 ct" -> "0.25 ct"
-const diamondWeightText = (name: unknown) =>
-  String(name ?? '').replace(/^Diamond\s*/i, '').trim();
 const DEFAULT_HSN = '7113';
-const OLD_GOLD_HSN = '7108';
 const LETTERHEAD_SPACE_PX = 110;
-
-// Display labels for each payment mode, shared by both templates when
-// rendering a per-mode split breakdown.
-const PAY_MODE_LABELS: Record<string, string> = {
-  cash: 'CASH',
-  card: 'CARD',
-  upi: 'UPI',
-  bank_transfer: 'BANK TRANSFER',
-  cheque: 'CHEQUE',
-  credit: 'CREDIT',
-};
 
 // ===========================================================
 // Shop details
@@ -163,7 +132,7 @@ export interface PrintOptions {
 const DEFAULT_PRINT_OPTIONS: PrintOptions = { showHeaderFooter: true };
 
 // ===========================================================
-// Figures shared by both templates
+// Figures shared by the template
 // ===========================================================
 
 interface TaxRow {
@@ -180,20 +149,6 @@ function taxAmountOf(invoice: InvoiceDetail, kind: 'CGST' | 'SGST' | 'IGST'): nu
   return round2(num(fromCharges ?? fallback));
 }
 
-// Collapses invoice.payment_splits into one total per payment mode
-// (e.g. two "cash" rows become one summed cash figure). Returns an
-// empty object when there are no splits, so callers can fall back to
-// the single legacy payment_mode/paid_amount fields.
-function splitTotalsByMode(invoice: InvoiceDetail): Record<string, number> {
-  const totals: Record<string, number> = {};
-  for (const s of invoice.payment_splits ?? []) {
-    const amt = num(s.amount);
-    if (amt <= 0) continue;
-    totals[s.mode] = round2((totals[s.mode] ?? 0) + amt);
-  }
-  return totals;
-}
-
 // An invoice is a GST invoice only if tax was actually charged on it.
 export function isGstInvoice(invoice: InvoiceDetail): boolean {
   const hasTaxCharge = (invoice.charges ?? []).some(
@@ -203,7 +158,6 @@ export function isGstInvoice(invoice: InvoiceDetail): boolean {
   );
   return hasTaxCharge || num(invoice.tax_amount) > 0;
 }
-
 
 export function slipFigures(invoice: InvoiceDetail) {
   const items = invoice.items ?? [];
@@ -288,7 +242,6 @@ const PAY_MODES = [
   { id: 'upi', label: 'UPI' },
   { id: 'bank_transfer', label: 'NEFT' },
   { id: 'cheque', label: 'CHEQUE' },
-  { id: 'credit', label: 'CREDIT' },
 ];
 
 export function buildInvoiceHtml(
@@ -370,14 +323,6 @@ export function buildInvoiceHtml(
   const headMc = cfg.show_making_charges ? '<th>MC</th>' : '';
   const headStone = cfg.show_value_added_charges ? '<th>SC</th>' : '';
 
-  const totalCols =
-    4 +
-    (cfg.show_weight ? 3 : 0) +
-    (cfg.show_value_added_charges ? 1 : 0) +
-    (cfg.show_making_charges ? 1 : 0) +
-    (cfg.show_value_added_charges ? 1 : 0) +
-    2;
-
   const colGroupHtml = `
     <colgroup>
       <col style="width: 4%;" />
@@ -447,6 +392,7 @@ export function buildInvoiceHtml(
       </tbody>
     </table>`
     : '';
+
   const addressLine = shopAddressLine(shop);
   const contactLine = [shop.phone ? `Ph: ${esc(shop.phone)}` : '', esc(shop.email ?? ''), esc(shop.website ?? '')]
     .filter(Boolean)
@@ -490,23 +436,47 @@ export function buildInvoiceHtml(
   ].join('');
 
   // ---------------------------------------------------------
-  // Payment mode cells — now split-aware.
+  // Payment structure
+  //   New total - old gold = net bill
+  //   net bill - advance - chit fund = amount to pay
+  //   amount to pay - received (cash/card/upi...) = balance due
   //
-  // If invoice.payment_splits has entries (a split payment), each mode's
-  // cell shows the SUM of everything collected in that mode (e.g. two
-  // separate cash rows on the same invoice show as one combined cash
-  // figure). If there are no splits at all, this falls back to the old
-  // single-mode/paid_amount behaviour exactly as before, so invoices
-  // saved before split payments existed still print correctly.
+  // The balance is worked out from the saved payment rows, so invoices saved
+  // with a wrong balance_amount column still print the right figures.
   // ---------------------------------------------------------
-  const splitTotals = splitTotalsByMode(invoice);
-  const hasSplits = Object.keys(splitTotals).length > 0;
-  const legacyPaidMode = (invoice as any).payment_mode ?? (f.paid > 0 ? 'cash' : null);
+  const allSplits = (invoice.payment_splits ?? []).filter((s) => num(s.amount) > 0);
+  const hasSplits = allSplits.length > 0;
+
+  const isChit = (s: any) => s.mode === 'chit_fund';
+  const isAdvance = (s: any) => s.mode === 'advance' || s.reference === 'Advance';
+  const isPrepaid = (s: any) => isChit(s) || isAdvance(s);
+
+  const advanceTotal = round2(
+    allSplits.filter((s) => !isChit(s) && isAdvance(s)).reduce((t, s) => t + num(s.amount), 0)
+  );
+  const chitTotal = round2(allSplits.filter(isChit).reduce((t, s) => t + num(s.amount), 0));
+  const prepaidTotal = round2(advanceTotal + chitTotal);
+
+  // Money received at billing, per mode (cash / card / upi ...). Advance, chit
+  // fund and the unpaid "credit" part are not counted here.
+  const receivedByMode: Record<string, number> = {};
+  for (const s of allSplits) {
+    if (isPrepaid(s) || s.mode === 'credit') continue;
+    receivedByMode[s.mode] = round2((receivedByMode[s.mode] ?? 0) + num(s.amount));
+  }
+  // Older invoices without split rows: one mode + paid_amount
+  const legacyMode = (invoice as any).payment_mode ?? 'cash';
+  if (!hasSplits && f.paid > 0) receivedByMode[legacyMode] = f.paid;
+
+  const receivedTotal = round2(Object.values(receivedByMode).reduce((t, v) => t + v, 0));
+
+  const customerGetsMoney = f.netBillAmount < 0;
+  const amountToPay = customerGetsMoney ? 0 : round2(Math.max(0, f.netBillAmount - prepaidTotal));
+  const balanceDue = customerGetsMoney ? 0 : round2(Math.max(0, amountToPay - receivedTotal));
+  const payout = round2(Math.max(0, prepaidTotal - f.netBillAmount));
 
   const modeCells = PAY_MODES.map((m) => {
-    const amt = hasSplits
-      ? (splitTotals[m.id] ?? 0)
-      : (m.id === legacyPaidMode && f.paid > 0 ? f.paid : 0);
+    const amt = receivedByMode[m.id] ?? 0;
     return `
       <div class="mode">
         <div class="modeLabel">${m.label} :</div>
@@ -514,7 +484,24 @@ export function buildInvoiceHtml(
       </div>`;
   }).join('');
 
-  const netBalance = round2(Math.max(0, f.netBillAmount - f.paid));
+  const sumRow = (label: string, value: string, cls = '') =>
+    `<tr class="${cls}"><td class="l">${label}</td><td class="v">${value}</td></tr>`;
+
+  const summaryRows = [
+    sumRow('NEW TOTAL', fixed2(f.grand)),
+    f.exchangeTotal > 0 ? sumRow('Less: Old Gold', `-${fixed2(f.exchangeTotal)}`) : '',
+    sumRow(customerGetsMoney ? 'NETT (C.R)' : 'NET BILL AMOUNT', fixed2(f.netBillAmount), 'strong'),
+    !customerGetsMoney && advanceTotal > 0 ? sumRow('Less: Advance', `-${fixed2(advanceTotal)}`) : '',
+    !customerGetsMoney && chitTotal > 0 ? sumRow('Less: Chit Fund', `-${fixed2(chitTotal)}`) : '',
+    !customerGetsMoney && prepaidTotal > 0 ? sumRow('AMOUNT TO PAY', fixed2(amountToPay), 'strong') : '',
+    receivedTotal > 0 ? sumRow('Received', fixed2(receivedTotal)) : '',
+    !customerGetsMoney
+      ? sumRow('BALANCE DUE', fixed2(balanceDue), balanceDue > 0 ? 'strong due' : 'strong')
+      
+      : '',
+          payout > 0 ? sumRow('PAY TO CUSTOMER', fixed2(payout), 'strong due') : '',
+  ].join('');
+  
 
   return `
   <html>
@@ -532,37 +519,43 @@ export function buildInvoiceHtml(
       .cust { flex: 1.1; padding: 6px 10px; border-right: 1.5px solid #000; }
       .custName { font-weight: 700; font-size: 14px; }
       .meta { flex: 1; padding: 6px 10px; font-weight: 700; font-size: 13.5px; line-height: 1.35; }
-      
+
       table.items { width: 100%; border-collapse: collapse; border: 1.5px solid #000; table-layout: fixed; }
       table.items th, table.items td { border: 1px solid #000; padding: 4px 2px; vertical-align: top; font-size: 12.5px; font-weight: 700; }
       table.items th { font-size: 12px; border-bottom: 1.5px solid #000; text-align: center; }
-      
+
       table.items.exchGrid { margin-top: 10px; border: 1.5px solid #000; }
       .purchaseLabel { text-align: left; font-weight: 700; font-size: 13px; padding: 5px 6px !important; border-bottom: 1.5px solid #000 !important; background-color: #fcfcfc; }
-      
+
       .c { text-align: center; white-space: nowrap; }
       .r { text-align: right; white-space: nowrap; padding-right: 4px; }
       .bold { font-weight: 700; }
       .sub { font-size: 10px; margin-top: 1px; font-weight: normal; }
       .sub.dia { font-weight: 700; font-size: 10.5px; }
-      
+
       .below { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 8px; }
       .ng { font-size: 12px; font-weight: 700; padding-left: 55px; margin-top: 6px; }
-      
+
       table.tot { width: 280px; border-collapse: collapse; }
       table.tot td { padding: 2px 0; font-size: 13px; }
       table.tot td.l { text-align: right; padding-right: 20px; font-weight: 700; }
       table.tot td.v { text-align: right; padding-right: 6px; width: 110px; font-weight: 700; }
       table.tot td.dashTop { border-top: 1.5px dashed #000; padding-top: 4px; }
       table.tot tr.grand td { font-weight: 700; padding-top: 4px; }
-      
+
       .payDash { border-top: 1.5px dashed #000; margin-top: 36px; }
-      .pay { display: flex; justify-content: space-between; align-items: flex-start; padding: 6px 0 0; }
-      .modes { display: flex; gap: 32px; }
+      .pay { display: flex; justify-content: space-between; align-items: flex-start; padding: 8px 0 0; }
+      .modesBox { flex: 1; padding-right: 16px; }
+      .payTitle { font-weight: 700; font-size: 12px; margin-bottom: 6px; text-decoration: underline; }
+      .modes { display: flex; flex-wrap: wrap; gap: 10px 22px; }
       .modeLabel { font-weight: 700; font-size: 13px; }
       .modeAmt { font-weight: 700; margin-top: 12px; font-size: 13px; min-height: 14px; }
-      .bill { font-size: 16px; font-weight: 700; text-align: right; }
-      .balance { font-size: 12px; font-weight: 700; color: #b00020; margin-top: 4px; text-align: right; }
+      table.sum { width: 300px; border-collapse: collapse; }
+      table.sum td { padding: 2px 0; font-size: 13px; font-weight: 700; }
+      table.sum td.l { text-align: left; padding-right: 12px; }
+      table.sum td.v { text-align: right; padding-right: 4px; width: 110px; }
+      table.sum tr.strong td { border-top: 1px solid #000; padding-top: 4px; font-size: 14px; }
+      table.sum tr.due td { color: #b00020; }
       .terms { margin-top: 24px; font-size: 10.5px; border-top: 1px solid #999; padding-top: 8px; white-space: pre-line; }
       .footer { margin-top: 16px; font-size: 11px; text-align: center; border-top: 1px solid #999; padding-top: 10px; white-space: pre-line; }
     </style>
@@ -577,7 +570,7 @@ export function buildInvoiceHtml(
         ${invoice.customer_address ? `<div>${esc(invoice.customer_address)}</div>` : ''}
         ${invoice.customer_gstin && gst ? `<div>GSTIN: ${esc(invoice.customer_gstin)}</div>` : ''}
       </div>
-            <div class="meta">
+      <div class="meta">
         ${gst ? `<div>TAX INVOICE${shop.gstin ? ` GSTIN: ${esc(shop.gstin)}` : ''}</div>` : ''}
         ${gst ? `<div>SALES &nbsp;Bill No : ${esc(invoice.invoice_number)}</div>` : ''}
         <div>Date : ${fmtDate(invoice.invoice_date)}${rateEntries ? ` ${rateEntries}` : ''}</div>
@@ -594,7 +587,7 @@ export function buildInvoiceHtml(
           <th>HSN</th>
           ${headWeight}${headVa}${headMc}${headStone}
           <th>RATE</th>
-          <th>TAXABLE AMT</th>
+          <th>AMOUNT</th>
         </tr>
       </thead>
       <tbody>${itemRows}</tbody>
@@ -609,381 +602,14 @@ export function buildInvoiceHtml(
 
     <div class="payDash"></div>
     <div class="pay">
-      <div class="modes">${modeCells}</div>
-      <div>
-        <div class="bill">${f.netBillAmount < 0 ? 'Nett (C.R)' : 'Bill Amount'}: ${fixed2(f.netBillAmount)}</div>
-        ${netBalance > 0 ? `<div class="balance">Balance Due: ${fixed2(netBalance)}</div>` : ''}
+      <div class="modesBox">
+        <div class="payTitle">PAYMENT RECEIVED</div>
+        <div class="modes">${modeCells}</div>
       </div>
+      <table class="sum">${summaryRows}</table>
     </div>
 
-    ${footerHtml}
-  </body>
-  </html>`;
-}
-
-// ===========================================================
-// Thermal (58/80mm) slip
-// ===========================================================
-
-export function buildThermalReceiptHtml(
-  invoice: InvoiceDetail,
-  shop: ShopDetails = DEFAULT_SHOP,
-  display: Partial<InvoiceDisplayConfig> = {},
-  options: PrintOptions = DEFAULT_PRINT_OPTIONS
-): string {
-  const cfg = { ...DEFAULT_INVOICE_SETTINGS, ...display };
-  const f = slipFigures(invoice);
-  const gst = isGstInvoice(invoice);
-
-  const row = (label: string, value: string, cls = '') =>
-    `<div class="row ${cls}"><span class="lbl">${label}</span><span class="colon">:</span><span class="val">${value}</span></div>`;
-
-  const dashedSep = '<div class="dashed-line">------------------------------------</div>';
-  const itemDash = '<div class="item-dash">------</div>';
-
-  // -----------------------------------------------------
-  // Shop header — same source data as the A4 template
-  // (companyToShopDetails), laid out centered for the narrow
-  // thermal width instead of the A4's side-by-side header.
-  // -----------------------------------------------------
-  const shopAddress = shopAddressLine(shop);
-  const shopContactLine = [shop.phone ? `Ph: ${esc(shop.phone)}` : '', esc(shop.email ?? '')]
-    .filter(Boolean)
-    .join('  |  ');
-  const shopRegLine = [shop.gstin && gst ? `GSTIN: ${esc(shop.gstin)}` : '', shop.pan ? `PAN: ${esc(shop.pan)}` : '']
-    .filter(Boolean)
-    .join('  |  ');
-
-  // -----------------------------------------------------
-  // Per-item tax split. InvoiceItemDetail only stores one
-  // combined tax_amount — there's no per-item CGST/SGST
-  // saved — so the invoice-level rates (derived from
-  // invoice.charges, same source the A4 template uses) are
-  // applied to each item's own taxable amount to split its
-  // tax into CGST + SGST (or a single GST row for IGST).
-  // -----------------------------------------------------
-  const subtotalOverall = round2(num(invoice.subtotal));
-  const cgstTotalOverall = taxAmountOf(invoice, 'CGST');
-  const sgstTotalOverall = taxAmountOf(invoice, 'SGST');
-  const igstTotalOverall = taxAmountOf(invoice, 'IGST');
-  const hasSplitGst = cgstTotalOverall > 0 && sgstTotalOverall > 0;
-  const cgstRate = subtotalOverall > 0 ? (cgstTotalOverall / subtotalOverall) * 100 : 0;
-  const sgstRate = subtotalOverall > 0 ? (sgstTotalOverall / subtotalOverall) * 100 : 0;
-  const igstRate = subtotalOverall > 0 ? (igstTotalOverall / subtotalOverall) * 100 : 0;
-
-  // -----------------------------------------------------
-  // Per-product blocks — each item prints its own weight,
-  // rate, charges, CGST/SGST and line total, one after
-  // another, before the combined net-amount section further
-  // down.
-  // -----------------------------------------------------
-  const productBlocks = (invoice.items ?? [])
-    .map((item, idx) => {
-      const qty = num(item.quantity) || 1;
-      const grossWt = round3(num(item.gross_weight) * qty);
-      const netWt = round3(num(item.net_weight) * qty);
-      const lessWt = round3(Math.max(0, grossWt - netWt));
-
-      const lines = item.value_added_charges ?? [];
-      const vaLine = lines.find((c) => c.charge_name === VA_CHARGE);
-      const stoneLine = lines.find((c) => c.charge_name === STONE_CHARGE);
-      const diamondLines = lines.filter((c) => isDiamondCharge(c.charge_name) && num(c.amount) > 0);
-      const otherLines = lines.filter(
-        (c) => c.charge_name !== VA_CHARGE && c.charge_name !== STONE_CHARGE && !isDiamondCharge(c.charge_name)
-      );
-
-      // This item's own taxable base (its total minus its own tax), used
-      // to split its tax into CGST + SGST at the invoice-level rate.
-      const itemTaxable = round2(num(item.total) - num(item.tax_amount));
-      const itemCgst = hasSplitGst ? round2((itemTaxable * cgstRate) / 100) : 0;
-      const itemSgst = hasSplitGst ? round2((itemTaxable * sgstRate) / 100) : 0;
-      const itemIgst = !hasSplitGst && igstTotalOverall > 0 ? round2((itemTaxable * igstRate) / 100) : 0;
-
-      const taxRowsHtml = hasSplitGst
-        ? `${itemCgst > 0 ? row(`CGST @ ${cgstRate.toFixed(1)}%`, fixed2(itemCgst)) : ''}${itemSgst > 0 ? row(`SGST @ ${sgstRate.toFixed(1)}%`, fixed2(itemSgst)) : ''}`
-        : itemIgst > 0
-          ? row(`GST @ ${igstRate.toFixed(1)}%`, fixed2(itemIgst))
-          : num(item.tax_amount) > 0
-            ? row('Tax', fixed2(item.tax_amount))
-            : '';
-
-      // Diamond weight + amount rows, e.g. "Diamond Wt : 0.25 ct" / "Diamond Amt : 12000"
-      const diamondRowsHtml = cfg.show_value_added_charges
-        ? diamondLines
-          .map(
-            (c) =>
-              row('Diamond Wt', esc(diamondWeightText(c.charge_name)) + " ct") +
-              row('Diamond Amt', plain(num(c.amount) * qty))
-          )
-          .join('')
-        : '';
-
-      return `
-        <div class="item-block">
-          <div class="item-title">ITEM ${idx + 1}: ${esc(item.product_name)}${qty > 1 ? ` x${qty}` : ''}</div>
-          ${itemDash}
-          ${cfg.show_weight ? row('Weight', `${fixed3(grossWt)} gms`) : ''}
-          ${cfg.show_weight ? row('Stone/Less(wt)', fixed3(lessWt)) : ''}
-          <div style="height: 6px;"></div>
-          ${cfg.show_weight ? row('Nett Weight', fixed3(netWt)) : ''}
-          ${row('Rate/gm', plain(item.metal_rate))}
-          ${cfg.show_value_added_charges && vaLine
-          ? row('V.ADNV', vaLine.calculation_type === 'percentage' ? `${num(vaLine.value).toFixed(1)} %` : fixed2(num(vaLine.amount) * qty))
-          : ''}
-          <div class="tight-dash">------</div>
-          ${cfg.show_making_charges && num(item.making_charge_amount) > 0 ? row('MC', plain(item.making_charge_amount)) : ''}
-          ${cfg.show_value_added_charges && stoneLine ? row('Stone Charges', plain(num(stoneLine.amount) * qty)) : ''}
-          ${diamondRowsHtml}
-          ${cfg.show_value_added_charges
-          ? otherLines.map((c) => row(esc(c.charge_name), plain(num(c.amount) * qty))).join('')
-          : ''}
-          <div class="tight-dash">------</div>
-          ${taxRowsHtml ? row('Total', fixed2(itemTaxable), 'item-total') : ''}
-          ${taxRowsHtml ? '<div class="tight-dash">------</div>' : ''}
-          ${taxRowsHtml}
-          ${row('Gross', fixed2(item.total), 'item-total')}
-        </div>
-      `;
-    })
-    .join('');
-
-  const exchangeBlocks = f.exchangeItems.map((e, idx) => {
-    const purityPct = num((e as any).old_percent ?? (e as any).purity_percent ?? 100);
-    const dustStone = num((e as any).stone_weight ?? (e as any).dust_weight ?? 0);
-    const grossWt = num(e.gross_weight);
-    const calculatedGrossWeight = displayNetWeight(e);
-
-    return `
-      <div class="old-item-block">
-        <div class="old-item-title">OLD ITEM ${idx + 1} : ${esc(e.description || 'Gold Item')}</div>
-        ${itemDash}
-        ${row('Weight', fixed3(grossWt))}
-        ${dustStone > 0 ? row('Dust/Stone', fixed3(dustStone)) : ''}
-        ${dustStone > 0 ? row('Gross Weight', fixed3(calculatedGrossWeight)) : ''}
-        ${row('Old Percentage', `* ${fixed2(purityPct)}%`)}
-        <div class="tight-dash">------</div>
-        ${row('Old Rate/Gm', `* ${plain(e.rate_per_gram)}`)}
-        <div class="tight-dash">------</div>
-        ${row('Gross', fixed2(e.amount))}
-      </div>
-    `;
-  }).join('');
-
-  const contactText = shop.phone
-    ? `CONTACT :${esc(shop.phone)}`
-    : 'CONTACT :9963780483,7010788696';
-
-  // ---------------------------------------------------------
-  // Payment breakdown — split-aware.
-  //
-  // With splits present, each mode gets its own printed row (e.g.
-  // "CASH : 100000.00" then "CARD : 50000.00"), summed per mode the
-  // same way as the A4 template. With no splits (older invoices, or a
-  // single-mode payment), falls back to the original single
-  // "FINAL AMOUNT" line using invoice.paid_amount exactly as before.
-  // ---------------------------------------------------------
-  const splitTotals = splitTotalsByMode(invoice);
-  const splitRowsHtml = Object.entries(splitTotals)
-    .map(([mode, amt]) => row(PAY_MODE_LABELS[mode] ?? mode.toUpperCase(), fixed2(amt)))
-    .join('');
-
-  const paymentSectionHtml = splitRowsHtml
-    ? splitRowsHtml
-    : `<div class="row final-amt">
-        <span class="lbl">FINAL AMOUNT</span>
-        <span class="colon">:</span>
-        <span class="val">${f.paid > 0 ? fixed2(f.paid) : ''}</span>
-      </div>`;
-
-  return `
-  <html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      @page {
-        margin: 0;
-        size: 80mm auto;
-      }
-      * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-      }
-      body {
-        width: 100%;
-        max-width: 310px;
-        margin: 0 auto;
-        padding: 8px 10px 24px 10px;
-        font-family: 'Courier New', Courier, monospace;
-        font-size: 13.5px;
-        font-weight: 700;
-        color: #000;
-        line-height: 1.35;
-        background-color: #fff;
-      }
-
-      .shop-header {
-        text-align: center;
-        margin-bottom: 6px;
-      }
-      .shop-logo {
-        width: 40px;
-        height: 40px;
-        object-fit: contain;
-        margin-bottom: 4px;
-      }
-      .shop-name {
-        font-size: 16px;
-        font-weight: 800;
-        text-transform: uppercase;
-      }
-      .shop-detail {
-        font-size: 11px;
-        font-weight: 600;
-        margin-top: 2px;
-        line-height: 1.35;
-      }
-
-      .top-datetime {
-        text-align: right;
-        font-size: 13px;
-        margin-bottom: 4px;
-      }
-      .div-tag {
-        font-size: 14px;
-        margin-bottom: 12px;
-      }
-
-      .row {
-        display: flex;
-        align-items: flex-start;
-        margin-bottom: 2px;
-      }
-      .row.spaced {
-        margin-top: 10px;
-      }
-      .row.item-total {
-        margin-top: 2px;
-        font-size: 14px;
-      }
-      .lbl {
-        flex: 1.45;
-        white-space: nowrap;
-      }
-      .colon {
-        width: 16px;
-        text-align: center;
-      }
-      .val {
-        flex: 1.3;
-        text-align: left;
-        padding-left: 4px;
-      }
-
-      .dashed-line {
-        letter-spacing: -1px;
-        margin: 6px 0;
-        overflow: hidden;
-        white-space: nowrap;
-        font-size: 13px;
-      }
-      .tight-dash {
-        letter-spacing: 0px;
-        margin: 2px 0 2px 52%;
-        font-size: 13px;
-      }
-      .item-dash {
-        margin: 2px 0;
-        font-size: 13px;
-      }
-
-      .item-block {
-        margin-top: 14px;
-      }
-      .item-block:first-of-type {
-        margin-top: 6px;
-      }
-      .item-title {
-        font-size: 13.5px;
-        text-transform: uppercase;
-      }
-
-      .section-title {
-        margin-top: 16px;
-        font-size: 14px;
-        text-transform: uppercase;
-        text-align: center;
-      }
-
-      .old-item-block {
-        margin-top: 14px;
-      }
-      .old-item-title {
-        font-size: 13.5px;
-        text-transform: uppercase;
-      }
-
-      .nett-rs {
-        margin-top: 10px;
-        font-size: 16px;
-      }
-      .final-amt {
-        margin-top: 8px;
-        font-size: 14px;
-      }
-
-      .footer-box {
-  margin-top: 26px;
-  font-size: 11px;
-  line-height: 1.4;
-  white-space: nowrap;
-}
-      .footer-box .dashed-line {
-        margin-bottom: 8px;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="shop-header">
-      ${false && cfg.show_logo && shop.logoUrl ? `<img class="shop-logo" src="${esc(shop.logoUrl)}" />` : ''}
-      <div class="shop-name">${esc(shop.name)}</div>
-      ${shopAddress ? `<div class="shop-detail">${esc(shopAddress)}</div>` : ''}
-      ${shopContactLine ? `<div class="shop-detail">${shopContactLine}</div>` : ''}
-      ${shopRegLine ? `<div class="shop-detail">${esc(shopRegLine)}</div>` : ''}
-    </div>
-    ${dashedSep}
-
-    <!-- Per-product breakdown, one after another -->
-    ${productBlocks}
-
-    <div class="tight-dash">------</div>
-    ${row('NEW TOTAL', fixed2(f.grand + f.discount))}
-
-    <!-- Old Items Section (still shown in full — it's separate from the products above) -->
-    ${exchangeBlocks}
-
-    <!-- Old Total -->
-    ${f.exchangeItems.length > 0 ? `
-      <div class="tight-dash">----------</div>
-      ${row('OLD TOTAL', fixed2(f.exchangeTotal))}
-    ` : ''}
-
-    <!-- Overall summary: net amount only, not the full breakdown again -->
-    <!-- Discount (only when one is given) — shown before the final amount -->
-    ${f.discount > 0 ? `${dashedSep}${row('Discount', `-${fixed2(f.discount)}`)}` : ''}
-    ${dashedSep}
-    ${row(f.netBillAmount < 0 ? 'Nett (C.R)' : 'Nett RS', fixed2(f.netBillAmount), 'nett-rs')}
-    ${dashedSep}
-    ${paymentSectionHtml}
-
-    <!-- Slip Footer -->
-    <div class="footer-box">
-      ${dashedSep}
-      
-      <div>**valid only for 1hr, Prices May change**</div>
-      <div>Join Our Monthly Savings Scheme !!</div>
-      <div style="margin-top: 10px;">GST Bill will be issued on Confirmation</div>
-    </div>
+    
   </body>
   </html>`;
 }
@@ -994,7 +620,6 @@ export function buildThermalReceiptHtml(
 
 async function loadInvoiceHtml(
   invoiceId: string,
-  variant: 'a4' | 'thermal',
   options: PrintOptions
 ): Promise<{ html: string; invoiceNumber: string }> {
   const [invoice, companySettings, invoiceSettings] = await Promise.all([
@@ -1017,34 +642,29 @@ async function loadInvoiceHtml(
     }
     : {};
 
-  const html =
-    variant === 'thermal'
-      ? buildThermalReceiptHtml(invoice, shop, display, options)
-      : buildInvoiceHtml(invoice, shop, display, options);
+  const html = buildInvoiceHtml(invoice, shop, display, options);
 
   return { html, invoiceNumber: invoice.invoice_number };
 }
 
-async function renderPdf(
-  html: string,
-  variant: 'a4' | 'thermal'
-): Promise<{ uri: string; base64: string | null }> {
+async function renderPdf(html: string): Promise<{ uri: string; base64: string | null }> {
   const Print = await import('expo-print');
   const { uri, base64 } = await Print.printToFileAsync({
     html,
     base64: true,
-    ...(variant === 'thermal' ? { width: 302, height: undefined } : { width: 595, height: 842 }),
+    width: 595,
+    height: 842,
   });
   return { uri, base64: base64 ?? null };
 }
 
 export async function generateInvoicePdf(
   invoiceId: string,
-  variant: 'a4' | 'thermal' = 'a4',
+  _variant: 'a4' = 'a4',
   options: PrintOptions = DEFAULT_PRINT_OPTIONS
 ): Promise<{ uri: string }> {
-  const { html } = await loadInvoiceHtml(invoiceId, variant, options);
-  const { uri } = await renderPdf(html, variant);
+  const { html } = await loadInvoiceHtml(invoiceId, options);
+  const { uri } = await renderPdf(html);
   return { uri };
 }
 
@@ -1071,12 +691,12 @@ async function writeBase64ToDest(base64: string, fileName: string): Promise<stri
 export async function sharePdfFromHtml(
   html: string,
   fileBaseName: string,
-  variant: 'a4' | 'thermal' = 'a4'
+  _variant: 'a4' = 'a4'
 ): Promise<void> {
   const safeName = fileBaseName.replace(/[^\w.-]+/g, '_') || 'invoice';
 
   try {
-    const { uri, base64 } = await renderPdf(html, variant);
+    const { uri, base64 } = await renderPdf(html);
 
     const shareUri = base64
       ? await writeBase64ToDest(base64, `${safeName}.pdf`)
@@ -1099,7 +719,7 @@ export async function sharePdfFromHtml(
 
 let printInFlight = false;
 
-export async function printHtml(html: string, variant: 'a4' | 'thermal' = 'a4'): Promise<void> {
+export async function printHtml(html: string, _variant: 'a4' = 'a4'): Promise<void> {
   if (Platform.OS !== 'web') {
     if (printInFlight) return; // ignore double taps
     printInFlight = true;
@@ -1111,10 +731,7 @@ export async function printHtml(html: string, variant: 'a4' | 'thermal' = 'a4'):
         // Android can get stuck with a print request that never completed.
         // Fall back to a PDF + share sheet, which has no such lock.
         if (!String(e?.message ?? '').includes('already in progress')) throw e;
-        const { uri } = await Print.printToFileAsync({
-          html,
-          ...(variant === 'thermal' ? { width: 302 } : { width: 595, height: 842 }),
-        });
+        const { uri } = await Print.printToFileAsync({ html, width: 595, height: 842 });
         const Sharing = await import('expo-sharing');
         await Sharing.shareAsync(uri, {
           mimeType: 'application/pdf',
@@ -1156,29 +773,29 @@ export async function printHtml(html: string, variant: 'a4' | 'thermal' = 'a4'):
 
 export async function shareInvoicePdf(
   invoiceId: string,
-  variant: 'a4' | 'thermal' = 'a4',
+  _variant: 'a4' = 'a4',
   options: PrintOptions = DEFAULT_PRINT_OPTIONS
 ): Promise<void> {
-  const { html, invoiceNumber } = await loadInvoiceHtml(invoiceId, variant, options);
+  const { html, invoiceNumber } = await loadInvoiceHtml(invoiceId, options);
 
   if (Platform.OS === 'web') {
     await printHtml(html);
     return;
   }
 
-  await sharePdfFromHtml(html, invoiceNumber, variant);
+  await sharePdfFromHtml(html, invoiceNumber);
 }
 
 export async function printInvoice(
   invoiceId: string,
-  variant: 'a4' | 'thermal' = 'a4',
+  _variant: 'a4' = 'a4',
   options: PrintOptions = DEFAULT_PRINT_OPTIONS
 ): Promise<void> {
-  const { html, invoiceNumber } = await loadInvoiceHtml(invoiceId, variant, options);
+  const { html } = await loadInvoiceHtml(invoiceId, options);
   await printHtml(html);
 }
 
-// in invoicePdf.ts
+// Label printing (100mm x 15mm) — unrelated to the invoice slips, kept as is.
 export async function printLabelsNative(html: string) {
   const Print = await import('expo-print');
   // 100mm x 15mm in PDF points (1mm = 2.8346pt)

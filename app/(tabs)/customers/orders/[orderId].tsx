@@ -362,7 +362,7 @@ export default function OrderDetailScreen() {
       {error && <Text style={styles.error}>{error}</Text>}
 
       {/* Rough estimate slip for the customer (same slip as the invoice page) */}
-      {order.status !== 'completed' && (
+      {/* {order.status !== 'completed' && (
         <Pressable
           style={({ pressed }) => [
             styles.estimateBtn,
@@ -380,7 +380,7 @@ export default function OrderDetailScreen() {
             </>
           )}
         </Pressable>
-      )}
+      )} */}
 
       <View style={{ marginTop: spacing.lg, gap: spacing.sm }}>
         {order.status === 'pending' && (
